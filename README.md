@@ -1,34 +1,110 @@
 # PylaAI
 
-PylaAI is currently the best external Brawl Stars bot.
-This repository is intended for devs and it's recommended for others to use the official version from the discord.
+PylaAI is currently the best external Brawl Stars bot. This repository is intended for developers.
 
-**Warning :** This is the source-code, which is meant for developpers or people that know how to install python libraries and run python scripts --> The official build is linked in the discord, which is the source-code converted into an exe so you don't need additional knowledge to run the bot. (You will have to go through a linkvertise link)
+> ⚠️ **Warning:** This repository contains the **source code**.  
+> If you are not a developer, it is recommended to use the **official compiled build** from our Discord (linked below), which comes as a ready-to-use `.exe`.
 
-How to run : 
-- Install python and git(tested with python 3.11.9)
-- open a cmd and type `git clone https://github.com/PylaAI/PylaAI.git`
-- run `cd PylaAI`
-- run `python setup.py install`
-- and then run `python main.py`
-- enjoy !
+---
 
-Notes :
-- This is the "localhost" version which means everything API related isn't enabled (login, online stats tracking, auto brawler list updating, auto icon updating, auto wall model updating). 
-You can make it "online" by changing the base api url in utils.py and recoding the app to answer to the different endpoints. Site's code might become opensource but currently isn't.
-- You can get the .pt version of the ai vision model at https://github.com/AngelFireLA/BrawlStarsBotMaking
-- This repository won't contain early access features before they are released to the public.
-- Please respect the "no selling" license as respect for our work.
+# Supported Platforms
+- **Windows 10/11**
 
-Devs : 
-- Iyordanov
-- AngelFire
 
-# Run tests
-Run `python -m unittest discover` to check if your changes have made any regressions. 
+## 🚀 Installation & Running
 
-# If you want to contribute, don't hesitate to create an Issue, a Pull Request, or/and make a ticket on the Pyla discord server at :
-https://discord.gg/xUusk3fw4A
+### Install Python
 
-Don't know what to do ? Check the To-Fix and Idea lists :
-https://trello.com/b/SAz9J6AA/public-pyla-trello
+PylaAI has been tested with:
+
+```bash
+Python 3.11.9
+```
+
+Download & install Git and Python:
+
+[Python 3.11](https://www.python.org/downloads/release/python-3119/)
+
+[Git](https://git-scm.com/install/windows)
+
+---
+
+## **Download PylaAI**
+in cmd run `git clone https://github.com/PylaAI/PylaAI.git`
+
+### Run Setup
+
+run the smart installer:
+
+in cmd run `python setup.py install`
+
+### Start Your Emulator
+
+see how you can start your emulator in https://pyla-ai.pages.dev/#starting
+
+---
+
+### Launch PylaAI
+
+Run the bot:
+
+`python main.py`
+
+---
+
+
+### Localhost Mode
+
+This open-source version runs in **localhost mode**.
+
+The following cloud features are disabled by default:
+
+- Login system
+- Cloud statistics
+- Auto updates
+- Remote API services
+
+---
+
+### Running Tests
+
+To make sure changes do not introduce regressions:
+
+ `python -m unittest discover`
+
+---
+
+## 🤝 Contribution
+
+Contributions are welcome.
+
+If you want to help improve PylaAI:
+
+1. Fork the repository
+2. Create a new branch
+3. Submit a Pull Request
+
+You can also open an **Issue** for bugs or feature requests.
+
+---
+
+## 📌 Project Links
+
+- **[Discord](https://discord.gg/xUusk3fw4A)** Join the Pyla Server
+- **[Trello](https://trello.com/b/SAz9J6AA/public-pyla-trello)** see what you can contrtibute
+
+---
+
+## ⚖️ License
+
+Please respect the **"No Selling" license** out of respect for the work of the official developers.
+
+This project is **not permitted to be sold or monetized**.
+
+---
+
+## 👨‍💻 Official Developers
+
+- **ivanyordanovgt** / iyordanov
+- **AngelFireLA** / AngelFire
+- **awarzu** / (M)
