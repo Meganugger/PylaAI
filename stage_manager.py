@@ -6,31 +6,13 @@ import time
 
 import cv2
 import numpy as np
-import pyautogui
-import requests
 
 from state_finder.main import get_state
 from trophy_observer import TrophyObserver
-from utils import find_template_center, extract_text_and_positions, load_toml_as_dict, async_notify_user, \
+from utils import find_template_center, load_toml_as_dict, async_notify_user, \
     save_brawler_data
 
-user_id = load_toml_as_dict("cfg/general_config.toml")['discord_id']
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
-user_webhook = load_toml_as_dict("cfg/general_config.toml")['personal_webhook']
-
-
-def notify_user(message_type):
-    # message type will be used to have conditions determining the message
-    # but for now there's only one possible type of message
-    message_data = {
-        'content': f"<@{user_id}> Pyla Bot has completed all it's targets !"
-    }
-
-    response = requests.post(user_webhook, json=message_data)
-
-    if response.status_code != 204:
-        print(
-            f'Failed to send message. Be sure to have put a valid webhook url in the config. Status code: {response.status_code}')
 
 
 def load_image(image_path, scale_factor):
@@ -49,7 +31,7 @@ def load_image(image_path, scale_factor):
 class StageManager:
 
     def __init__(self, brawlers_data, lobby_automator, window_controller):
-        self.states = {
+        self.state_handlers = {
             'shop': self.quit_shop,
             'brawler_selection': self.quit_shop,
             'popup': self.close_pop_up,
@@ -69,31 +51,10 @@ class StageManager:
         self.time_since_last_stat_change = time.time()
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
         self.window_controller = window_controller
+        self.lobby_start_enabled = True
 
-    def start_brawl_stars(self, frame):
-        data = extract_text_and_positions(np.array(frame))
-        for key in list(data.keys()):
-            if key.replace(" ", "") in ["brawl", "brawlstars", "stars"]:
-                x, y = data[key]['center']
-                self.window_controller.click(x, y)
-                return
-
-        brawl_stars_icon_coords = self.lobby_config['lobby'].get('brawl_stars_icon', [960, 540])
-        x, y = brawl_stars_icon_coords[0]*self.window_controller.width_ratio, brawl_stars_icon_coords[1]*self.window_controller.height_ratio
-        self.window_controller.click(x, y)
-
-    @staticmethod
-    def validate_trophies(trophies_string):
-        trophies_string = trophies_string.lower()
-        while "s" in trophies_string:
-            trophies_string = trophies_string.replace("s", "5")
-        numbers = ''.join(filter(str.isdigit, trophies_string))
-
-        if not numbers:
-            return False
-
-        trophy_value = int(numbers)
-        return trophy_value
+    def set_lobby_start_enabled(self, enabled):
+        self.lobby_start_enabled = enabled
 
     def start_game(self, data):
         print("state is lobby, starting game")
@@ -170,7 +131,10 @@ class StageManager:
         print("Pressed Q to start a match")
 
     def click_brawl_stars(self, frame):
-        screenshot = frame.crop((50, 4, 900, 31))
+        if isinstance(frame, np.ndarray):
+            screenshot = frame[4:31, 50:900]
+        else:
+            screenshot = frame.crop((50, 4, 900, 31))
         if self.brawl_stars_icon is None:
             self.brawl_stars_icon = load_image("state_finder/images_to_detect/brawl_stars_icon.png",
                                                self.window_controller.scale_factor)
@@ -184,8 +148,8 @@ class StageManager:
         else:
             self.window_controller.press_key("Q")
 
-    def end_game(self):
-        screenshot = self.window_controller.screenshot()
+    def end_game(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
         current_state = get_state(screenshot)
@@ -246,8 +210,8 @@ class StageManager:
     def quit_shop(self):
         self.window_controller.click(100*self.window_controller.width_ratio, 60*self.window_controller.height_ratio)
 
-    def close_pop_up(self):
-        screenshot = self.window_controller.screenshot()
+    def close_pop_up(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
         if self.close_popup_icon is None:
             self.close_popup_icon = load_image("state_finder/images_to_detect/close_popup.png", self.window_controller.scale_factor)
         popup_location = find_template_center(screenshot, self.close_popup_icon)
@@ -255,8 +219,11 @@ class StageManager:
             self.window_controller.click(*popup_location)
 
     def do_state(self, state, data=None):
-        if data is not None:
-            self.states[state](data)
+        if state == "lobby" and not self.lobby_start_enabled:
             return
-        self.states[state]()
+
+        if data is not None:
+            self.state_handlers[state](data)
+            return
+        self.state_handlers[state]()
 

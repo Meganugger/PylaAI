@@ -16,10 +16,19 @@ import numpy as np
 from packaging import version
 import bettercam
 import time
-import easyocr
+import onnxruntime as ort
 
-def extract_text_and_positions(image_path):
-    results = reader.readtext(image_path)
+def to_bgr_array(image):
+    if isinstance(image, Image.Image):
+        return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
+    if isinstance(image, np.ndarray):
+        return image
+    raise TypeError(f"Unsupported image type: {type(image)}")
+
+def extract_text_and_positions(image_input):
+    if isinstance(image_input, Image.Image):
+        image_input = np.asarray(image_input)
+    results = reader.readtext(image_input)
     text_details = {}
     for (bbox, text, prob) in results:
         top_left, top_right, bottom_right, bottom_left = bbox
@@ -40,10 +49,36 @@ def extract_text_and_positions(image_path):
 
 class DefaultEasyOCR:
     def __init__(self):
-        self.reader = easyocr.Reader(['en'])
+        self.reader = None
+        self.easyocr_module = None
+
+    @staticmethod
+    def _should_use_gpu():
+        configured_value = str(load_toml_as_dict("cfg/general_config.toml").get("easyocr_gpu", "auto")).lower()
+        if configured_value in ("yes", "true", "1", "gpu"):
+            return True
+        if configured_value in ("no", "false", "0", "cpu"):
+            return False
+
+        preferred_device = str(load_toml_as_dict("cfg/general_config.toml").get("cpu_or_gpu", "auto")).lower()
+        if preferred_device not in ("gpu", "auto"):
+            return False
+
+        available_providers = ort.get_available_providers()
+        return "CUDAExecutionProvider" not in available_providers and "DmlExecutionProvider" not in available_providers
+
+    def _get_reader(self):
+        if self.reader is None:
+            if self.easyocr_module is None:
+                import easyocr
+                self.easyocr_module = easyocr
+            use_gpu = self._should_use_gpu()
+            print(f"Initializing EasyOCR (gpu={use_gpu})")
+            self.reader = self.easyocr_module.Reader(['en'], gpu=use_gpu)
+        return self.reader
 
     def readtext(self, image_input):
-        return self.reader.readtext(image_input)
+        return self._get_reader().readtext(image_input)
 
 def load_toml_as_dict(file_path):
     if os.path.exists(file_path):
@@ -56,9 +91,31 @@ def load_toml_as_dict(file_path):
 reader = DefaultEasyOCR()
 api_base_url = "localhost"
 brawlers_info_file_path = "cfg/brawlers_info.json"
+_timing_stats = {}
+_timing_enabled = None
+
+def timing_enabled():
+    global _timing_enabled
+    if _timing_enabled is None:
+        _timing_enabled = str(load_toml_as_dict("cfg/general_config.toml").get("timing_debug", "no")).lower() in ("yes", "true", "1")
+    return _timing_enabled
+
+def record_timing(name, duration_seconds, print_every=120):
+    if not timing_enabled():
+        return
+
+    stats = _timing_stats.setdefault(name, {"count": 0, "total": 0.0, "max": 0.0})
+    stats["count"] += 1
+    stats["total"] += duration_seconds
+    stats["max"] = max(stats["max"], duration_seconds)
+
+    if stats["count"] % print_every == 0:
+        avg_ms = (stats["total"] / stats["count"]) * 1000
+        max_ms = stats["max"] * 1000
+        print(f"[timing] {name}: avg={avg_ms:.2f}ms max={max_ms:.2f}ms samples={stats['count']}")
 
 def count_hsv_pixels(pil_image, low_hsv, high_hsv):
-    opencv_image = cv2.cvtColor(np.array(pil_image), cv2.COLOR_RGB2BGR)
+    opencv_image = to_bgr_array(pil_image)
     hsv_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv_image, np.array(low_hsv), np.array(high_hsv))
     pixel_count = np.count_nonzero(mask)
@@ -74,8 +131,13 @@ def save_brawler_data(data):
 
 
 def find_template_center(main_img, template, threshold=0.8):
-    main_image_cv = cv2.cvtColor(np.array(main_img), cv2.COLOR_RGB2GRAY)
-    template_arr = np.array(template)
+    main_image_arr = to_bgr_array(main_img)
+    if len(main_image_arr.shape) == 3 and main_image_arr.shape[2] == 3:
+        main_image_cv = cv2.cvtColor(main_image_arr, cv2.COLOR_BGR2GRAY)
+    else:
+        main_image_cv = main_image_arr
+
+    template_arr = np.asarray(template)
     if len(template_arr.shape) == 3 and template_arr.shape[2] == 3:
         template_cv = cv2.cvtColor(template_arr, cv2.COLOR_BGR2GRAY)
     else:

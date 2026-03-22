@@ -1,56 +1,50 @@
 import json
 import tkinter as tk
-from math import ceil
-
-import customtkinter as ctk
-import pyautogui
-from PIL import Image
-from customtkinter import CTkImage
-from utils import load_toml_as_dict, update_toml_file, save_brawler_icon, get_dpi_scale
 from tkinter import filedialog
 
-debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
-orig_screen_width, orig_screen_height = 1920, 1080
-width, height = pyautogui.size()
-width_ratio = width / orig_screen_width
-height_ratio = height / orig_screen_height
-scale_factor = min(width_ratio, height_ratio)
-scale_factor *= 96/get_dpi_scale()
-pyla_version = load_toml_as_dict("./cfg/general_config.toml")['pyla_version']
+import customtkinter as ctk
+from PIL import Image
+from customtkinter import CTkImage
+
+from gui.config_store import load_config, save_config
+from gui.theme import COLORS, FONT_FAMILY, S, apply_appearance, font
+from utils import load_toml_as_dict, save_brawler_icon
+
+debug = load_toml_as_dict("cfg/general_config.toml")["super_debug"] == "yes"
+pyla_version = load_toml_as_dict("./cfg/general_config.toml")["pyla_version"]
+
 
 class SelectBrawler:
-
-    def __init__(self, data_setter, brawlers):
+    def __init__(self, data_setter=None, brawlers=None):
+        apply_appearance()
         self.app = ctk.CTk()
+        self.app.title(f"PylaAI Setup v{pyla_version}")
+        self.app.geometry(f"{S(1240)}x{S(800)}")
+        self.app.minsize(S(1120), S(720))
+        self.app.configure(fg_color=COLORS["bg"])
 
-        square_size = int(75 * scale_factor)
-        amount_of_rows = ceil(len(brawlers)/10) + 1
-        necessary_height = (int(145 * scale_factor) + amount_of_rows*square_size + (amount_of_rows-1)*int(3 * scale_factor))
-        self.app.title(f"PylaAI v{pyla_version}")
-        self.brawlers = brawlers
-
-        self.app.geometry(f"{str(int(860 * scale_factor))}x{necessary_height}+{str(int(600 * scale_factor))}")
         self.data_setter = data_setter
-        self.colors = {
-            'gray': "#7d7777",
-            'red': "#cd5c5c",
-            'darker_white': '#c4c4c4',
-            'dark gray': '#1c1c1c',
-            'cherry red': '#960a00',
-            'ui box gray': '#242424',
-            'chess white': '#f0d9b5',
-            'chess brown': '#b58863',
-            'indian red': "#cd5c5c"
-        }
-
-        self.app.configure(fg_color=self.colors['ui box gray'])
-
-
-
-        self.images = []
+        self.brawlers = brawlers or []
         self.brawlers_data = []
-        self.farm_type = ""
+        self.result_data = None
+        self.images = []
+        self.image_lookup = {}
+        self.general_config = load_config("general")
 
+        self.filter_var = tk.StringVar()
+        self.timer_var = tk.StringVar(value=str(self.general_config.get("run_for_minutes", 600)))
+        self.filter_var.trace_add("write", lambda *_: self.update_images(self.filter_var.get()))
+
+        self._load_images()
+        self._build_layout()
+        self.update_images("")
+        self.refresh_roster_summary()
+
+        self.app.mainloop()
+
+    def _load_images(self):
+        icon_size = (S(82), S(82))
+        roster_icon_size = (S(42), S(42))
         for brawler in self.brawlers:
             img_path = f"./api/assets/brawler_icons/{brawler}.png"
             try:
@@ -59,237 +53,599 @@ class SelectBrawler:
                 save_brawler_icon(brawler)
                 img = Image.open(img_path)
 
-            img_tk = CTkImage(img, size=(square_size, square_size))
-            self.images.append((brawler, img_tk))  # Store tuple of brawler name and image
+            grid_image = CTkImage(light_image=img, dark_image=img, size=icon_size)
+            roster_image = CTkImage(light_image=img, dark_image=img, size=roster_icon_size)
+            self.images.append((brawler, grid_image))
+            self.image_lookup[brawler] = roster_image
 
-        # Entry widget for filtering
-        self.filter_var = tk.StringVar()
+    def _build_layout(self):
+        root = ctk.CTkFrame(self.app, fg_color="transparent")
+        root.pack(fill="both", expand=True, padx=S(20), pady=S(20))
+        root.grid_columnconfigure(0, weight=5)
+        root.grid_columnconfigure(1, weight=4)
+        root.grid_rowconfigure(1, weight=1)
+
+        header = ctk.CTkFrame(
+            root,
+            fg_color=COLORS["surface"],
+            corner_radius=S(16),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, S(16)))
+        header.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(
+            header,
+            text="Brawler Setup",
+            font=font(28, "bold"),
+            text_color=COLORS["text"]
+        )
+        title.grid(row=0, column=0, sticky="w", padx=S(20), pady=(S(18), S(4)))
+
+        subtitle = ctk.CTkLabel(
+            header,
+            text="Search a brawler, configure its goal, and review the full roster before starting the bot.",
+            font=font(14),
+            text_color=COLORS["muted"]
+        )
+        subtitle.grid(row=1, column=0, sticky="w", padx=S(20), pady=(0, S(18)))
+
+        self.left_panel = ctk.CTkFrame(
+            root,
+            fg_color=COLORS["surface"],
+            corner_radius=S(16),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        self.left_panel.grid(row=1, column=0, sticky="nsew", padx=(0, S(10)))
+        self.left_panel.grid_columnconfigure(0, weight=1)
+        self.left_panel.grid_rowconfigure(2, weight=1)
+
+        self.right_panel = ctk.CTkFrame(
+            root,
+            fg_color=COLORS["surface"],
+            corner_radius=S(16),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        self.right_panel.grid(row=1, column=1, sticky="nsew", padx=(S(10), 0))
+        self.right_panel.grid_columnconfigure(0, weight=1)
+        self.right_panel.grid_rowconfigure(2, weight=1)
+
+        self._build_brawler_browser()
+        self._build_roster_panel()
+
+    def _build_brawler_browser(self):
+        browser_header = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        browser_header.grid(row=0, column=0, sticky="ew", padx=S(18), pady=(S(18), S(12)))
+        browser_header.grid_columnconfigure(0, weight=1)
+
+        title = ctk.CTkLabel(
+            browser_header,
+            text="Choose a Brawler",
+            font=font(20, "bold"),
+            text_color=COLORS["text"]
+        )
+        title.grid(row=0, column=0, sticky="w")
+
+        helper = ctk.CTkLabel(
+            browser_header,
+            text="Click any card to set its goal and current progress.",
+            font=font(13),
+            text_color=COLORS["muted"]
+        )
+        helper.grid(row=1, column=0, sticky="w", pady=(S(4), 0))
+
         self.filter_entry = ctk.CTkEntry(
-            self.app, textvariable=self.filter_var,
-            placeholder_text="Type brawler name...", font=("", int(20 * scale_factor)), width=int(200 * scale_factor),
-            fg_color=self.colors['ui box gray'], border_color=self.colors['cherry red'], text_color="white"
+            self.left_panel,
+            textvariable=self.filter_var,
+            placeholder_text="Search brawler names...",
+            font=font(15),
+            height=S(42),
+            fg_color=COLORS["surface_alt"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text"]
         )
-        ctk.CTkLabel(self.app, text="Write brawler", font=("Comic sans MS", int(20 * scale_factor)),
-                     text_color=self.colors['cherry red']).place(x=int(scale_factor * 373), y=int(scale_factor * 20))
-        self.filter_entry.place(x=int(340 * scale_factor), y=int(scale_factor * 52))
-        self.filter_var.trace_add("write", lambda *args: self.update_images(self.filter_var.get()))
+        self.filter_entry.grid(row=1, column=0, sticky="ew", padx=S(18), pady=(0, S(12)))
 
-        # Frame to hold the images
-        self.image_frame = ctk.CTkFrame(self.app, fg_color=self.colors['ui box gray'])
-        self.image_frame.place(x=0, y=int(100 * scale_factor))
+        self.image_frame = ctk.CTkScrollableFrame(
+            self.left_panel,
+            fg_color="transparent",
+            corner_radius=S(12)
+        )
+        self.image_frame.grid(row=2, column=0, sticky="nsew", padx=S(12), pady=(0, S(12)))
 
-        self.update_images("")
-        ctk.CTkButton(self.app, text="Start", command=self.start_bot, fg_color=self.colors['ui box gray'],
-                      text_color="white",
-                      font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
-                      border_width=int(2 * scale_factor)).place(x=int(390 * scale_factor), y=int((necessary_height-60* scale_factor) ))
+    def _build_roster_panel(self):
+        roster_header = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        roster_header.grid(row=0, column=0, sticky="ew", padx=S(18), pady=(S(18), S(10)))
+        roster_header.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkButton(self.app, text="Load Brawler Config", command=self.load_brawler_config, fg_color=self.colors['ui box gray'],
-                      text_color="white",
-                      font=("Comic sans MS", int(25 * scale_factor)), border_color=self.colors['cherry red'],
-                      border_width=int(2 * scale_factor)).place(x=int(10 * scale_factor),
-                                                                y=int((necessary_height-60* scale_factor) ))
+        title = ctk.CTkLabel(
+            roster_header,
+            text="Selected Roster",
+            font=font(20, "bold"),
+            text_color=COLORS["text"]
+        )
+        title.grid(row=0, column=0, sticky="w")
 
-        self.timer_var = tk.StringVar()
+        self.roster_count_label = ctk.CTkLabel(
+            roster_header,
+            text="0 configured",
+            font=font(13),
+            text_color=COLORS["muted"]
+        )
+        self.roster_count_label.grid(row=1, column=0, sticky="w", pady=(S(4), 0))
+
+        self.roster_empty_label = ctk.CTkLabel(
+            self.right_panel,
+            text="No brawlers configured yet. Select one from the left to get started.",
+            font=font(14),
+            text_color=COLORS["muted"]
+        )
+        self.roster_empty_label.grid(row=1, column=0, sticky="ew", padx=S(18), pady=(0, S(10)))
+
+        self.roster_frame = ctk.CTkScrollableFrame(
+            self.right_panel,
+            fg_color="transparent",
+            corner_radius=S(12)
+        )
+        self.roster_frame.grid(row=2, column=0, sticky="nsew", padx=S(12), pady=(0, S(12)))
+
+        footer = ctk.CTkFrame(
+            self.right_panel,
+            fg_color=COLORS["surface_alt"],
+            corner_radius=S(14),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        footer.grid(row=3, column=0, sticky="ew", padx=S(12), pady=(0, S(12)))
+        footer.grid_columnconfigure(0, weight=1)
+        footer.grid_columnconfigure(1, weight=0)
+
+        runtime_label = ctk.CTkLabel(
+            footer,
+            text="Run Time Limit (Minutes)",
+            font=font(13, "bold"),
+            text_color=COLORS["text"]
+        )
+        runtime_label.grid(row=0, column=0, sticky="w", padx=S(16), pady=(S(14), S(4)))
+
+        runtime_helper = ctk.CTkLabel(
+            footer,
+            text="Use 0 to leave runtime uncapped.",
+            font=font(12),
+            text_color=COLORS["muted"]
+        )
+        runtime_helper.grid(row=1, column=0, sticky="w", padx=S(16), pady=(0, S(12)))
+
         self.timer_entry = ctk.CTkEntry(
-            self.app, textvariable=self.timer_var,
-            placeholder_text="Enter an amount of minutes", font=("", int(20 * scale_factor)), width=int(80 * scale_factor),
-            fg_color=self.colors['ui box gray'], border_color=self.colors['cherry red'], text_color="white"
+            footer,
+            textvariable=self.timer_var,
+            width=S(110),
+            height=S(42),
+            font=font(15),
+            fg_color=COLORS["surface"],
+            border_color=COLORS["border"],
+            text_color=COLORS["text"]
         )
-        ctk.CTkLabel(self.app, text="Run for :", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 580), y=int((necessary_height-55* scale_factor) ))
-        self.timer_entry.place(x=int(scale_factor * 675), y=int((necessary_height-55* scale_factor) ))
-        self.timer_var.set(load_toml_as_dict("cfg/general_config.toml")["run_for_minutes"])
-        self.timer_var.trace_add("write", lambda *args: self.update_timer(self.timer_var.get()))
-        ctk.CTkLabel(self.app, text="minutes", font=("Comic sans MS", int(22 * scale_factor)),
-                     text_color="white").place(x=int(scale_factor * 760), y=int((necessary_height-55* scale_factor) ))
+        self.timer_entry.grid(row=0, column=1, rowspan=2, padx=S(16), pady=S(14), sticky="e")
+        self.timer_entry.bind("<FocusOut>", self._save_runtime_limit)
+        self.timer_entry.bind("<Return>", self._save_runtime_limit)
 
-        self.app.mainloop()
+        actions = ctk.CTkFrame(self.right_panel, fg_color="transparent")
+        actions.grid(row=4, column=0, sticky="ew", padx=S(12), pady=(0, S(12)))
+        actions.grid_columnconfigure(0, weight=1)
+        actions.grid_columnconfigure(1, weight=1)
 
-    def set_farm_type(self, value):
-        self.farm_type = value
+        self.load_button = ctk.CTkButton(
+            actions,
+            text="Load Saved Roster",
+            command=self.load_brawler_config,
+            fg_color=COLORS["surface_alt"],
+            hover_color=COLORS["border"],
+            border_width=1,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            corner_radius=S(10),
+            font=font(15, "bold"),
+            height=S(44)
+        )
+        self.load_button.grid(row=0, column=0, sticky="ew", padx=(0, S(8)))
+
+        self.start_button = ctk.CTkButton(
+            actions,
+            text="Start Bot",
+            command=self.start_bot,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text"],
+            corner_radius=S(10),
+            font=font(15, "bold"),
+            height=S(44)
+        )
+        self.start_button.grid(row=0, column=1, sticky="ew", padx=(S(8), 0))
 
     def start_bot(self):
-        self.data_setter(self.brawlers_data)
+        self.result_data = list(self.brawlers_data)
+        if callable(self.data_setter):
+            self.data_setter(self.result_data)
         self.app.destroy()
 
     def load_brawler_config(self):
-        # open file select dialog to select a json file
         file_path = filedialog.askopenfilename(
-            title="Select Brawler Config File",
+            title="Select Saved Roster",
             filetypes=[("JSON files", "*.json"), ("All files", "*.*")]
         )
-        if file_path:
-            try:
-                with open(file_path, 'r') as file:
-                    brawlers_data = json.load(file)
-                    try:
-                        brawlers_data = [
-                            bd for bd in brawlers_data
-                            if not (bd["push_until"] <= bd[bd["type"]])
-                        ]
-                        self.brawlers_data = brawlers_data
-                        print("Brawler data loaded successfully :", brawlers_data)
-                    except Exception as e:
-                        print("Invalid data format. Expected a list of brawler data.", e)
-            except Exception as e:
-                print(f"Error loading brawler data: {e}")
+        if not file_path:
+            return
 
-    def on_image_click(self, brawler):
-        self.open_brawler_entry(brawler)
+        try:
+            with open(file_path, "r") as file:
+                brawlers_data = json.load(file)
+            try:
+                self.brawlers_data = [
+                    bd for bd in brawlers_data
+                    if not (bd["push_until"] <= bd[bd["type"]])
+                ]
+                print("Brawler data loaded successfully :", self.brawlers_data)
+                self.refresh_roster_summary()
+            except Exception as exc:
+                print("Invalid data format. Expected a list of brawler data.", exc)
+        except Exception as exc:
+            print(f"Error loading brawler data: {exc}")
+
+    @staticmethod
+    def _parse_optional_int(raw_value):
+        raw_value = raw_value.strip()
+        return int(raw_value) if raw_value.isdigit() else ""
+
+    @staticmethod
+    def _parse_required_int(raw_value, default=0):
+        raw_value = raw_value.strip()
+        return int(raw_value) if raw_value.isdigit() else default
+
+    @staticmethod
+    def _infer_goal_type(goal_type, trophies_value, wins_value):
+        if goal_type:
+            return goal_type
+
+        inferred_wins_value = wins_value if wins_value != "" else 0
+        if trophies_value <= inferred_wins_value:
+            return "trophies"
+        return "wins"
+
+    def _build_brawler_form_state(self, existing):
+        return {
+            "push_until": "" if existing is None else str(existing["push_until"]),
+            "trophies": "0" if existing is None else str(existing["trophies"]),
+            "wins": "" if existing is None else str(existing["wins"]),
+            "win_streak": "0" if existing is None else str(existing["win_streak"]),
+            "auto_pick": True if existing is None else bool(existing["automatically_pick"]),
+            "goal_type": "" if existing is None else str(existing["type"]),
+        }
+
+    def _build_brawler_payload(
+        self,
+        brawler,
+        push_until_raw,
+        trophies_raw,
+        wins_raw,
+        win_streak_raw,
+        goal_type,
+        automatically_pick,
+    ):
+        push_until_value = self._parse_optional_int(push_until_raw)
+        trophies_value = self._parse_required_int(trophies_raw, default=0)
+        wins_value = self._parse_optional_int(wins_raw)
+        if goal_type == "trophies" and wins_value == "":
+            wins_value = 0
+
+        payload = {
+            "brawler": brawler,
+            "push_until": push_until_value,
+            "trophies": trophies_value,
+            "wins": wins_value,
+            "type": self._infer_goal_type(goal_type, trophies_value, wins_value),
+            "automatically_pick": automatically_pick,
+            "win_streak": self._parse_required_int(win_streak_raw, default=0),
+        }
+        return payload
+
+    def _upsert_brawler_data(self, payload):
+        self.brawlers_data = [item for item in self.brawlers_data if item["brawler"] != payload["brawler"]]
+        self.brawlers_data.append(payload)
 
     def open_brawler_entry(self, brawler):
+        existing = next((item for item in self.brawlers_data if item["brawler"] == brawler), None)
+        form_state = self._build_brawler_form_state(existing)
+
         top = ctk.CTkToplevel(self.app)
-        top.configure(fg_color=self.colors['ui box gray'])
-        top.geometry(
-            f"{str(int(300 * scale_factor))}x{str(int(450 * scale_factor))}+{str(int(1100 * scale_factor))}+{str(int(200 * scale_factor))}")
-        top.title("Enter Brawler Data")
+        top.title("Configure Brawler")
+        top.geometry(f"{S(420)}x{S(520)}+{S(980)}+{S(180)}")
+        top.resizable(False, False)
         top.attributes("-topmost", True)
+        top.configure(fg_color=COLORS["bg"])
 
-        push_until_var = tk.StringVar()
-        push_until_entry = ctk.CTkEntry(
-            top, textvariable=push_until_var, fg_color=self.colors['ui box gray'], text_color="white",
-            border_color=self.colors['cherry red'], border_width=int(2 * scale_factor), height=int(28 * scale_factor)
+        card = ctk.CTkFrame(
+            top,
+            fg_color=COLORS["surface"],
+            corner_radius=S(16),
+            border_width=1,
+            border_color=COLORS["border"]
         )
+        card.pack(fill="both", expand=True, padx=S(16), pady=S(16))
+        card.grid_columnconfigure(0, weight=1)
+        card.grid_columnconfigure(1, weight=1)
 
-        trophies_var = tk.StringVar()
-        trophies_entry = ctk.CTkEntry(
-            top, textvariable=trophies_var, fg_color=self.colors['ui box gray'], text_color="white",
-            border_color=self.colors['cherry red'], border_width=int(2 * scale_factor), height=int(28 * scale_factor)
+        ctk.CTkLabel(
+            card,
+            text=f"Configure {brawler.title()}",
+            font=font(22, "bold"),
+            text_color=COLORS["text"]
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=S(18), pady=(S(18), S(6)))
+
+        ctk.CTkLabel(
+            card,
+            text="Choose what to push, then set the target and current progress.",
+            font=font(13),
+            text_color=COLORS["muted"]
+        ).grid(row=1, column=0, columnspan=2, sticky="w", padx=S(18), pady=(0, S(16)))
+
+        push_until_var = tk.StringVar(value=form_state["push_until"])
+        trophies_var = tk.StringVar(value=form_state["trophies"])
+        wins_var = tk.StringVar(value=form_state["wins"])
+        current_win_streak_var = tk.StringVar(value=form_state["win_streak"])
+        auto_pick_var = tk.BooleanVar(value=form_state["auto_pick"])
+        goal_type_var = tk.StringVar(value=form_state["goal_type"])
+
+        def create_field(row, label_text, variable):
+            ctk.CTkLabel(
+                card,
+                text=label_text,
+                font=font(13, "bold"),
+                text_color=COLORS["text"]
+            ).grid(row=row, column=0, columnspan=2, sticky="w", padx=S(18), pady=(0, S(6)))
+
+            entry = ctk.CTkEntry(
+                card,
+                textvariable=variable,
+                height=S(40),
+                font=font(15),
+                fg_color=COLORS["surface_alt"],
+                border_color=COLORS["border"],
+                text_color=COLORS["text"]
+            )
+            entry.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(12)))
+            return entry
+
+        goal_buttons = ctk.CTkFrame(card, fg_color="transparent")
+        goal_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(12)))
+        goal_buttons.grid_columnconfigure(0, weight=1)
+        goal_buttons.grid_columnconfigure(1, weight=1)
+
+        def refresh_goal_buttons():
+            selected = goal_type_var.get()
+            if selected == "wins":
+                wins_button.configure(fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"])
+                trophies_button.configure(fg_color=COLORS["surface_alt"], hover_color=COLORS["border"])
+            elif selected == "trophies":
+                trophies_button.configure(fg_color=COLORS["accent"], hover_color=COLORS["accent_hover"])
+                wins_button.configure(fg_color=COLORS["surface_alt"], hover_color=COLORS["border"])
+            else:
+                wins_button.configure(fg_color=COLORS["surface_alt"], hover_color=COLORS["border"])
+                trophies_button.configure(fg_color=COLORS["surface_alt"], hover_color=COLORS["border"])
+
+        wins_button = ctk.CTkButton(
+            goal_buttons,
+            text="Wins",
+            command=lambda: (goal_type_var.set("wins"), refresh_goal_buttons()),
+            font=font(14, "bold"),
+            height=S(42),
+            corner_radius=S(10),
+            fg_color=COLORS["surface_alt"],
+            hover_color=COLORS["border"],
+            text_color=COLORS["text"]
         )
+        wins_button.grid(row=0, column=0, sticky="ew", padx=(0, S(6)))
 
-        wins_var = tk.StringVar()
-        wins_entry = ctk.CTkEntry(
-            top, textvariable=wins_var, fg_color=self.colors['ui box gray'], text_color="white",
-            border_color=self.colors['cherry red'], border_width=int(2 * scale_factor), height=int(28 * scale_factor)
+        trophies_button = ctk.CTkButton(
+            goal_buttons,
+            text="Trophies",
+            command=lambda: (goal_type_var.set("trophies"), refresh_goal_buttons()),
+            font=font(14, "bold"),
+            height=S(42),
+            corner_radius=S(10),
+            fg_color=COLORS["surface_alt"],
+            hover_color=COLORS["border"],
+            text_color=COLORS["text"]
         )
+        trophies_button.grid(row=0, column=1, sticky="ew", padx=(S(6), 0))
 
-        current_win_streak_var = tk.StringVar(value="0")  # Set the default value to "0"
-        current_win_streak_entry = ctk.CTkEntry(
-            top, textvariable=current_win_streak_var, fg_color=self.colors['ui box gray'], text_color="white",
-            border_color=self.colors['cherry red'], border_width=int(2 * scale_factor), height=int(28 * scale_factor)
-        )
+        create_field(3, "Target Value", push_until_var)
+        create_field(5, "Current Trophies", trophies_var)
+        create_field(7, "Current Wins", wins_var)
+        create_field(9, "Current Win Streak", current_win_streak_var)
 
-        auto_pick_var = tk.BooleanVar(value=True)  # Checkbox variable, ticked by default
         auto_pick_checkbox = ctk.CTkCheckBox(
-            top, text="Bot auto-selects brawler", variable=auto_pick_var,
-            fg_color=self.colors['cherry red'], text_color="white", checkbox_height=int(24 * scale_factor)
+            card,
+            text="Auto-select this brawler in the lobby",
+            variable=auto_pick_var,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text"],
+            font=font(13)
         )
+        auto_pick_checkbox.grid(row=11, column=0, columnspan=2, sticky="w", padx=S(18), pady=(S(4), S(12)))
 
-        def submit_data():
-            push_until_value = push_until_var.get()
-            push_until_value = int(push_until_value) if push_until_value.isdigit() else ""
-            trophies_raw = trophies_var.get()
-            trophies_value = int(trophies_raw) if trophies_raw.isdigit() else 0
-            wins_value = wins_var.get()
-            wins_value = int(wins_value) if wins_value.isdigit() else ""
-            current_win_streak_value = current_win_streak_var.get()
-            if self.farm_type == "trophies" and wins_value == "":
-                wins_value = 0
-            data = {
-                "brawler": brawler,
-                "push_until": push_until_value,
-                "trophies": trophies_value,
-                "wins": wins_value,
-                "type": self.farm_type,
-                "automatically_pick": auto_pick_var.get(),
-                "win_streak": int(current_win_streak_value)
-            }
+        action_row = ctk.CTkFrame(card, fg_color="transparent")
+        action_row.grid(row=12, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(18)))
+        action_row.grid_columnconfigure(0, weight=1)
+        action_row.grid_columnconfigure(1, weight=1)
 
-            if data["type"] == "":
-                if data["trophies"] <= data["wins"]:
-                    data["type"] = "trophies"
-                else:
-                    data["type"] = "wins"
+        def save_brawler_entry():
+            payload = self._build_brawler_payload(
+                brawler=brawler,
+                push_until_raw=push_until_var.get(),
+                trophies_raw=trophies_var.get(),
+                wins_raw=wins_var.get(),
+                win_streak_raw=current_win_streak_var.get(),
+                goal_type=goal_type_var.get(),
+                automatically_pick=auto_pick_var.get(),
+            )
+            self._upsert_brawler_data(payload)
 
-            self.brawlers_data = [item for item in self.brawlers_data if item["brawler"] != data["brawler"]]
-            self.brawlers_data.append(data)
-
-            if debug: print("Selected Brawler Data :", self.brawlers_data)
+            if debug:
+                print("Selected Brawler Data :", self.brawlers_data)
+            self.refresh_roster_summary()
             top.destroy()
 
-        submit_button = ctk.CTkButton(
-            top, text="Submit", command=submit_data, fg_color=self.colors['ui box gray'],
-            border_color=self.colors['cherry red'],
-            text_color="white", border_width=int(2 * scale_factor), width=int(80 * scale_factor)
-        )
+        ctk.CTkButton(
+            action_row,
+            text="Cancel",
+            command=top.destroy,
+            fg_color=COLORS["surface_alt"],
+            hover_color=COLORS["border"],
+            border_width=1,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            corner_radius=S(10),
+            font=font(14, "bold"),
+            height=S(42)
+        ).grid(row=0, column=0, sticky="ew", padx=(0, S(6)))
 
-        farm_type_button_frame = ctk.CTkFrame(top, width=int(210 * scale_factor), height=int(50 * scale_factor),
-                                              fg_color=self.colors['ui box gray'])
+        ctk.CTkButton(
+            action_row,
+            text="Save Brawler",
+            command=save_brawler_entry,
+            fg_color=COLORS["accent"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text"],
+            corner_radius=S(10),
+            font=font(14, "bold"),
+            height=S(42)
+        ).grid(row=0, column=1, sticky="ew", padx=(S(6), 0))
 
-        self.wins_button = ctk.CTkButton(farm_type_button_frame, text="Win Amount", width=int(90 * scale_factor),
-                                            command=lambda: self.set_farm_type_color("wins"),
-                                            hover_color=self.colors['cherry red'],
-                                            font=("", int(15 * scale_factor)),
-                                            fg_color=self.colors["ui box gray"],
-                                            border_color=self.colors['cherry red'],
-                                            border_width=int(2 * scale_factor)
-                                            )
-        self.trophies_button = ctk.CTkButton(farm_type_button_frame, text="Trophies", width=int(85 * scale_factor),
-                                             command=lambda: self.set_farm_type_color("trophies"),
-                                             hover_color=self.colors['cherry red'],
-                                             font=("", int(15 * scale_factor)),
-                                             fg_color=self.colors["ui box gray"],
-                                             border_color=self.colors['cherry red'], border_width=int(2 * scale_factor)
-                                             )
+        refresh_goal_buttons()
 
-        self.trophies_button.place(x=int(10 * scale_factor))
-        self.wins_button.place(x=int(110 * scale_factor))
-
-        ctk.CTkLabel(top, text=f"Brawler: {brawler}", font=("Comic sans MS", int(20 * scale_factor)),
-                     text_color=self.colors['red']).pack(
-            pady=int(7 * scale_factor))
-        farm_type_button_frame.pack()
-        ctk.CTkLabel(top, text="Target Amount", font=("Comic sans MS", int(15 * scale_factor)),
-                     text_color=self.colors['chess white']).pack()
-        push_until_entry.pack(pady=int(4 * scale_factor))
-        ctk.CTkLabel(top, text="Current Trophies", font=("Comic sans MS", int(15 * scale_factor)),
-                     text_color=self.colors['chess white']).pack()
-        trophies_entry.pack(pady=int(4 * scale_factor))
-        ctk.CTkLabel(top, text="Current Wins", font=("Comic sans MS", int(15 * scale_factor)),
-                     text_color=self.colors['chess white']).pack()
-        wins_entry.pack(pady=int(4 * scale_factor))
-        ctk.CTkLabel(top, text="Current Brawler's Win Streak", font=("Comic sans MS", int(15 * scale_factor)),
-                     text_color=self.colors['chess white']).pack()
-        current_win_streak_entry.pack(pady=int(4 * scale_factor))
-        auto_pick_checkbox.pack(pady=int(4 * scale_factor))  # Add the checkbox to the UI
-        submit_button.pack(pady=int(7 * scale_factor))
-
-    def set_farm_type_color(self, value):
-        self.farm_type = value
-        if value == "wins":
-            self.wins_button.configure(fg_color=self.colors['cherry red'])
-            self.trophies_button.configure(fg_color=self.colors['ui box gray'])
-        else:
-            self.wins_button.configure(fg_color=self.colors['ui box gray'])
-            self.trophies_button.configure(fg_color=self.colors['cherry red'])
+    def remove_brawler(self, brawler):
+        self.brawlers_data = [item for item in self.brawlers_data if item["brawler"] != brawler]
+        self.refresh_roster_summary()
 
     def update_images(self, filter_text):
         for widget in self.image_frame.winfo_children():
             widget.destroy()
 
+        normalized_filter = filter_text.strip().lower()
         row_num = 0
         col_num = 0
 
         for brawler, img_tk in self.images:
-            if brawler.startswith(filter_text.lower()):
-                label = ctk.CTkLabel(self.image_frame, image=img_tk, text="")
-                label.bind("<Button-1>", lambda e, b=brawler: self.on_image_click(b))  # Bind click event
-                label.grid(row=row_num, column=col_num, padx=int(5 * scale_factor), pady=int(3 * scale_factor))
+            if normalized_filter and normalized_filter not in brawler:
+                continue
 
-                col_num += 1
-                if col_num == 10:  # Move to the next row after 10 columns
-                    col_num = 0
-                    row_num += 1
+            button = ctk.CTkButton(
+                self.image_frame,
+                image=img_tk,
+                text=brawler.title(),
+                compound="top",
+                command=lambda b=brawler: self.open_brawler_entry(b),
+                width=S(116),
+                height=S(132),
+                corner_radius=S(12),
+                fg_color=COLORS["surface_alt"],
+                hover_color=COLORS["accent_soft"],
+                text_color=COLORS["text"],
+                font=font(13, "bold")
+            )
+            button.grid(row=row_num, column=col_num, padx=S(8), pady=S(8), sticky="nsew")
 
-    def update_timer(self, value):
+            col_num += 1
+            if col_num == 4:
+                col_num = 0
+                row_num += 1
+
+    def refresh_roster_summary(self):
+        for widget in self.roster_frame.winfo_children():
+            widget.destroy()
+
+        roster_count = len(self.brawlers_data)
+        self.roster_count_label.configure(
+            text=f"{roster_count} configured" if roster_count else "0 configured"
+        )
+        self.roster_empty_label.grid() if roster_count == 0 else self.roster_empty_label.grid_remove()
+
+        for row, item in enumerate(self.brawlers_data):
+            card = ctk.CTkFrame(
+                self.roster_frame,
+                fg_color=COLORS["surface_alt"],
+                corner_radius=S(14),
+                border_width=1,
+                border_color=COLORS["border"]
+            )
+            card.grid(row=row, column=0, sticky="ew", padx=S(4), pady=S(6))
+            card.grid_columnconfigure(1, weight=1)
+
+            icon = ctk.CTkLabel(card, image=self.image_lookup.get(item["brawler"]), text="")
+            icon.grid(row=0, column=0, rowspan=3, padx=S(12), pady=S(12), sticky="n")
+
+            title = ctk.CTkLabel(
+                card,
+                text=item["brawler"].title(),
+                font=font(15, "bold"),
+                text_color=COLORS["text"]
+            )
+            title.grid(row=0, column=1, sticky="w", padx=(0, S(8)), pady=(S(12), S(4)))
+
+            goal_type = str(item["type"]).title() if item["type"] else "Auto"
+            target_value = item["push_until"] if item["push_until"] != "" else "Not set"
+            stats_line = f"Current trophies: {item['trophies']} | Current wins: {item['wins']}"
+            subtitle = ctk.CTkLabel(
+                card,
+                text=f"Goal: {goal_type} -> {target_value}\n{stats_line}\nAuto-pick: {'Yes' if item['automatically_pick'] else 'No'} | Win streak: {item['win_streak']}",
+                font=font(12),
+                text_color=COLORS["muted"],
+                justify="left"
+            )
+            subtitle.grid(row=1, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(10)))
+
+            actions = ctk.CTkFrame(card, fg_color="transparent")
+            actions.grid(row=2, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(12)))
+
+            ctk.CTkButton(
+                actions,
+                text="Edit",
+                command=lambda b=item["brawler"]: self.open_brawler_entry(b),
+                width=S(72),
+                height=S(32),
+                corner_radius=S(8),
+                fg_color=COLORS["surface"],
+                hover_color=COLORS["border"],
+                border_width=1,
+                border_color=COLORS["border"],
+                text_color=COLORS["text"],
+                font=font(12, "bold")
+            ).pack(side="left", padx=(0, S(8)))
+
+            ctk.CTkButton(
+                actions,
+                text="Remove",
+                command=lambda b=item["brawler"]: self.remove_brawler(b),
+                width=S(86),
+                height=S(32),
+                corner_radius=S(8),
+                fg_color=COLORS["accent_soft"],
+                hover_color=COLORS["accent_hover"],
+                text_color=COLORS["text"],
+                font=font(12, "bold")
+            ).pack(side="left")
+
+    def _save_runtime_limit(self, _event=None):
+        value = self.timer_var.get()
         try:
             minutes = int(value)
-            config = load_toml_as_dict("cfg/general_config.toml")
-            config['run_for_minutes'] = minutes
-            update_toml_file("cfg/general_config.toml", config)
+            self.general_config["run_for_minutes"] = minutes
+            self.general_config = save_config("general", self.general_config)
+            self.timer_var.set(str(self.general_config["run_for_minutes"]))
         except ValueError:
-            pass  # Ignore invalid input
-
-def dummy_data_setter(data):
-    print("Data set:", data)
+            self.timer_var.set(str(self.general_config.get("run_for_minutes", 600)))

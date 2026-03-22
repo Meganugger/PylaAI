@@ -13,35 +13,46 @@ class LobbyAutomation:
     def __init__(self, window_controller):
         self.coords_cfg = load_toml_as_dict("./cfg/lobby_config.toml")
         self.window_controller = window_controller
+        self.brawler_menu_template = None
 
     def check_for_idle(self, frame):
-        screenshot = frame
         wr = self.window_controller.width_ratio
         hr = self.window_controller.height_ratio
-        screenshot = screenshot.crop(
-            (int(400 * wr), int(380 * hr), int(1500 * wr), int(700 * hr)))
+        x1, y1 = int(400 * wr), int(380 * hr)
+        x2, y2 = int(1500 * wr), int(700 * hr)
+        if isinstance(frame, np.ndarray):
+            screenshot = frame[y1:y2, x1:x2]
+        else:
+            screenshot = frame.crop((x1, y1, x2, y2))
         gray_pixels = count_hsv_pixels(screenshot, (0, 0, 55), (10, 15, 77))
         if debug: print("gray pixels (if > 1000 then bot will try to unidle) :", gray_pixels)
         if gray_pixels > 1000:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
     def select_brawler(self, brawler):
-        self.window_controller.screenshot()
         brawler_menu_treshold = 0.8
         found = False
+        current_frame = self.window_controller.screenshot()
+        if self.brawler_menu_template is None:
+            self.brawler_menu_template = load_image(
+                r'state_finder/images_to_detect/brawler_menu_btn.png',
+                self.window_controller.scale_factor
+            )
         while not found:
-            brawler_menu_btn_coords = find_template_center(self.window_controller.screenshot(), load_image(
-                r'state_finder/images_to_detect/brawler_menu_btn.png', self.window_controller.scale_factor),
-                                                           brawler_menu_treshold)
+            brawler_menu_btn_coords = find_template_center(
+                current_frame,
+                self.brawler_menu_template,
+                brawler_menu_treshold
+            )
             if brawler_menu_btn_coords:
                 found = True
             else:
                 if debug: print("Brawler menu button not found, retrying...")
                 brawler_menu_treshold -= 0.1
                 time.sleep(1)
+                current_frame = self.window_controller.screenshot()
             if not found and brawler_menu_treshold < 0.5:
-                image = self.window_controller.screenshot()
-                image.save(r'brawler_menu_btn_not_found.png')
+                current_frame.save(r'brawler_menu_btn_not_found.png')
                 raise ValueError("Brawler menu button not found on screen, even at low threshold.")
         x, y = brawler_menu_btn_coords
         self.window_controller.click(x, y)

@@ -12,27 +12,30 @@ class App:
     def __init__(self, login_page, select_brawler_page, pyla_main, brawlers, hub_menu):
         self.login = login_page
         self.select_brawler = select_brawler_page
-        self.logged_in = False
-        self.brawler_data = None
         self.pyla_main = pyla_main
         self.brawlers = brawlers
         self.hub_menu = hub_menu
 
-    def set_is_logged(self, value):
-        self.logged_in = value
+    def run_login(self):
+        return bool(self.login())
 
-    def set_data(self, value):
-        self.brawler_data = value
+    def run_hub(self, pyla_version, get_latest_version):
+        latest_version = pyla_version if api_base_url == "localhost" else get_latest_version()
+        self.hub_menu(pyla_version, latest_version)
+
+    def run_brawler_setup(self):
+        screen = self.select_brawler(brawlers=self.brawlers)
+        return getattr(screen, "result_data", None)
 
     def start(self, pyla_version, get_latest_version):
-        self.login(self.set_is_logged)
-        if self.logged_in:
-            if api_base_url == "localhost":
-                self.hub_menu(pyla_version, pyla_version)
-            else:
-                self.hub_menu(pyla_version, get_latest_version())
-            self.select_brawler(self.set_data, self.brawlers)
-            if self.brawler_data:
-                utils.save_brawler_data(self.brawler_data)
-                self.pyla_main(self.brawler_data)
+        if not self.run_login():
+            return
+
+        self.run_hub(pyla_version, get_latest_version)
+        brawler_data = self.run_brawler_setup()
+        if not brawler_data:
+            return
+
+        utils.save_brawler_data(brawler_data)
+        self.pyla_main(brawler_data)
 

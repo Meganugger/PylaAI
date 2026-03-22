@@ -1,10 +1,11 @@
+import os
+import time
+
 import cv2
 import numpy as np
-import torch
 from PIL import Image
 import onnxruntime as ort
-from ultralytics.utils.nms import non_max_suppression
-from utils import load_toml_as_dict
+from utils import load_toml_as_dict, record_timing
 
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
@@ -14,110 +15,199 @@ class Detect:
         self.ignore_classes = ignore_classes if ignore_classes else []
         self.input_size = input_size
         self.model, self.device = self.load_model()
+        self.input_name = self.model.get_inputs()[0].name
+        self.output_names = [output.name for output in self.model.get_outputs()]
+        self._padded_bgr = None
+        self._padded_rgb = None
+        self._input_blob = None
+
+    def _allocate_preprocess_buffers(self):
+        padded_shape = (self.input_size[0], self.input_size[1], 3)
+        input_shape = (1, 3, self.input_size[0], self.input_size[1])
+        if self._padded_bgr is None or self._padded_bgr.shape != padded_shape:
+            self._padded_bgr = np.empty(padded_shape, dtype=np.uint8)
+            self._padded_rgb = np.empty(padded_shape, dtype=np.uint8)
+        if self._input_blob is None or self._input_blob.shape != input_shape:
+            self._input_blob = np.empty(input_shape, dtype=np.float32)
 
 
     def load_model(self):
         available_providers = ort.get_available_providers()
+        providers = ["CPUExecutionProvider"]
         if self.preferred_device == "gpu" or self.preferred_device == "auto":
             if "CUDAExecutionProvider" in available_providers:
-                onnx_provider = "CUDAExecutionProvider"
+                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
                 print("Using CUDA GPU")
             elif "DmlExecutionProvider" in available_providers:
-                onnx_provider = "DmlExecutionProvider"
+                providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
                 print("Using GPU")
             elif "AzureExecutionProvider" in available_providers:
-                onnx_provider = "AzureExecutionProvider"
+                providers = ["AzureExecutionProvider", "CPUExecutionProvider"]
             else:
                 print("Using CPU as no GPU provider found")
-                onnx_provider = "CPUExecutionProvider"
-
-        else:
-            onnx_provider = "CPUExecutionProvider"
 
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        model = ort.InferenceSession(self.model_path, sess_options=so, providers=[onnx_provider])
+        model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
+        active_provider = model.get_providers()[0]
+        print(f"ONNX Runtime provider for {os.path.basename(self.model_path)}: {active_provider}")
 
-        return model, onnx_provider
+        return model, active_provider
 
     def preprocess_image(self, img):
-        # Ensure the image is a NumPy array
         if isinstance(img, Image.Image):
-            img = np.array(img)
+            img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
 
-        # Resize and pad image to the target size while preserving aspect ratio
         h, w, _ = img.shape
         scale = min(self.input_size[0] / h, self.input_size[1] / w)
         new_w = int(w * scale)
         new_h = int(h * scale)
 
-        # Resize the image
         resized_img = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+        self._allocate_preprocess_buffers()
 
-        # Create a new image and pad it
-        padded_img = np.full((self.input_size[0], self.input_size[1], 3), 128, dtype=np.uint8)
-        padded_img[:new_h, :new_w, :] = resized_img
+        self._padded_bgr.fill(128)
+        self._padded_bgr[:new_h, :new_w, :] = resized_img
+        cv2.cvtColor(self._padded_bgr, cv2.COLOR_BGR2RGB, dst=self._padded_rgb)
+        np.copyto(self._input_blob[0], np.transpose(self._padded_rgb, (2, 0, 1)), casting="unsafe")
+        self._input_blob[0] *= (1.0 / 255.0)
+        return self._input_blob, new_w, new_h
 
-        # Convert BGR to RGB
-        padded_img = cv2.cvtColor(padded_img, cv2.COLOR_BGR2RGB)
+    @staticmethod
+    def _xywh_to_xyxy(boxes):
+        converted = np.empty_like(boxes)
+        half_width = boxes[:, 2] * 0.5
+        half_height = boxes[:, 3] * 0.5
+        converted[:, 0] = boxes[:, 0] - half_width
+        converted[:, 1] = boxes[:, 1] - half_height
+        converted[:, 2] = boxes[:, 0] + half_width
+        converted[:, 3] = boxes[:, 1] + half_height
+        return converted
 
-        # Normalize the image
-        padded_img = padded_img.astype(np.float32) / 255.0
+    @staticmethod
+    def _nms_numpy(boxes, scores, iou_thres):
+        if boxes.size == 0:
+            return np.empty((0,), dtype=np.int32)
 
-        # Reorder dimensions to (channels, height, width)
-        padded_img = np.transpose(padded_img, (2, 0, 1))
+        x1 = boxes[:, 0]
+        y1 = boxes[:, 1]
+        x2 = boxes[:, 2]
+        y2 = boxes[:, 3]
+        areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+        order = scores.argsort()[::-1]
+        keep = []
 
-        # Add the batch dimension
-        padded_img = np.expand_dims(padded_img, axis=0)
+        while order.size > 0:
+            i = order[0]
+            keep.append(i)
+            if order.size == 1:
+                break
 
-        return torch.from_numpy(padded_img), new_w, new_h
+            remaining = order[1:]
+            xx1 = np.maximum(x1[i], x1[remaining])
+            yy1 = np.maximum(y1[i], y1[remaining])
+            xx2 = np.minimum(x2[i], x2[remaining])
+            yy2 = np.minimum(y2[i], y2[remaining])
 
-    def postprocess(self, preds, img, orig_img_shape, resized_shape, conf_tresh=0.6):
-        # Apply Non-Maximum Suppression (NMS)
+            inter_w = np.maximum(0.0, xx2 - xx1)
+            inter_h = np.maximum(0.0, yy2 - yy1)
+            intersection = inter_w * inter_h
+            union = areas[i] + areas[remaining] - intersection
+            iou = np.divide(intersection, union, out=np.zeros_like(intersection), where=union > 0)
+            order = remaining[iou <= iou_thres]
 
-        preds = non_max_suppression(
-            preds,
-            conf_thres=conf_tresh,
-            iou_thres=0.6,
-            classes=None,
-            agnostic=False,
-        )
+        return np.asarray(keep, dtype=np.int32)
+
+    def postprocess(self, preds, orig_img_shape, resized_shape, conf_tresh=0.6):
+        max_det = 300
+        if preds.ndim == 2:
+            preds = np.expand_dims(preds, axis=0)
+
+        expected_attrs_no_objectness = 4 + len(self.classes)
+        expected_attrs_with_objectness = 5 + len(self.classes)
+
+        if preds.ndim != 3:
+            return []
+
+        if preds.shape[1] in (expected_attrs_no_objectness, expected_attrs_with_objectness) and preds.shape[2] not in (expected_attrs_no_objectness, expected_attrs_with_objectness):
+            preds = np.transpose(preds, (0, 2, 1))
+
+        if preds.shape[2] == expected_attrs_no_objectness:
+            boxes_xywh = preds[..., :4]
+            class_scores = preds[..., 4:]
+        elif preds.shape[2] == expected_attrs_with_objectness:
+            boxes_xywh = preds[..., :4]
+            class_scores = preds[..., 5:] * preds[..., 4:5]
+        else:
+            return []
 
         orig_h, orig_w = orig_img_shape
         resized_w, resized_h = resized_shape
 
-        # Calculate the scaling factor and padding
         scale_w = orig_w / resized_w
         scale_h = orig_h / resized_h
 
         results = []
-        for pred in preds:
-            if len(pred):
-                pred[:, 0] *= scale_w  # x1
-                pred[:, 1] *= scale_h  # y1
-                pred[:, 2] *= scale_w  # x2
-                pred[:, 3] *= scale_h  # y2
-                results.append(pred.cpu().numpy())
+        for image_boxes_xywh, image_class_scores in zip(boxes_xywh, class_scores):
+            if image_boxes_xywh.size == 0:
+                continue
+
+            class_ids = np.argmax(image_class_scores, axis=1)
+            confidences = image_class_scores[np.arange(image_class_scores.shape[0]), class_ids]
+            keep_mask = confidences > conf_tresh
+            if not np.any(keep_mask):
+                continue
+
+            filtered_boxes = self._xywh_to_xyxy(image_boxes_xywh[keep_mask]).astype(np.float32, copy=False)
+            filtered_scores = confidences[keep_mask].astype(np.float32, copy=False)
+            filtered_class_ids = class_ids[keep_mask]
+            detections = []
+
+            for class_id in np.unique(filtered_class_ids):
+                class_mask = filtered_class_ids == class_id
+                class_boxes = filtered_boxes[class_mask]
+                class_scores_filtered = filtered_scores[class_mask]
+                keep_indices = self._nms_numpy(class_boxes, class_scores_filtered, iou_thres=0.6)
+                if keep_indices.size == 0:
+                    continue
+
+                selected_boxes = class_boxes[keep_indices]
+                selected_scores = class_scores_filtered[keep_indices, None]
+                selected_class_ids = np.full((keep_indices.size, 1), class_id, dtype=np.float32)
+                detections.append(np.concatenate((selected_boxes, selected_scores, selected_class_ids), axis=1))
+
+            if detections:
+                pred = np.vstack(detections)
+                pred = pred[np.argsort(-pred[:, 4])]
+                if pred.shape[0] > max_det:
+                    pred = pred[:max_det]
+                pred[:, 0] *= scale_w
+                pred[:, 1] *= scale_h
+                pred[:, 2] *= scale_w
+                pred[:, 3] *= scale_h
+                results.append(pred)
 
         return results
 
     def detect_objects(self, img, conf_tresh=0.6):
-        # Convert PIL Image to NumPy array if it's not already a NumPy array
+        started_at = time.perf_counter()
         if isinstance(img, Image.Image):
-            img = np.array(img)
-            img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+            img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
         orig_h, orig_w = img.shape[:2]
         orig_img_shape = (orig_h, orig_w)
 
-        # Preprocess the image
+        preprocess_started_at = time.perf_counter()
         preprocessed_img, resized_w, resized_h = self.preprocess_image(img)
         resized_shape = (resized_w, resized_h)
+        record_timing(f"detect_preprocess:{os.path.basename(self.model_path)}", time.perf_counter() - preprocess_started_at, print_every=60)
 
-        # Run inference
-        outputs = self.model.run(None, {'images': preprocessed_img.cpu().numpy()})
+        inference_started_at = time.perf_counter()
+        outputs = self.model.run(self.output_names, {self.input_name: preprocessed_img})
+        record_timing(f"detect_inference:{os.path.basename(self.model_path)}", time.perf_counter() - inference_started_at, print_every=60)
 
-        # Postprocess the outputs
-        detections = self.postprocess(torch.from_numpy(outputs[0]), preprocessed_img, orig_img_shape, resized_shape, conf_tresh)
+        postprocess_started_at = time.perf_counter()
+        detections = self.postprocess(outputs[0], orig_img_shape, resized_shape, conf_tresh)
+        record_timing(f"detect_postprocess:{os.path.basename(self.model_path)}", time.perf_counter() - postprocess_started_at, print_every=60)
 
         results = {}
         for detection in detections:
@@ -132,6 +222,7 @@ class Detect:
                     results[class_name] = []
                 results[class_name].append([x1, y1, x2, y2])
 
+        record_timing(f"detect:{os.path.basename(self.model_path)}", time.perf_counter() - started_at, print_every=60)
         return results
 
 

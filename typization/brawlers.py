@@ -1,5 +1,10 @@
+try:
+    from enum import StrEnum
+except ImportError:
+    from enum import Enum
 
-from enum import StrEnum
+    class StrEnum(str, Enum):
+        pass
 
 
 class BrawlerName(StrEnum):

@@ -89,42 +89,67 @@ class WindowController:
         self.PID_JOYSTICK = 1  # ID for WASD movement
         self.PID_ATTACK = 2  # ID for clicks/attacks
 
-    def get_latest_frame(self):
+    def _ensure_frame_geometry(self, frame):
+        if self.width and self.height:
+            return
+        self.width = frame.shape[1]
+        self.height = frame.shape[0]
+        self.width_ratio = self.width / brawl_stars_width
+        self.height_ratio = self.height / brawl_stars_height
+        self.joystick_x, self.joystick_y = 220 * self.width_ratio, 870 * self.height_ratio
+        self.scale_factor = min(self.width_ratio, self.height_ratio)
+
+    def get_latest_frame(self, copy_frame=True):
         with self.frame_lock:
             if self.last_frame is None:
                 return None, 0.0
-            return self.last_frame.copy(), self.last_frame_time
+            frame = self.last_frame.copy() if copy_frame else self.last_frame
+            return frame, self.last_frame_time
+
+    def wait_for_next_frame(self, last_frame_time=0.0, timeout=None, copy_frame=True):
+        if timeout is None:
+            timeout = 15.0 if last_frame_time <= 0 else self.FRAME_STALE_TIMEOUT
+
+        deadline = time.time() + timeout
+        waiting_for_first_frame = last_frame_time <= 0
+        did_log_wait = False
+        latest_frame_time = 0.0
+
+        while True:
+            frame, frame_time = self.get_latest_frame(copy_frame=copy_frame)
+            latest_frame_time = frame_time
+
+            if frame is not None and frame_time > last_frame_time:
+                self._ensure_frame_geometry(frame)
+                return frame, frame_time
+
+            if time.time() > deadline:
+                return None, latest_frame_time
+
+            if waiting_for_first_frame and not did_log_wait:
+                print("Waiting for first frame...")
+                did_log_wait = True
+
+            time.sleep(0.1 if waiting_for_first_frame else 0.01)
 
     def screenshot(self, array=False):
-        frame, frame_time = self.get_latest_frame()
-
-        deadline = time.time() + 15
-        while frame is None:
-            if time.time() > deadline:
-                raise ConnectionError(
-                    "No frame received from scrcpy within 15s. "
-                    "Check USB/emulator connection."
-                )
-            print("Waiting for first frame...")
-            time.sleep(0.1)
-            frame, frame_time = self.get_latest_frame()
+        frame, frame_time = self.wait_for_next_frame(copy_frame=True, timeout=15.0)
+        if frame is None:
+            raise ConnectionError(
+                "No frame received from scrcpy within 15s. "
+                "Check USB/emulator connection."
+            )
 
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
 
-        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        if not self.width or not self.height:
-            self.width = frame.shape[1]
-            self.height = frame.shape[0]
-            self.width_ratio = self.width / brawl_stars_width
-            self.height_ratio = self.height / brawl_stars_height
-            self.joystick_x, self.joystick_y = 220 * self.width_ratio, 870 * self.height_ratio
-            self.scale_factor = min(self.width_ratio, self.height_ratio)
+        self._ensure_frame_geometry(frame)
 
         if array:
-            return frame_rgb
+            return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         return Image.fromarray(frame_rgb)
 
     def touch_down(self, x, y, pointer_id=0):

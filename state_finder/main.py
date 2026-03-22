@@ -1,12 +1,13 @@
 import os
 import sys
+from functools import lru_cache
+import time
 from utils import reader
 import cv2
 import numpy as np
 from difflib import SequenceMatcher
-from PIL import Image
 sys.path.append(os.path.abspath('../'))
-from utils import count_hsv_pixels, load_toml_as_dict
+from utils import count_hsv_pixels, load_toml_as_dict, to_bgr_array, record_timing
 
 orig_screen_width, orig_screen_height = 1920, 1080
 
@@ -36,7 +37,7 @@ def is_template_in_region(image, template_path, region):
     min_val, max_val, min_loc, max_loc = cv2.minMaxLoc(result)
     return max_val > 0.7
 
-
+@lru_cache(maxsize=128)
 def load_template(image_path, width, height):
     current_width_ratio, current_height_ratio = width / orig_screen_width, height / orig_screen_height
     image = cv2.imread(image_path)
@@ -87,14 +88,18 @@ def find_game_result(screenshot):
 
 
 def get_in_game_state(image):
-    if is_in_end_of_a_match(image): return "end"
     if is_in_shop(image): return "shop"
     if is_in_offer_popup(image): return "popup"
     if is_in_lobby(image): return "lobby"
     if is_in_brawler_selection(image):
         return "brawler_selection"
 
-    if count_hsv_pixels(Image.fromarray(cv2.cvtColor(image, cv2.COLOR_BGR2RGB)), (0, 0, 240), (180, 20, 255)) > 200000:
+    # Keep OCR after the cheapest template checks, but before broader fallback checks
+    # so end screens do not get misclassified as other non-match states.
+    if is_in_end_of_a_match(image):
+        return "end"
+
+    if count_hsv_pixels(image, (0, 0, 240), (180, 20, 255)) > 200000:
         return "play_store"
 
     if is_in_brawl_pass(image) or is_in_star_road(image):
@@ -142,9 +147,10 @@ def is_in_star_drop(image):
     return False
 
 def get_state(screenshot):
-    screenshot = np.array(screenshot)
-    screenshot_bgr = cv2.cvtColor(screenshot, cv2.COLOR_RGB2BGR)
+    started_at = time.perf_counter()
+    screenshot_bgr = to_bgr_array(screenshot)
     state = get_in_game_state(screenshot_bgr)
+    record_timing("state_detection", time.perf_counter() - started_at, print_every=60)
     print(f"State: {state}")
     return state
 

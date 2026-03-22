@@ -1,0 +1,13 @@
+include README.md
+include LICENSE
+include latest_brawler_data.json
+include adb.exe
+include AdbWinApi.dll
+include AdbWinUsbApi.dll
+graft cfg
+graft models
+graft api/assets
+graft state_finder/images_to_detect
+graft tests/assets
+global-exclude __pycache__
+global-exclude *.py[cod]

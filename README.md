@@ -1,110 +1,112 @@
 # PylaAI
 
-PylaAI is currently the best external Brawl Stars bot. This repository is intended for developers.
+PylaAI is a Windows-only Python automation project for Brawl Stars development and experimentation. This repository is source-first: the recommended setup path is a local virtual environment plus an editable install from the repo root.
 
-> ⚠️ **Warning:** This repository contains the **source code**.  
-> If you are not a developer, it is recommended to use the **official compiled build** from our Discord (linked below), which comes as a ready-to-use `.exe`.
+## Supported Platform
 
----
+- Windows 10/11
+- Python 3.10, 3.11, or 3.12
+- Recommended: Python 3.11 x64
 
-# Supported Platforms
-- **Windows 10/11**
+## Install
 
+Do not use `python setup.py install`.
 
-## 🚀 Installation & Running
+Use a virtual environment and install one ONNX Runtime backend explicitly.
 
-### Install Python
+### 1. Clone the repository
 
-PylaAI has been tested with:
-
-```bash
-Python 3.11.9
+```powershell
+git clone https://github.com/PylaAI/PylaAI.git
+cd PylaAI
 ```
 
-Download & install Git and Python:
+### 2. Create and activate a virtual environment
 
-[Python 3.11](https://www.python.org/downloads/release/python-3119/)
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+```
 
-[Git](https://git-scm.com/install/windows)
+### 3. Install PylaAI
 
----
+Recommended for most Windows users:
 
-## **Download PylaAI**
-in cmd run `git clone https://github.com/PylaAI/PylaAI.git`
+```powershell
+python -m pip install -e ".[directml]"
+```
 
-### Run Setup
+CPU-only fallback:
 
-run the smart installer:
+```powershell
+python -m pip install -e ".[cpu]"
+```
 
-in cmd run `python setup.py install`
+NVIDIA CUDA backend:
 
-### Start Your Emulator
+```powershell
+python -m pip install -e ".[cuda]"
+```
 
-see how you can start your emulator in https://pyla-ai.pages.dev/#starting
+Optional helper script:
 
----
+```powershell
+.\scripts\install_windows.ps1 -Backend directml -Editable
+```
 
-### Launch PylaAI
+If you prefer a different interpreter:
 
-Run the bot:
+```powershell
+.\scripts\install_windows.ps1 -Backend cpu -Editable -PythonExecutable .\.venv\Scripts\python.exe
+```
 
-`python main.py`
+## Run
 
----
+Start your emulator first, then launch the bot from the repository root:
 
+```powershell
+python main.py
+```
 
-### Localhost Mode
+## What This Fixes
 
-This open-source version runs in **localhost mode**.
+The install flow now declares the runtime dependencies that were previously missing or only installed through fragile `setup.py` side effects, including:
 
-The following cloud features are disabled by default:
+- `bettercam`
+- `google-play-scraper`
+- `easyocr`
+- `adbutils`
+- `av`
+- `scrcpy-client`
+- `pywin32`
+- `shapely`
+- the ONNX Runtime backend you choose during install
 
-- Login system
-- Cloud statistics
-- Auto updates
-- Remote API services
+It also removes interactive install-time prompts and subprocess-based dependency installation, which were unreliable under modern `pip install -e .` workflows.
 
----
+## GPU / OCR Notes
 
-### Running Tests
+- Runtime inference device selection still follows `cfg/general_config.toml` via `cpu_or_gpu`.
+- `.[directml]` is the recommended default on Windows.
+- `.[cuda]` is available for NVIDIA systems that should use the CUDA ONNX Runtime wheel.
+- EasyOCR is installed automatically, but GPU OCR remains optional and is controlled separately by `easyocr_gpu` in `cfg/general_config.toml`.
 
-To make sure changes do not introduce regressions:
+## Tests
 
- `python -m unittest discover`
+```powershell
+python -m unittest discover
+```
 
----
+## Localhost Mode
 
-## 🤝 Contribution
+This open-source repository runs in localhost mode by default. Cloud login, remote API services, and auto-update behavior are disabled unless you wire in your own backend.
 
-Contributions are welcome.
+## Links
 
-If you want to help improve PylaAI:
+- [Discord](https://discord.gg/xUusk3fw4A)
+- [Trello](https://trello.com/b/SAz9J6AA/public-pyla-trello)
 
-1. Fork the repository
-2. Create a new branch
-3. Submit a Pull Request
+## License
 
-You can also open an **Issue** for bugs or feature requests.
-
----
-
-## 📌 Project Links
-
-- **[Discord](https://discord.gg/xUusk3fw4A)** Join the Pyla Server
-- **[Trello](https://trello.com/b/SAz9J6AA/public-pyla-trello)** see what you can contrtibute
-
----
-
-## ⚖️ License
-
-Please respect the **"No Selling" license** out of respect for the work of the official developers.
-
-This project is **not permitted to be sold or monetized**.
-
----
-
-## 👨‍💻 Official Developers
-
-- **ivanyordanovgt** / iyordanov
-- **AngelFireLA** / AngelFire
-- **awarzu** / (M)
+Please respect the included license terms. This project is not permitted to be sold or monetized.
