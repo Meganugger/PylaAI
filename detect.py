@@ -13,6 +13,24 @@ from utils import load_toml_as_dict, record_timing
 
 configure_opencv_threads(cv2)
 
+
+def preload_onnxruntime_gpu_dlls():
+    if not hasattr(ort, "preload_dlls"):
+        return
+
+    try:
+        ort.preload_dlls(cuda=True, cudnn=True, msvc=True, directory="")
+        return
+    except TypeError:
+        pass
+    except Exception:
+        return
+
+    try:
+        ort.preload_dlls(directory="")
+    except Exception:
+        pass
+
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
         self.preferred_device = load_toml_as_dict("cfg/general_config.toml")['cpu_or_gpu']
@@ -53,6 +71,9 @@ class Detect:
                 self.model.run(self.output_names, {self.input_name: self._input_blob})
 
     def load_model(self):
+        if self.preferred_device == "gpu" or self.preferred_device == "auto":
+            preload_onnxruntime_gpu_dlls()
+
         available_providers = ort.get_available_providers()
         providers = ["CPUExecutionProvider"]
         if self.preferred_device == "gpu" or self.preferred_device == "auto":

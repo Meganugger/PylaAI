@@ -5,15 +5,24 @@ PylaAI is a Windows-only Python automation project for Brawl Stars development a
 ## Supported Platform
 
 - Windows 10/11
-- Python 3.10, 3.11, or 3.12
-- Recommended: Python 3.11 x64
+- Python 3.10 x64 only
+- Recommended and tested setup: Python 3.10.0 in a virtual environment
 
 ## Install
 
 Do not use `python setup.py install`.
 
-Use a virtual environment and install one ONNX Runtime backend explicitly.
-Git must be available during install because the project uses the intended `scrcpy-client` source tag directly.
+The easiest Windows setup path is to double-click `setup.bat` from the repo root.
+
+It will:
+- check for Python 3.10.0
+- create `.venv`
+- ask whether you want `CUDA`, `DirectML`, or `CPU`
+- install the selected backend
+- create `start.bat`
+
+Use a Python 3.10.0 virtual environment and install one ONNX Runtime backend explicitly.
+Git must be available during install because the project installs the intended scrcpy client source revision directly.
 
 ### 1. Clone the repository
 
@@ -22,26 +31,34 @@ git clone https://github.com/PylaAI/PylaAI.git
 cd PylaAI
 ```
 
-### 2. Create and activate a virtual environment
+### 2. Recommended one-click setup
+
+Double-click `setup.bat`
+
+or run:
 
 ```powershell
-py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
+.\setup.bat
 ```
 
-### 3. Install PylaAI
+### 3. Manual setup
+Create and activate a Python 3.10.0 virtual environment:
 
-Recommended for most Windows users:
+```powershell
+py -3.10 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip wheel "setuptools<81"
+python -c "import sys; print(sys.version)"
+```
+
+The version printed above should start with `3.10.0`.
+
+Install PylaAI:
+
+Recommended for most Windows users on integrated graphics or DirectML-capable systems:
 
 ```powershell
 python -m pip install -e ".[directml]"
-```
-
-CPU-only fallback:
-
-```powershell
-python -m pip install -e ".[cpu]"
 ```
 
 NVIDIA CUDA backend:
@@ -50,21 +67,44 @@ NVIDIA CUDA backend:
 python -m pip install -e ".[cuda]"
 ```
 
+The CUDA install path is pinned to the CUDA 12.4 runtime packages plus cuDNN 9.20 inside the virtual environment:
+
+- `nvidia-cuda-runtime-cu12==12.4.*`
+- `nvidia-cublas-cu12==12.4.*`
+- `nvidia-cufft-cu12>=11,<12`
+- `nvidia-cudnn-cu12==9.20.*`
+
+This avoids accidentally pulling newer CUDA runtime packages such as 12.9/13.x-adjacent tooling. For the supported PylaAI setup, you do not need to manually copy cuDNN files into a system CUDA folder.
+
+CPU-only fallback:
+
+```powershell
+python -m pip install -e ".[cpu]"
+```
+
 Optional helper script:
 
 ```powershell
 .\scripts\install_windows.ps1 -Backend directml -Editable
 ```
 
-If you prefer a different interpreter:
+CUDA helper script:
 
 ```powershell
-.\scripts\install_windows.ps1 -Backend cpu -Editable -PythonExecutable .\.venv\Scripts\python.exe
+.\scripts\install_windows.ps1 -Backend cuda -Editable
+```
+
+If you prefer a different Python 3.10.0 interpreter:
+
+```powershell
+.\scripts\install_windows.ps1 -Backend directml -Editable -PythonExecutable .\.venv\Scripts\python.exe
 ```
 
 ## Run
 
-Start your emulator first, then launch the bot from the repository root:
+Start your emulator first, then launch the bot by double-clicking `start.bat`.
+
+Manual fallback from the repository root:
 
 ```powershell
 python main.py
@@ -77,24 +117,31 @@ The install flow now declares the runtime dependencies that were previously miss
 - `bettercam`
 - `google-play-scraper`
 - `easyocr`
-- `scrcpy-client` from the intended `v0.5.0` source tag
+- `scrcpy-client` from the intended upstream source revision
 - `pywin32`
-- `shapely`
 - the ONNX Runtime backend you choose during install
+- the scrcpy transport stack that brings `adbutils` and `av`
+- a setuptools runtime pin compatible with `adbutils`' current `pkg_resources` import
+- pinned CUDA 12.4 runtime wheels, supporting CUDA DLL wheels, and cuDNN 9.20 runtime wheels inside the venv when you install `.[cuda]`
 
 It also removes interactive install-time prompts and subprocess-based dependency installation, which were unreliable under modern `pip install -e .` workflows.
 
 ## Dependency Notes
 
-- `scrcpy-client==0.4.7` was removed because it hard-required `adbutils<2.0.0`, which made `pip install -e ".[cpu|directml|cuda]"` fail once the project also pinned `adbutils==2.12.0`.
-- The project now depends on `scrcpy-client` from the intended `v0.5.0` source tag, which matches the dependency strategy the old installer was already trying to force manually.
-- The explicit `adbutils==2.12.0` and `av==12.3.0` top-level pins were removed so pip can resolve the scrcpy transport stack cleanly from the intended scrcpy package metadata instead of hitting a resolver conflict.
+- PylaAI is now packaged for Python `>=3.10,<3.11` and the recommended user path is Python `3.10.0` specifically because that is the known-good setup.
+- The project depends on the scrcpy client from the intended upstream source revision instead of relying on old install-time hacks.
+- `adbutils` and `av` are no longer manually pinned at the top level in PylaAI packaging. They are resolved through the scrcpy dependency chain so `pip install -e ".[cpu|directml|cuda]"` can resolve cleanly.
+- `setuptools` is pinned below `81` because the current `adbutils` runtime still imports `pkg_resources` and newer setuptools emits deprecation warnings for that path.
+- `shapely` was removed from packaging because the current runtime no longer imports it.
+- For CUDA installs, PylaAI now pins the venv runtime libraries to CUDA `12.4.*` and cuDNN `9.20.*` so pip does not drift to newer incompatible runtime packages.
+- I did not hardcode a system-wide CUDA 12.4 + cuDNN 9.20 copy step because ONNX Runtime does not require that for its supported Python package flow. The supported path is to keep those DLLs inside the virtual environment and preload them at runtime.
 
 ## GPU / OCR Notes
 
 - Runtime inference device selection still follows `cfg/general_config.toml` via `cpu_or_gpu`.
 - `.[directml]` is the recommended default on Windows.
 - `.[cuda]` is available for NVIDIA systems that should use the CUDA ONNX Runtime wheel.
+- cuDNN 9.x is required for modern CUDA 12.x ONNX Runtime GPU usage, and PylaAI now pins that to cuDNN `9.20.*` in the CUDA extra.
 - EasyOCR is installed automatically, but GPU OCR remains optional and is controlled separately by `easyocr_gpu` in `cfg/general_config.toml`.
 
 ## Tests

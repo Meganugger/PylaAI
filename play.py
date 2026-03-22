@@ -678,15 +678,12 @@ class Play(Movement):
         if should_check_hypercharge or should_check_gadget or should_check_super:
             hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
-        self.is_hypercharge_ready = False
         if should_check_hypercharge:
             self.is_hypercharge_ready = self.check_if_hypercharge_ready(hud_hsv, hud_origin)
             self.time_since_hypercharge_checked = current_time
-        self.is_gadget_ready = False
         if should_check_gadget:
             self.is_gadget_ready = self.check_if_gadget_ready(hud_hsv, hud_origin)
             self.time_since_gadget_checked = current_time
-        self.is_super_ready = False
         if should_check_super:
             self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
             self.time_since_super_checked = current_time

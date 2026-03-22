@@ -104,6 +104,10 @@ api_base_url = "localhost"
 brawlers_info_file_path = "cfg/brawlers_info.json"
 _timing_stats = {}
 _timing_enabled = None
+STATE_ICON_PATHS = (
+    "./state_finder/images_to_detect/brawl_stars_icon_big.png",
+    "./state_finder/images_to_detect/brawl_stars_icon.png",
+)
 
 def timing_enabled():
     global _timing_enabled
@@ -302,6 +306,17 @@ def update_icons():
         print(f"Updated to the latest icon !")
     else:
         print(f"Failed to download latest icon. Status code: {response.status_code}")
+
+
+def state_icons_present():
+    return all(os.path.exists(path) for path in STATE_ICON_PATHS)
+
+
+def ensure_state_icons_present():
+    if state_icons_present():
+        return True
+    update_icons()
+    return state_icons_present()
 
 
 def get_latest_version():

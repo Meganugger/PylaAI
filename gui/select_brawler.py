@@ -35,17 +35,22 @@ class SelectBrawler:
         self.general_config = load_config("general")
         self.browser_scroll_handler = None
         self.roster_scroll_handler = None
+        self._closing = False
 
         self.filter_var = tk.StringVar()
         self.timer_var = tk.StringVar(value=str(self.general_config.get("run_for_minutes", 600)))
         self.filter_var.trace_add("write", lambda *_: self._schedule_image_refresh())
+        self.app.protocol("WM_DELETE_WINDOW", self._request_close)
 
         self._load_images()
         self._build_layout()
         self.update_images("")
         self.refresh_roster_summary()
 
-        self.app.mainloop()
+        try:
+            self.app.mainloop()
+        finally:
+            self._finalize_window()
 
     def _load_images(self):
         icon_size = (S(82), S(82))
@@ -303,6 +308,34 @@ class SelectBrawler:
             self.app.after_cancel(self.search_update_after_id)
         self.search_update_after_id = self.app.after(60, self._apply_image_filter)
 
+    def _request_close(self):
+        if self._closing:
+            return
+        self._closing = True
+        if self.search_update_after_id is not None:
+            try:
+                self.app.after_cancel(self.search_update_after_id)
+            except Exception:
+                pass
+            self.search_update_after_id = None
+        try:
+            self.app.quit()
+        except Exception:
+            pass
+
+    def _finalize_window(self):
+        if self.search_update_after_id is not None:
+            try:
+                self.app.after_cancel(self.search_update_after_id)
+            except Exception:
+                pass
+            self.search_update_after_id = None
+        if self.app.winfo_exists():
+            try:
+                self.app.destroy()
+            except Exception:
+                pass
+
     def _create_brawler_buttons(self):
         for brawler, image in self.images:
             button = ctk.CTkButton(
@@ -330,7 +363,7 @@ class SelectBrawler:
         self.result_data = list(self.brawlers_data)
         if callable(self.data_setter):
             self.data_setter(self.result_data)
-        self.app.destroy()
+        self._request_close()
 
     def load_brawler_config(self):
         file_path = filedialog.askopenfilename(

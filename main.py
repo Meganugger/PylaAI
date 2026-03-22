@@ -14,7 +14,7 @@ from play import Play
 from stage_manager import StageManager
 from state_finder.main import get_state
 from time_management import TimeManagement
-from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, update_icons
+from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, ensure_state_icons_present
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
     update_wall_model_classes, get_latest_wall_model_file, get_latest_version, cprint, record_timing
 from window_controller import WindowController
@@ -167,7 +167,7 @@ def pyla_main(data):
 
 
 all_brawlers = get_brawler_list()
-update_icons()
+ensure_state_icons_present()
 if api_base_url != "localhost":
     update_missing_brawlers_info(all_brawlers)
 
