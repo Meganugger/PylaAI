@@ -13,6 +13,7 @@ PylaAI is a Windows-only Python automation project for Brawl Stars development a
 Do not use `python setup.py install`.
 
 Use a virtual environment and install one ONNX Runtime backend explicitly.
+Git must be available during install because the project uses the intended `scrcpy-client` source tag directly.
 
 ### 1. Clone the repository
 
@@ -76,14 +77,18 @@ The install flow now declares the runtime dependencies that were previously miss
 - `bettercam`
 - `google-play-scraper`
 - `easyocr`
-- `adbutils`
-- `av`
-- `scrcpy-client`
+- `scrcpy-client` from the intended `v0.5.0` source tag
 - `pywin32`
 - `shapely`
 - the ONNX Runtime backend you choose during install
 
 It also removes interactive install-time prompts and subprocess-based dependency installation, which were unreliable under modern `pip install -e .` workflows.
+
+## Dependency Notes
+
+- `scrcpy-client==0.4.7` was removed because it hard-required `adbutils<2.0.0`, which made `pip install -e ".[cpu|directml|cuda]"` fail once the project also pinned `adbutils==2.12.0`.
+- The project now depends on `scrcpy-client` from the intended `v0.5.0` source tag, which matches the dependency strategy the old installer was already trying to force manually.
+- The explicit `adbutils==2.12.0` and `av==12.3.0` top-level pins were removed so pip can resolve the scrcpy transport stack cleanly from the intended scrcpy package metadata instead of hitting a resolver conflict.
 
 ## GPU / OCR Notes
 

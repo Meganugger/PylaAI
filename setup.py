@@ -7,9 +7,7 @@ ROOT = Path(__file__).parent.resolve()
 README = (ROOT / "README.md").read_text(encoding="utf-8")
 
 COMMON_DEPENDENCIES = [
-    "adbutils==2.12.0",
     "aiohttp>=3.9.0",
-    "av==12.3.0",
     "bettercam>=1.0.0",
     "customtkinter>=5.2.0",
     "discord.py>=2.3.2",
@@ -22,7 +20,7 @@ COMMON_DEPENDENCIES = [
     "pyautogui>=0.9.54",
     "pywin32>=311; platform_system == 'Windows'",
     "requests>=2.31.0",
-    "scrcpy-client==0.4.7",
+    "scrcpy-client @ git+https://github.com/leng-yue/py-scrcpy-client.git@v0.5.0",
     "shapely>=2.0",
     "toml>=0.10.2",
 ]

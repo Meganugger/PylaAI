@@ -24,5 +24,6 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Host "Installing PylaAI with backend '$Backend'..."
+Write-Host "Note: this install fetches the intended scrcpy-client v0.5.0 source tag, so git must be available."
 & $PythonExecutable -m pip install @editableFlag $packageSpec
 exit $LASTEXITCODE
