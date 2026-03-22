@@ -160,7 +160,7 @@ class SelectBrawler:
             corner_radius=S(12)
         )
         self.image_frame.grid(row=2, column=0, sticky="nsew", padx=S(12), pady=(0, S(12)))
-        self.browser_scroll_handler = self._make_scroll_handler(self.image_frame, lines_per_notch=9)
+        self.browser_scroll_handler = self._make_scroll_handler(self.image_frame, lines_per_notch=12)
         self._bind_scroll_handler_recursive(self.image_frame, self.browser_scroll_handler)
         self._create_brawler_buttons()
 
