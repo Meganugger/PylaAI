@@ -4,7 +4,7 @@ import os
 from PIL import Image
 import tkinter as tk
 from gui.config_store import load_config, save_config, update_config_value
-from gui.theme import COLORS, FONT_FAMILY, S, apply_appearance
+from gui.theme import COLORS, FONT_FAMILY, S, apply_appearance, center_window
 from utils import get_discord_link
 from packaging import version
 
@@ -52,10 +52,14 @@ class Hub:
         # -----------------------------------------------------------------------------------------
         self.app = ctk.CTk()
         self.app.title(f"Pyla Hub - {self.version_str}")
-        self.app.geometry(f"{S(1000)}x{S(750)}")
-        self.app.resizable(False, False)
+        hub_width = S(1100)
+        hub_height = S(820)
+        self.app.geometry(f"{hub_width}x{hub_height}")
+        self.app.minsize(S(980), S(760))
+        self.app.resizable(True, True)
         self.app.configure(fg_color=COLORS["bg"])
         self.app.protocol("WM_DELETE_WINDOW", self._request_close)
+        center_window(self.app, hub_width, hub_height)
 
         # Hide tooltip on "global" interactions (tab switch, clicks, scroll, key press, focus loss, etc.)
         for seq in ("<ButtonPress>", "<MouseWheel>", "<KeyPress>", "<FocusOut>"):
@@ -67,11 +71,11 @@ class Hub:
         # -----------------------------------------------------------------------------------------
         self.tabview = ctk.CTkTabview(
             self.app,
-            width=S(980),
-            height=S(640),
+            width=S(1040),
+            height=S(700),
             corner_radius=S(10)
         )
-        self.tabview.pack(pady=S(10), padx=S(10), fill="x", expand=False)
+        self.tabview.pack(pady=S(14), padx=S(14), fill="both", expand=True)
 
         # Enlarge the segmented tab buttons
         self.tabview._segmented_button.configure(

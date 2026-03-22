@@ -3,7 +3,7 @@ import sys
 
 import customtkinter as ctk  # Import the customtkinter library
 from gui.api import check_if_exists
-from gui.theme import COLORS, S, apply_appearance, font
+from gui.theme import COLORS, S, apply_appearance, center_window, font
 from utils import api_base_url
 sys.path.append(os.path.abspath('../'))
 from utils import update_toml_file, load_toml_as_dict
@@ -48,10 +48,13 @@ def login(logged_in_setter=None):
 
     app = ctk.CTk()
     app.title('Pyla Sign In')
-    app.geometry(f'{S(560)}x{S(250)}')
+    login_width = S(620)
+    login_height = S(290)
+    app.geometry(f'{login_width}x{login_height}')
     app.resizable(False, False)
     apply_appearance()
     app.configure(fg_color=COLORS["bg"])
+    center_window(app, login_width, login_height)
 
     card = ctk.CTkFrame(
         app,
@@ -69,7 +72,9 @@ def login(logged_in_setter=None):
         card,
         text="Paste the key linked to your Pyla account to continue.",
         font=font(13),
-        text_color=COLORS["muted"]
+        text_color=COLORS["muted"],
+        wraplength=S(460),
+        justify="center"
     )
     helper_label.pack(pady=(0, S(14)))
 

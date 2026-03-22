@@ -110,6 +110,19 @@ Manual fallback from the repository root:
 python main.py
 ```
 
+## Brawler Setup
+
+The brawler setup screen now supports two optional quality-of-life tools:
+
+- Brawl Stars API trophy sync
+- Auto-push roster generation
+
+If you enter an official Brawl Stars API key and your player tag in the setup screen, PylaAI can import your current brawler trophies and refresh configured roster entries with live values.
+
+You can also use `Build Auto Push` to automatically create a roster of supported owned brawlers below a target trophy value. The generated roster keeps the existing saved data shape and orders brawlers from the lowest current trophies upward so the bot pushes the lowest ones first.
+
+This API integration is optional. If you leave the API fields empty, manual brawler configuration still works exactly as before.
+
 ## What This Fixes
 
 The install flow now declares the runtime dependencies that were previously missing or only installed through fragile `setup.py` side effects, including:

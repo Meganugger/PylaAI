@@ -8,18 +8,20 @@ ORIG_SCREEN_HEIGHT = 1080
 FONT_FAMILY = "Segoe UI"
 
 COLORS = {
-    "bg": "#14171D",
-    "surface": "#1D222B",
-    "surface_alt": "#242B36",
-    "border": "#39414F",
-    "text": "#F4F6F8",
-    "muted": "#B8C0CC",
-    "accent": "#C7514A",
-    "accent_hover": "#D8625A",
-    "accent_soft": "#8F312E",
-    "success": "#5EBB73",
-    "danger": "#E46B6B",
-    "link": "#6EB4FF",
+    "bg": "#0F141B",
+    "surface": "#171E28",
+    "surface_alt": "#212A36",
+    "surface_alt_2": "#273241",
+    "border": "#313D4E",
+    "text": "#F3F6FA",
+    "muted": "#AEB8C6",
+    "accent": "#4E86FF",
+    "accent_hover": "#6A99FF",
+    "accent_soft": "#284C8F",
+    "success": "#60C58A",
+    "danger": "#F06F6F",
+    "warning": "#F1B860",
+    "link": "#8FBCFF",
 }
 
 
@@ -44,3 +46,17 @@ def font(size, weight="normal"):
 
 def apply_appearance():
     ctk.set_appearance_mode("dark")
+
+
+def center_window(window, width=None, height=None):
+    window.update_idletasks()
+    if width is None:
+        width = max(window.winfo_width(), window.winfo_reqwidth())
+    if height is None:
+        height = max(window.winfo_height(), window.winfo_reqheight())
+
+    screen_width = window.winfo_screenwidth()
+    screen_height = window.winfo_screenheight()
+    pos_x = max((screen_width - width) // 2, 0)
+    pos_y = max((screen_height - height) // 2, 0)
+    window.geometry(f"{width}x{height}+{pos_x}+{pos_y}")

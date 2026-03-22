@@ -32,6 +32,7 @@ INSTALL_REQUIRES = [
 ]
 
 PY_MODULES = [
+    "brawlstars_api",
     "detect",
     "lobby_automation",
     "main",

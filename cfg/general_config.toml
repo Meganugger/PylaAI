@@ -14,3 +14,6 @@ onnx_intra_threads = 2
 onnx_inter_threads = 1
 torch_threads = 2
 torch_interop_threads = 1
+brawlstars_api_key = ""
+brawlstars_player_tag = ""
+auto_push_target_trophies = 1000
