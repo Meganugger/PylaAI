@@ -30,6 +30,7 @@ class SelectBrawler:
         self.images = []
         self.image_lookup = {}
         self.brawler_buttons = []
+        self.roster_cards = {}
         self.search_update_after_id = None
         self.general_config = load_config("general")
         self.browser_scroll_handler = None
@@ -159,8 +160,8 @@ class SelectBrawler:
             corner_radius=S(12)
         )
         self.image_frame.grid(row=2, column=0, sticky="nsew", padx=S(12), pady=(0, S(12)))
-        self.browser_scroll_handler = self._make_scroll_handler(self.image_frame, lines_per_notch=4)
-        self._bind_scroll_handler(self.image_frame, self.browser_scroll_handler)
+        self.browser_scroll_handler = self._make_scroll_handler(self.image_frame, lines_per_notch=9)
+        self._bind_scroll_handler_recursive(self.image_frame, self.browser_scroll_handler)
         self._create_brawler_buttons()
 
     def _build_roster_panel(self):
@@ -198,8 +199,8 @@ class SelectBrawler:
             corner_radius=S(12)
         )
         self.roster_frame.grid(row=2, column=0, sticky="nsew", padx=S(12), pady=(0, S(12)))
-        self.roster_scroll_handler = self._make_scroll_handler(self.roster_frame, lines_per_notch=4)
-        self._bind_scroll_handler(self.roster_frame, self.roster_scroll_handler)
+        self.roster_scroll_handler = self._make_scroll_handler(self.roster_frame, lines_per_notch=9)
+        self._bind_scroll_handler_recursive(self.roster_frame, self.roster_scroll_handler)
 
         footer = ctk.CTkFrame(
             self.right_panel,
@@ -292,6 +293,11 @@ class SelectBrawler:
     def _bind_scroll_handler(widget, scroll_handler):
         widget.bind("<MouseWheel>", scroll_handler, add="+")
 
+    def _bind_scroll_handler_recursive(self, widget, scroll_handler):
+        self._bind_scroll_handler(widget, scroll_handler)
+        for child in widget.winfo_children():
+            self._bind_scroll_handler_recursive(child, scroll_handler)
+
     def _schedule_image_refresh(self):
         if self.search_update_after_id is not None:
             self.app.after_cancel(self.search_update_after_id)
@@ -313,7 +319,7 @@ class SelectBrawler:
                 text_color=COLORS["text"],
                 font=font(13, "bold")
             )
-            self._bind_scroll_handler(button, self.browser_scroll_handler)
+            self._bind_scroll_handler_recursive(button, self.browser_scroll_handler)
             self.brawler_buttons.append((brawler, button))
 
     def _apply_image_filter(self):
@@ -413,13 +419,27 @@ class SelectBrawler:
     def open_brawler_entry(self, brawler):
         existing = next((item for item in self.brawlers_data if item["brawler"] == brawler), None)
         form_state = self._build_brawler_form_state(existing)
+        self.app.update_idletasks()
 
         top = ctk.CTkToplevel(self.app)
         top.title("Configure Brawler")
-        top.geometry(f"{S(420)}x{S(520)}+{S(980)}+{S(180)}")
-        top.resizable(False, False)
+        popup_width = S(460)
+        popup_height = min(S(760), max(S(620), int(self.app.winfo_screenheight() * 0.82)))
+        parent_x = self.app.winfo_rootx()
+        parent_y = self.app.winfo_rooty()
+        parent_width = self.app.winfo_width() or self.app.winfo_screenwidth()
+        parent_height = self.app.winfo_height() or self.app.winfo_screenheight()
+        popup_x = parent_x + max((parent_width - popup_width) // 2, S(20))
+        popup_y = parent_y + max((parent_height - popup_height) // 2, S(20))
+        top.geometry(f"{popup_width}x{popup_height}+{popup_x}+{popup_y}")
+        top.minsize(S(440), S(620))
+        top.resizable(True, True)
         top.attributes("-topmost", True)
+        top.transient(self.app)
+        top.grab_set()
         top.configure(fg_color=COLORS["bg"])
+        top.grid_columnconfigure(0, weight=1)
+        top.grid_rowconfigure(0, weight=1)
 
         card = ctk.CTkFrame(
             top,
@@ -428,19 +448,30 @@ class SelectBrawler:
             border_width=1,
             border_color=COLORS["border"]
         )
-        card.pack(fill="both", expand=True, padx=S(16), pady=S(16))
+        card.grid(row=0, column=0, sticky="nsew", padx=S(16), pady=S(16))
         card.grid_columnconfigure(0, weight=1)
-        card.grid_columnconfigure(1, weight=1)
+        card.grid_rowconfigure(0, weight=1)
+
+        body = ctk.CTkScrollableFrame(
+            card,
+            fg_color=COLORS["surface"],
+            corner_radius=S(14)
+        )
+        body.grid(row=0, column=0, sticky="nsew", padx=S(12), pady=(S(12), 0))
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=1)
+
+        popup_scroll_handler = self._make_scroll_handler(body, lines_per_notch=9)
 
         ctk.CTkLabel(
-            card,
+            body,
             text=f"Configure {brawler.title()}",
             font=font(22, "bold"),
             text_color=COLORS["text"]
-        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=S(18), pady=(S(18), S(6)))
+        ).grid(row=0, column=0, columnspan=2, sticky="w", padx=S(18), pady=(S(22), S(6)))
 
         ctk.CTkLabel(
-            card,
+            body,
             text="Choose what to push, then set the target and current progress.",
             font=font(13),
             text_color=COLORS["muted"]
@@ -455,14 +486,14 @@ class SelectBrawler:
 
         def create_field(row, label_text, variable):
             ctk.CTkLabel(
-                card,
+                body,
                 text=label_text,
                 font=font(13, "bold"),
                 text_color=COLORS["text"]
             ).grid(row=row, column=0, columnspan=2, sticky="w", padx=S(18), pady=(0, S(6)))
 
             entry = ctk.CTkEntry(
-                card,
+                body,
                 textvariable=variable,
                 height=S(40),
                 font=font(15),
@@ -473,7 +504,7 @@ class SelectBrawler:
             entry.grid(row=row + 1, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(12)))
             return entry
 
-        goal_buttons = ctk.CTkFrame(card, fg_color="transparent")
+        goal_buttons = ctk.CTkFrame(body, fg_color="transparent")
         goal_buttons.grid(row=2, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(12)))
         goal_buttons.grid_columnconfigure(0, weight=1)
         goal_buttons.grid_columnconfigure(1, weight=1)
@@ -522,7 +553,7 @@ class SelectBrawler:
         create_field(9, "Current Win Streak", current_win_streak_var)
 
         auto_pick_checkbox = ctk.CTkCheckBox(
-            card,
+            body,
             text="Auto-select this brawler in the lobby",
             variable=auto_pick_var,
             fg_color=COLORS["accent"],
@@ -532,8 +563,25 @@ class SelectBrawler:
         )
         auto_pick_checkbox.grid(row=11, column=0, columnspan=2, sticky="w", padx=S(18), pady=(S(4), S(12)))
 
-        action_row = ctk.CTkFrame(card, fg_color="transparent")
-        action_row.grid(row=12, column=0, columnspan=2, sticky="ew", padx=S(18), pady=(0, S(18)))
+        action_panel = ctk.CTkFrame(
+            card,
+            fg_color=COLORS["surface_alt"],
+            corner_radius=S(14),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        action_panel.grid(row=1, column=0, sticky="ew", padx=S(12), pady=S(12))
+        action_panel.grid_columnconfigure(0, weight=1)
+
+        ctk.CTkLabel(
+            action_panel,
+            text="Save this configuration to add or update the brawler in your roster.",
+            font=font(12, "bold"),
+            text_color=COLORS["text"]
+        ).grid(row=0, column=0, sticky="w", padx=S(16), pady=(S(14), S(8)))
+
+        action_row = ctk.CTkFrame(action_panel, fg_color="transparent")
+        action_row.grid(row=1, column=0, sticky="ew", padx=S(16), pady=(0, S(16)))
         action_row.grid_columnconfigure(0, weight=1)
         action_row.grid_columnconfigure(1, weight=2)
 
@@ -554,7 +602,7 @@ class SelectBrawler:
             self.refresh_roster_summary()
             top.destroy()
 
-        ctk.CTkButton(
+        cancel_button = ctk.CTkButton(
             action_row,
             text="Cancel",
             command=top.destroy,
@@ -566,9 +614,10 @@ class SelectBrawler:
             corner_radius=S(10),
             font=font(14, "bold"),
             height=S(42)
-        ).grid(row=0, column=0, sticky="ew", padx=(0, S(6)))
+        )
+        cancel_button.grid(row=0, column=0, sticky="ew", padx=(0, S(6)))
 
-        ctk.CTkButton(
+        save_button = ctk.CTkButton(
             action_row,
             text="Save Brawler to Roster",
             command=save_brawler_entry,
@@ -576,11 +625,15 @@ class SelectBrawler:
             hover_color=COLORS["accent_hover"],
             text_color=COLORS["text"],
             corner_radius=S(10),
-            font=font(15, "bold"),
-            height=S(48)
-        ).grid(row=0, column=1, sticky="ew", padx=(S(6), 0))
+            font=font(16, "bold"),
+            height=S(54)
+        )
+        save_button.grid(row=0, column=1, sticky="ew", padx=(S(6), 0))
 
         refresh_goal_buttons()
+        self._bind_scroll_handler_recursive(body, popup_scroll_handler)
+        self._bind_scroll_handler_recursive(action_panel, popup_scroll_handler)
+        save_button.focus()
 
     def remove_brawler(self, brawler):
         self.brawlers_data = [item for item in self.brawlers_data if item["brawler"] != brawler]
@@ -604,88 +657,107 @@ class SelectBrawler:
                 row_num += 1
 
     def refresh_roster_summary(self):
-        for widget in self.roster_frame.winfo_children():
-            widget.destroy()
-
         roster_count = len(self.brawlers_data)
         self.roster_count_label.configure(
             text=f"{roster_count} configured" if roster_count else "0 configured"
         )
         self.roster_empty_label.grid() if roster_count == 0 else self.roster_empty_label.grid_remove()
 
+        active_brawlers = set()
         for row, item in enumerate(self.brawlers_data):
-            card = ctk.CTkFrame(
-                self.roster_frame,
-                fg_color=COLORS["surface_alt"],
-                corner_radius=S(14),
-                border_width=1,
-                border_color=COLORS["border"]
-            )
-            card.grid(row=row, column=0, sticky="ew", padx=S(4), pady=S(6))
-            card.grid_columnconfigure(1, weight=1)
-            self._bind_scroll_handler(card, self.roster_scroll_handler)
+            brawler_name = item["brawler"]
+            active_brawlers.add(brawler_name)
+            card_info = self.roster_cards.get(brawler_name)
+            if card_info is None:
+                card_info = self._create_roster_card(brawler_name)
+                self.roster_cards[brawler_name] = card_info
 
-            icon = ctk.CTkLabel(card, image=self.image_lookup.get(item["brawler"]), text="")
-            icon.grid(row=0, column=0, rowspan=3, padx=S(12), pady=S(12), sticky="n")
-            self._bind_scroll_handler(icon, self.roster_scroll_handler)
+            self._update_roster_card(card_info, item)
+            card_info["frame"].grid(row=row, column=0, sticky="ew", padx=S(4), pady=S(6))
 
-            title = ctk.CTkLabel(
-                card,
-                text=item["brawler"].title(),
-                font=font(15, "bold"),
-                text_color=COLORS["text"]
-            )
-            title.grid(row=0, column=1, sticky="w", padx=(0, S(8)), pady=(S(12), S(4)))
-            self._bind_scroll_handler(title, self.roster_scroll_handler)
+        for brawler_name, card_info in self.roster_cards.items():
+            if brawler_name not in active_brawlers:
+                card_info["frame"].grid_remove()
 
-            goal_type = str(item["type"]).title() if item["type"] else "Auto"
-            target_value = item["push_until"] if item["push_until"] != "" else "Not set"
-            stats_line = f"Current trophies: {item['trophies']} | Current wins: {item['wins']}"
-            subtitle = ctk.CTkLabel(
-                card,
-                text=f"Goal: {goal_type} -> {target_value}\n{stats_line}\nAuto-pick: {'Yes' if item['automatically_pick'] else 'No'} | Win streak: {item['win_streak']}",
-                font=font(12),
-                text_color=COLORS["muted"],
-                justify="left"
-            )
-            subtitle.grid(row=1, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(10)))
-            self._bind_scroll_handler(subtitle, self.roster_scroll_handler)
+    def _create_roster_card(self, brawler_name):
+        card = ctk.CTkFrame(
+            self.roster_frame,
+            fg_color=COLORS["surface_alt"],
+            corner_radius=S(14),
+            border_width=1,
+            border_color=COLORS["border"]
+        )
+        card.grid_columnconfigure(1, weight=1)
 
-            actions = ctk.CTkFrame(card, fg_color="transparent")
-            actions.grid(row=2, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(12)))
-            self._bind_scroll_handler(actions, self.roster_scroll_handler)
+        icon = ctk.CTkLabel(card, image=self.image_lookup.get(brawler_name), text="")
+        icon.grid(row=0, column=0, rowspan=3, padx=S(12), pady=S(12), sticky="n")
 
-            edit_button = ctk.CTkButton(
-                actions,
-                text="Edit",
-                command=lambda b=item["brawler"]: self.open_brawler_entry(b),
-                width=S(72),
-                height=S(32),
-                corner_radius=S(8),
-                fg_color=COLORS["surface"],
-                hover_color=COLORS["border"],
-                border_width=1,
-                border_color=COLORS["border"],
-                text_color=COLORS["text"],
-                font=font(12, "bold")
-            )
-            edit_button.pack(side="left", padx=(0, S(8)))
-            self._bind_scroll_handler(edit_button, self.roster_scroll_handler)
+        title = ctk.CTkLabel(
+            card,
+            text=brawler_name.title(),
+            font=font(15, "bold"),
+            text_color=COLORS["text"]
+        )
+        title.grid(row=0, column=1, sticky="w", padx=(0, S(8)), pady=(S(12), S(4)))
 
-            remove_button = ctk.CTkButton(
-                actions,
-                text="Remove",
-                command=lambda b=item["brawler"]: self.remove_brawler(b),
-                width=S(86),
-                height=S(32),
-                corner_radius=S(8),
-                fg_color=COLORS["accent_soft"],
-                hover_color=COLORS["accent_hover"],
-                text_color=COLORS["text"],
-                font=font(12, "bold")
-            )
-            remove_button.pack(side="left")
-            self._bind_scroll_handler(remove_button, self.roster_scroll_handler)
+        subtitle = ctk.CTkLabel(
+            card,
+            font=font(12),
+            text_color=COLORS["muted"],
+            justify="left"
+        )
+        subtitle.grid(row=1, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(10)))
+
+        actions = ctk.CTkFrame(card, fg_color="transparent")
+        actions.grid(row=2, column=1, sticky="w", padx=(0, S(8)), pady=(0, S(12)))
+
+        edit_button = ctk.CTkButton(
+            actions,
+            text="Edit",
+            command=lambda b=brawler_name: self.open_brawler_entry(b),
+            width=S(72),
+            height=S(32),
+            corner_radius=S(8),
+            fg_color=COLORS["surface"],
+            hover_color=COLORS["border"],
+            border_width=1,
+            border_color=COLORS["border"],
+            text_color=COLORS["text"],
+            font=font(12, "bold")
+        )
+        edit_button.pack(side="left", padx=(0, S(8)))
+
+        remove_button = ctk.CTkButton(
+            actions,
+            text="Remove",
+            command=lambda b=brawler_name: self.remove_brawler(b),
+            width=S(86),
+            height=S(32),
+            corner_radius=S(8),
+            fg_color=COLORS["accent_soft"],
+            hover_color=COLORS["accent_hover"],
+            text_color=COLORS["text"],
+            font=font(12, "bold")
+        )
+        remove_button.pack(side="left")
+
+        self._bind_scroll_handler_recursive(card, self.roster_scroll_handler)
+
+        return {
+            "frame": card,
+            "title": title,
+            "subtitle": subtitle,
+        }
+
+    @staticmethod
+    def _update_roster_card(card_info, item):
+        goal_type = str(item["type"]).title() if item["type"] else "Auto"
+        target_value = item["push_until"] if item["push_until"] != "" else "Not set"
+        stats_line = f"Current trophies: {item['trophies']} | Current wins: {item['wins']}"
+        card_info["title"].configure(text=item["brawler"].title())
+        card_info["subtitle"].configure(
+            text=f"Goal: {goal_type} -> {target_value}\n{stats_line}\nAuto-pick: {'Yes' if item['automatically_pick'] else 'No'} | Win streak: {item['win_streak']}"
+        )
 
     def _save_runtime_limit(self, _event=None):
         value = self.timer_var.get()
