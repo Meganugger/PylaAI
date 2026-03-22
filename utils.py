@@ -8,6 +8,10 @@ import aiohttp
 import google_play_scraper
 import requests
 import toml
+from runtime_threads import apply_process_thread_limits, configure_torch_threads, configure_opencv_threads
+
+apply_process_thread_limits()
+
 from PIL import Image
 from discord import Webhook
 import discord
@@ -17,6 +21,8 @@ from packaging import version
 import bettercam
 import time
 import onnxruntime as ort
+
+configure_opencv_threads(cv2)
 
 def to_bgr_array(image):
     if isinstance(image, Image.Image):
@@ -72,6 +78,11 @@ class DefaultEasyOCR:
             if self.easyocr_module is None:
                 import easyocr
                 self.easyocr_module = easyocr
+                try:
+                    import torch
+                    configure_torch_threads(torch)
+                except Exception:
+                    pass
             use_gpu = self._should_use_gpu()
             print(f"Initializing EasyOCR (gpu={use_gpu})")
             self.reader = self.easyocr_module.Reader(['en'], gpu=use_gpu)

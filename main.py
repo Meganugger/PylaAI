@@ -1,6 +1,10 @@
 import asyncio
 import time
 
+from runtime_threads import apply_process_thread_limits
+
+apply_process_thread_limits()
+
 from gui.hub import Hub
 from gui.login import login
 from gui.main import App

@@ -1,11 +1,17 @@
 import os
 import time
 
+from runtime_threads import apply_process_thread_limits, configure_onnx_session_options, configure_opencv_threads
+
+apply_process_thread_limits()
+
 import cv2
 import numpy as np
 from PIL import Image
 import onnxruntime as ort
 from utils import load_toml_as_dict, record_timing
+
+configure_opencv_threads(cv2)
 
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
@@ -48,6 +54,7 @@ class Detect:
 
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+        configure_onnx_session_options(ort, so)
         model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
         active_provider = model.get_providers()[0]
         print(f"ONNX Runtime provider for {os.path.basename(self.model_path)}: {active_provider}")
