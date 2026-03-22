@@ -4,8 +4,6 @@ import time
 
 import cv2
 import numpy as np
-from shapely import LineString
-from shapely.geometry import box
 from state_finder.main import get_state
 from detect import Detect
 from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
@@ -177,10 +175,31 @@ class Play(Movement):
         self.wall_history_length = 3  # Number of frames to keep walls
         self.wall_context = {
             "signature": None,
-            "geometries": [],
+            "rectangles": [],
             "line_cache": {},
             "enemy_hittable_cache": {},
         }
+        self.hud_regions = {
+            "hud_bounds": (1350, 830, 1700, 1050),
+            "hypercharge": (1350, 940, 1450, 1050),
+            "gadget": (1580, 930, 1700, 1050),
+            "super": (1460, 830, 1560, 930),
+        }
+        self.hud_hsv_ranges = {
+            "hypercharge": (
+                np.array((137, 158, 159), dtype=np.uint8),
+                np.array((179, 255, 255), dtype=np.uint8),
+            ),
+            "gadget": (
+                np.array((57, 219, 165), dtype=np.uint8),
+                np.array((62, 255, 255), dtype=np.uint8),
+            ),
+            "super": (
+                np.array((17, 170, 200), dtype=np.uint8),
+                np.array((27, 255, 255), dtype=np.uint8),
+            ),
+        }
+        self._scaled_hud_cache = None
         self.scene_data = []
         self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball"]
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
@@ -219,7 +238,7 @@ class Play(Movement):
         if self.wall_context["signature"] != signature:
             self.wall_context = {
                 "signature": signature,
-                "geometries": [box(x1, y1, x2, y2) for x1, y1, x2, y2 in signature],
+                "rectangles": signature,
                 "line_cache": {},
                 "enemy_hittable_cache": {},
             }
@@ -232,8 +251,41 @@ class Play(Movement):
     def _line_cache_key(start_pos, end_pos):
         return (start_pos, end_pos)
 
+    @staticmethod
+    def _segment_intersects_rect(start_pos, end_pos, rect):
+        x0, y0 = start_pos
+        x1, y1 = end_pos
+        rx1, ry1, rx2, ry2 = rect
+        min_x, max_x = sorted((rx1, rx2))
+        min_y, max_y = sorted((ry1, ry2))
+
+        if (min_x <= x0 <= max_x and min_y <= y0 <= max_y) or (min_x <= x1 <= max_x and min_y <= y1 <= max_y):
+            return True
+
+        dx = x1 - x0
+        dy = y1 - y0
+        p = (-dx, dx, -dy, dy)
+        q = (x0 - min_x, max_x - x0, y0 - min_y, max_y - y0)
+
+        u1, u2 = 0.0, 1.0
+        for pi, qi in zip(p, q):
+            if pi == 0:
+                if qi < 0:
+                    return False
+                continue
+
+            t = qi / pi
+            if pi < 0:
+                u1 = max(u1, t)
+            else:
+                u2 = min(u2, t)
+            if u1 > u2:
+                return False
+
+        return True
+
     def walls_are_in_line_of_sight(self, start_pos, end_pos, wall_context):
-        if not wall_context["geometries"]:
+        if not wall_context["rectangles"]:
             return False
 
         cache_key = self._line_cache_key(start_pos, end_pos)
@@ -244,8 +296,10 @@ class Play(Movement):
         if cached is not None:
             return cached
 
-        line_of_sight = LineString([start_pos, end_pos])
-        intersects = any(line_of_sight.intersects(wall_geometry) for wall_geometry in wall_context["geometries"])
+        intersects = any(
+            self._segment_intersects_rect(start_pos, end_pos, wall_rect)
+            for wall_rect in wall_context["rectangles"]
+        )
         wall_context["line_cache"][cache_key] = intersects
         return intersects
 
@@ -382,47 +436,81 @@ class Play(Movement):
             self.time_since_movement = time.time()
         return movement
 
-    def count_hud_hsv_pixels(self, hsv_frame, region, low_hsv, high_hsv):
+    def scale_region(self, region):
         x1, y1, x2, y2 = region
-        scaled_region = (
+        return (
             int(x1 * self.window_controller.width_ratio),
             int(y1 * self.window_controller.height_ratio),
             int(x2 * self.window_controller.width_ratio),
             int(y2 * self.window_controller.height_ratio),
         )
+
+    def _get_scaled_hud_cache(self):
+        cache_key = (
+            self.window_controller.width_ratio,
+            self.window_controller.height_ratio,
+        )
+        if self._scaled_hud_cache is None or self._scaled_hud_cache["key"] != cache_key:
+            scaled_regions = {
+                name: self.scale_region(region)
+                for name, region in self.hud_regions.items()
+            }
+            self._scaled_hud_cache = {
+                "key": cache_key,
+                "regions": scaled_regions,
+            }
+        return self._scaled_hud_cache["regions"]
+
+    def count_hud_hsv_pixels(self, hsv_frame, scaled_region, low_hsv, high_hsv, origin=(0, 0)):
         sx1, sy1, sx2, sy2 = scaled_region
-        region_hsv = hsv_frame[sy1:sy2, sx1:sx2]
+        ox, oy = origin
+        region_hsv = hsv_frame[sy1 - oy:sy2 - oy, sx1 - ox:sx2 - ox]
         mask = cv2.inRange(
             region_hsv,
-            np.array(low_hsv, dtype=np.uint8),
-            np.array(high_hsv, dtype=np.uint8)
+            low_hsv,
+            high_hsv
         )
         return int(np.count_nonzero(mask))
 
-    def check_if_hypercharge_ready(self, hsv_frame):
+    def get_hud_hsv(self, frame):
+        scaled_regions = self._get_scaled_hud_cache()
+        sx1, sy1, sx2, sy2 = scaled_regions["hud_bounds"]
+        hud_frame = frame[sy1:sy2, sx1:sx2]
+        return cv2.cvtColor(hud_frame, cv2.COLOR_BGR2HSV), (sx1, sy1)
+
+    def check_if_hypercharge_ready(self, hsv_frame, hsv_origin):
+        scaled_regions = self._get_scaled_hud_cache()
+        low_hsv, high_hsv = self.hud_hsv_ranges["hypercharge"]
         purple_pixels = self.count_hud_hsv_pixels(
             hsv_frame,
-            (1350, 940, 1450, 1050),
-            (137, 158, 159),
-            (179, 255, 255)
+            scaled_regions["hypercharge"],
+            low_hsv,
+            high_hsv,
+            origin=hsv_origin
         )
         return purple_pixels > self.hypercharge_pixels_minimum
 
-    def check_if_gadget_ready(self, hsv_frame):
+    def check_if_gadget_ready(self, hsv_frame, hsv_origin):
+        scaled_regions = self._get_scaled_hud_cache()
+        low_hsv, high_hsv = self.hud_hsv_ranges["gadget"]
         green_pixels = self.count_hud_hsv_pixels(
             hsv_frame,
-            (1580, 930, 1700, 1050),
-            (57, 219, 165),
-            (62, 255, 255)
+            scaled_regions["gadget"],
+            low_hsv,
+            high_hsv,
+            origin=hsv_origin
         )
         return green_pixels > self.gadget_pixels_minimum
 
-    def check_if_super_ready(self, hsv_frame):
+    def check_if_super_ready(self, hsv_frame, hsv_origin):
+        scaled_regions = self._get_scaled_hud_cache()
+        low_hsv, high_hsv = self.hud_hsv_ranges["super"]
         yellow_pixels = self.count_hud_hsv_pixels(
             hsv_frame,
-            (1460, 830, 1560, 930),
-            (17, 170, 200),
-            (27, 255, 255)
+            scaled_regions["super"],
+            low_hsv,
+            high_hsv,
+            origin=hsv_origin
         )
         return yellow_pixels > self.super_pixels_minimum
 
@@ -586,20 +674,21 @@ class Play(Movement):
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
         hud_hsv = None
+        hud_origin = (0, 0)
         if should_check_hypercharge or should_check_gadget or should_check_super:
-            hud_hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+            hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
         self.is_hypercharge_ready = False
         if should_check_hypercharge:
-            self.is_hypercharge_ready = self.check_if_hypercharge_ready(hud_hsv)
+            self.is_hypercharge_ready = self.check_if_hypercharge_ready(hud_hsv, hud_origin)
             self.time_since_hypercharge_checked = current_time
         self.is_gadget_ready = False
         if should_check_gadget:
-            self.is_gadget_ready = self.check_if_gadget_ready(hud_hsv)
+            self.is_gadget_ready = self.check_if_gadget_ready(hud_hsv, hud_origin)
             self.time_since_gadget_checked = current_time
         self.is_super_ready = False
         if should_check_super:
-            self.is_super_ready = self.check_if_super_ready(hud_hsv)
+            self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
             self.time_since_super_checked = current_time
 
         movement = self.loop(brawler, data, current_time, wall_context)

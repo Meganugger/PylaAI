@@ -65,7 +65,7 @@ class WindowController:
             self.device = device_list[0]
             print(f"Connected to device: {self.device.serial}")
 
-            self.frame_lock = threading.Lock()
+            self.frame_condition = threading.Condition()
             self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
             self.last_frame = None
             self.last_frame_time = 0.0
@@ -74,9 +74,10 @@ class WindowController:
 
             def on_frame(frame):
                 if frame is not None:
-                    with self.frame_lock:
+                    with self.frame_condition:
                         self.last_frame = frame
                         self.last_frame_time = time.time()
+                        self.frame_condition.notify_all()
 
             self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
             self.scrcpy_client.start(threaded=True)
@@ -100,7 +101,7 @@ class WindowController:
         self.scale_factor = min(self.width_ratio, self.height_ratio)
 
     def get_latest_frame(self, copy_frame=True):
-        with self.frame_lock:
+        with self.frame_condition:
             if self.last_frame is None:
                 return None, 0.0
             frame = self.last_frame.copy() if copy_frame else self.last_frame
@@ -110,27 +111,29 @@ class WindowController:
         if timeout is None:
             timeout = 15.0 if last_frame_time <= 0 else self.FRAME_STALE_TIMEOUT
 
-        deadline = time.time() + timeout
+        deadline = time.monotonic() + timeout
         waiting_for_first_frame = last_frame_time <= 0
         did_log_wait = False
         latest_frame_time = 0.0
 
         while True:
-            frame, frame_time = self.get_latest_frame(copy_frame=copy_frame)
-            latest_frame_time = frame_time
-
-            if frame is not None and frame_time > last_frame_time:
-                self._ensure_frame_geometry(frame)
-                return frame, frame_time
-
-            if time.time() > deadline:
-                return None, latest_frame_time
-
             if waiting_for_first_frame and not did_log_wait:
                 print("Waiting for first frame...")
                 did_log_wait = True
 
-            time.sleep(0.1 if waiting_for_first_frame else 0.01)
+            with self.frame_condition:
+                frame_time = self.last_frame_time
+                latest_frame_time = frame_time
+                if self.last_frame is not None and frame_time > last_frame_time:
+                    frame = self.last_frame.copy() if copy_frame else self.last_frame
+                    self._ensure_frame_geometry(frame)
+                    return frame, frame_time
+
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None, latest_frame_time
+
+                self.frame_condition.wait(timeout=remaining)
 
     def screenshot(self, array=False):
         frame, frame_time = self.wait_for_next_frame(copy_frame=True, timeout=15.0)

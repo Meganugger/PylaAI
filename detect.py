@@ -24,18 +24,33 @@ class Detect:
         self.input_name = self.model.get_inputs()[0].name
         self.output_names = [output.name for output in self.model.get_outputs()]
         self._padded_bgr = None
-        self._padded_rgb = None
         self._input_blob = None
+        self._normalization_scale = np.float32(1.0 / 255.0)
+        self._use_iobinding = self.device == "CUDAExecutionProvider" and hasattr(self.model, "io_binding")
+        self._warmup()
 
     def _allocate_preprocess_buffers(self):
         padded_shape = (self.input_size[0], self.input_size[1], 3)
         input_shape = (1, 3, self.input_size[0], self.input_size[1])
         if self._padded_bgr is None or self._padded_bgr.shape != padded_shape:
             self._padded_bgr = np.empty(padded_shape, dtype=np.uint8)
-            self._padded_rgb = np.empty(padded_shape, dtype=np.uint8)
         if self._input_blob is None or self._input_blob.shape != input_shape:
             self._input_blob = np.empty(input_shape, dtype=np.float32)
 
+    def _warmup(self):
+        self._allocate_preprocess_buffers()
+        self._padded_bgr.fill(128)
+        np.multiply(
+            self._padded_bgr[:, :, ::-1].transpose(2, 0, 1),
+            self._normalization_scale,
+            out=self._input_blob[0],
+            casting="unsafe",
+        )
+        for _ in range(2):
+            if self._use_iobinding:
+                self._run_with_iobinding(self._input_blob)
+            else:
+                self.model.run(self.output_names, {self.input_name: self._input_blob})
 
     def load_model(self):
         available_providers = ort.get_available_providers()
@@ -75,9 +90,12 @@ class Detect:
 
         self._padded_bgr.fill(128)
         self._padded_bgr[:new_h, :new_w, :] = resized_img
-        cv2.cvtColor(self._padded_bgr, cv2.COLOR_BGR2RGB, dst=self._padded_rgb)
-        np.copyto(self._input_blob[0], np.transpose(self._padded_rgb, (2, 0, 1)), casting="unsafe")
-        self._input_blob[0] *= (1.0 / 255.0)
+        np.multiply(
+            self._padded_bgr[:, :, ::-1].transpose(2, 0, 1),
+            self._normalization_scale,
+            out=self._input_blob[0],
+            casting="unsafe",
+        )
         return self._input_blob, new_w, new_h
 
     @staticmethod
@@ -209,7 +227,10 @@ class Detect:
         record_timing(f"detect_preprocess:{os.path.basename(self.model_path)}", time.perf_counter() - preprocess_started_at, print_every=60)
 
         inference_started_at = time.perf_counter()
-        outputs = self.model.run(self.output_names, {self.input_name: preprocessed_img})
+        if self._use_iobinding:
+            outputs = self._run_with_iobinding(preprocessed_img)
+        else:
+            outputs = self.model.run(self.output_names, {self.input_name: preprocessed_img})
         record_timing(f"detect_inference:{os.path.basename(self.model_path)}", time.perf_counter() - inference_started_at, print_every=60)
 
         postprocess_started_at = time.perf_counter()
@@ -231,5 +252,17 @@ class Detect:
 
         record_timing(f"detect:{os.path.basename(self.model_path)}", time.perf_counter() - started_at, print_every=60)
         return results
+
+    def _run_with_iobinding(self, input_blob):
+        try:
+            io_binding = self.model.io_binding()
+            io_binding.bind_cpu_input(self.input_name, input_blob)
+            for output_name in self.output_names:
+                io_binding.bind_output(output_name, "cpu")
+            self.model.run_with_iobinding(io_binding)
+            return io_binding.copy_outputs_to_cpu()
+        except Exception:
+            self._use_iobinding = False
+            return self.model.run(self.output_names, {self.input_name: input_blob})
 
 
