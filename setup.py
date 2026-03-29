@@ -73,6 +73,7 @@ setup(
             "onnxruntime-gpu>=1.21,<2",
             "nvidia-cuda-runtime-cu12==12.4.*; platform_system == 'Windows'",
             "nvidia-cublas-cu12==12.4.*; platform_system == 'Windows'",
+            "nvidia-cuda-nvrtc-cu12==12.4.*; platform_system == 'Windows'",
             "nvidia-cufft-cu12>=11,<12; platform_system == 'Windows'",
             "nvidia-cudnn-cu12==9.20.*; platform_system == 'Windows'",
         ],

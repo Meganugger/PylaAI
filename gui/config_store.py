@@ -35,6 +35,7 @@ CONFIG_SPECS = {
         "defaults": {
             "max_ips": "auto",
             "super_debug": "yes",
+            "preferred_backend": "auto",
             "cpu_or_gpu": "auto",
             "long_press_star_drop": "no",
             "trophies_multiplier": 1,

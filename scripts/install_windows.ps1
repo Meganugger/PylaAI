@@ -13,6 +13,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPath = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $startBatPath = Join-Path $repoRoot "start.bat"
+$generalConfigPath = Join-Path $repoRoot "cfg\general_config.toml"
 
 Set-Location $repoRoot
 
@@ -131,6 +132,88 @@ pause
     Set-Content -Path $startBatPath -Value $content -Encoding ASCII
 }
 
+function Set-GeneralConfigValue {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$Path,
+        [Parameter(Mandatory = $true)]
+        [string]$Key,
+        [Parameter(Mandatory = $true)]
+        [string]$ValueLiteral
+    )
+
+    if (-not (Test-Path $Path)) {
+        throw "Missing configuration file at '$Path'."
+    }
+
+    $content = Get-Content $Path -Raw
+    $escapedKey = [regex]::Escape($Key)
+    $pattern = "(?m)^$escapedKey\s*=.*$"
+    $replacement = "$Key = $ValueLiteral"
+
+    if ([regex]::IsMatch($content, $pattern)) {
+        $updated = [regex]::Replace($content, $pattern, $replacement)
+    }
+    else {
+        $trimmed = $content.TrimEnd("`r", "`n")
+        $updated = "$trimmed`r`n$replacement`r`n"
+    }
+
+    Set-Content -Path $Path -Value $updated -Encoding ASCII
+}
+
+function Apply-BackendThreadPreset {
+    param(
+        [Parameter(Mandatory = $true)]
+        [string]$SelectedBackend
+    )
+
+    $preset = switch ($SelectedBackend) {
+        "cuda" {
+            @{
+                preferred_backend = '"cuda"'
+                cpu_or_gpu = '"gpu"'
+                process_threads = "4"
+                opencv_threads = "2"
+                onnx_intra_threads = "2"
+                onnx_inter_threads = "1"
+                torch_threads = "2"
+                torch_interop_threads = "1"
+            }
+        }
+        "directml" {
+            @{
+                preferred_backend = '"directml"'
+                cpu_or_gpu = '"gpu"'
+                process_threads = "4"
+                opencv_threads = "2"
+                onnx_intra_threads = "3"
+                onnx_inter_threads = "1"
+                torch_threads = "2"
+                torch_interop_threads = "1"
+            }
+        }
+        default {
+            @{
+                preferred_backend = '"cpu"'
+                cpu_or_gpu = '"cpu"'
+                process_threads = "6"
+                opencv_threads = "2"
+                onnx_intra_threads = "4"
+                onnx_inter_threads = "1"
+                torch_threads = "2"
+                torch_interop_threads = "1"
+            }
+        }
+    }
+
+    foreach ($entry in $preset.GetEnumerator()) {
+        Set-GeneralConfigValue -Path $generalConfigPath -Key $entry.Key -ValueLiteral $entry.Value
+    }
+
+    Write-Host "Applied the recommended $SelectedBackend performance preset to cfg/general_config.toml." -ForegroundColor Green
+}
+
 function Test-InstalledRuntime {
     param(
         [Parameter(Mandatory = $true)]
@@ -156,14 +239,20 @@ try {
     if ($selectedBackend -eq "cuda") {
         Write-Host "CUDA mode selected." -ForegroundColor Green
         Write-Host "CUDA offers the best performance, but this setup is intended for NVIDIA RTX-series systems." -ForegroundColor Yellow
-        Write-Host "It pins the runtime libraries to CUDA 12.4, cuDNN 9.20, and the supporting CUDA DLL set inside the virtual environment." -ForegroundColor Cyan
+        Write-Host "It pins the runtime libraries to CUDA 12.4, cuDNN 9.20, and the supporting CUDA/NVRTC DLL set inside the virtual environment." -ForegroundColor Cyan
     }
     elseif ($selectedBackend -eq "directml") {
         Write-Host "DirectML mode selected." -ForegroundColor Green
         Write-Host "DirectML works on a broader range of Windows GPUs and is the safest default for most users." -ForegroundColor Yellow
+        Write-Host "Setup will also apply a balanced DirectML-friendly thread preset." -ForegroundColor Cyan
     }
     else {
         Write-Host "CPU mode selected." -ForegroundColor Green
+        Write-Host "Setup will also apply a CPU-friendly thread preset for lower oversubscription." -ForegroundColor Cyan
+    }
+
+    if ($selectedBackend -eq "cuda") {
+        Write-Host "Setup will also apply a balanced CUDA-friendly thread preset." -ForegroundColor Cyan
     }
 
     Ensure-Venv -BasePython $basePython
@@ -186,6 +275,8 @@ try {
     if ($LASTEXITCODE -ne 0) {
         throw "PylaAI installation failed."
     }
+
+    Apply-BackendThreadPreset -SelectedBackend $selectedBackend
 
     Write-Host "Running a quick runtime smoke test..." -ForegroundColor Cyan
     Test-InstalledRuntime -SelectedBackend $selectedBackend

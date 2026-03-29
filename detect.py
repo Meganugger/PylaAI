@@ -33,7 +33,9 @@ def preload_onnxruntime_gpu_dlls():
 
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
-        self.preferred_device = load_toml_as_dict("cfg/general_config.toml")['cpu_or_gpu']
+        config = load_toml_as_dict("cfg/general_config.toml")
+        self.preferred_device = str(config.get("cpu_or_gpu", "auto")).lower()
+        self.preferred_backend = str(config.get("preferred_backend", "auto")).lower()
         self.model_path = model_path
         self.classes = classes
         self.ignore_classes = ignore_classes if ignore_classes else []
@@ -71,20 +73,35 @@ class Detect:
                 self.model.run(self.output_names, {self.input_name: self._input_blob})
 
     def load_model(self):
-        if self.preferred_device == "gpu" or self.preferred_device == "auto":
-            preload_onnxruntime_gpu_dlls()
-
         available_providers = ort.get_available_providers()
         providers = ["CPUExecutionProvider"]
-        if self.preferred_device == "gpu" or self.preferred_device == "auto":
-            if "CUDAExecutionProvider" in available_providers:
-                providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
-                print("Using CUDA GPU")
-            elif "DmlExecutionProvider" in available_providers:
-                providers = ["DmlExecutionProvider", "CPUExecutionProvider"]
-                print("Using GPU")
-            elif "AzureExecutionProvider" in available_providers:
-                providers = ["AzureExecutionProvider", "CPUExecutionProvider"]
+        if self.preferred_device in ("gpu", "auto"):
+            if self.preferred_backend == "directml":
+                provider_order = ["DmlExecutionProvider", "CUDAExecutionProvider", "AzureExecutionProvider"]
+            elif self.preferred_backend == "cuda":
+                provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
+            else:
+                provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
+
+            if "CUDAExecutionProvider" in available_providers and "CUDAExecutionProvider" in provider_order:
+                preload_onnxruntime_gpu_dlls()
+
+            for provider_name in provider_order:
+                if provider_name not in available_providers:
+                    continue
+
+                providers = [provider_name, "CPUExecutionProvider"]
+                if provider_name == "CUDAExecutionProvider":
+                    print("Using CUDA GPU")
+                    if self.preferred_backend == "directml":
+                        print("DirectML was requested but unavailable; falling back to CUDA.")
+                elif provider_name == "DmlExecutionProvider":
+                    print("Using DirectML GPU")
+                    if self.preferred_backend == "cuda":
+                        print("CUDA was requested but unavailable; falling back to DirectML.")
+                else:
+                    print(f"Using {provider_name}")
+                break
             else:
                 print("Using CPU as no GPU provider found")
 

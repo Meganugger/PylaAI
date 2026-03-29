@@ -35,6 +35,7 @@ class StageManager:
             'shop': self.quit_shop,
             'brawler_selection': self.quit_shop,
             'popup': self.close_pop_up,
+            'reward_claim': self.claim_reward,
             'match': lambda: 0,
             'end': self.end_game,
             'lobby': self.start_game,
@@ -147,6 +148,21 @@ class StageManager:
             self.window_controller.press_key("Q",10)
         else:
             self.window_controller.press_key("Q")
+
+    def claim_reward(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
+        if self.close_popup_icon is None:
+            self.close_popup_icon = load_image(
+                "state_finder/images_to_detect/close_popup.png",
+                self.window_controller.scale_factor
+            )
+
+        popup_location = find_template_center(screenshot, self.close_popup_icon)
+        if popup_location:
+            self.window_controller.click(*popup_location)
+            return
+
+        self.window_controller.press_key("Q")
 
     def end_game(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()

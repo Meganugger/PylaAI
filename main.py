@@ -67,10 +67,30 @@ def pyla_main(data):
             return loaded_models
 
         def restart_brawl_stars(self):
+            print("Trying to recover Brawl Stars...")
+            self.window_controller.keys_up(list("wasd"))
+
+            self.window_controller.ensure_brawl_stars_running(force=True)
+
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+            if current_state == "play_store":
+                self.Stage_manager.click_brawl_stars(screenshot)
+                time.sleep(10)
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
+
+            if current_state != "play_store":
+                now = time.time()
+                self.Play.time_since_last_proceeding = now
+                for key in self.Play.time_since_detections:
+                    self.Play.time_since_detections[key] = now
+                print("Brawl Stars recovered successfully.")
+                return
+
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                screenshot = self.window_controller.screenshot()
                 loop.run_until_complete(async_notify_user("bot_is_stuck", screenshot))
             finally:
                 loop.close()

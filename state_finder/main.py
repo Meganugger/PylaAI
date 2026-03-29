@@ -19,6 +19,7 @@ for file in os.listdir("./state_finder/images_to_detect"):
         images_with_star_drop.append(file)
 # path = r"./images_to_detect/"
 region_data = load_toml_as_dict("./cfg/lobby_config.toml")['template_matching']
+region_data.setdefault("reward_claim_corner", [0, 0, 190, 120])
 
 def is_template_in_region(image, template_path, region):
     current_height, current_width = image.shape[:2]
@@ -90,6 +91,7 @@ def find_game_result(screenshot):
 def get_in_game_state(image):
     if is_in_shop(image): return "shop"
     if is_in_offer_popup(image): return "popup"
+    if is_in_reward_claim(image): return "reward_claim"
     if is_in_lobby(image): return "lobby"
     if is_in_brawler_selection(image):
         return "brawler_selection"
@@ -121,6 +123,14 @@ def is_in_brawler_selection(image) -> bool:
 
 def is_in_offer_popup(image) -> bool:
     return is_template_in_region(image, path + 'close_popup.png', region_data["close_popup"])
+
+
+def is_in_reward_claim(image) -> bool:
+    return is_template_in_region(
+        image,
+        path + 'end_battle_top_left_continue_corner.png',
+        region_data["reward_claim_corner"]
+    )
 
 
 def is_in_lobby(image) -> bool:

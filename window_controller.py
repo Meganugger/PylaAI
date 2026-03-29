@@ -20,6 +20,7 @@ from utils import load_toml_as_dict
 
 # --- Configuration ---
 brawl_stars_width, brawl_stars_height = 1920, 1080
+BRAWL_STARS_PACKAGE = "com.supercell.brawlstars"
 
 key_coords_dict = {
     "H": (1400, 990),
@@ -71,6 +72,9 @@ class WindowController:
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 5.0
+            self.APP_STATE_CHECK_INTERVAL = 5.0
+            self.APP_RELAUNCH_WAIT = 3.0
+            self.last_app_state_check = 0.0
 
             def on_frame(frame):
                 if frame is not None:
@@ -107,6 +111,32 @@ class WindowController:
             frame = self.last_frame.copy() if copy_frame else self.last_frame
             return frame, self.last_frame_time
 
+    def ensure_brawl_stars_running(self, force=False):
+        now = time.monotonic()
+        if not force and now - self.last_app_state_check < self.APP_STATE_CHECK_INTERVAL:
+            return False
+
+        self.last_app_state_check = now
+        try:
+            current_app = self.device.app_current()
+            current_package = getattr(current_app, "package", "") if current_app else ""
+        except Exception as exc:
+            print(f"Could not check the current Android app: {exc}")
+            return False
+
+        if current_package == BRAWL_STARS_PACKAGE:
+            return False
+
+        print(f"Brawl Stars is not foregrounded (found '{current_package or 'unknown'}'). Relaunching...")
+        try:
+            self.device.app_start(BRAWL_STARS_PACKAGE)
+        except Exception as exc:
+            print(f"Failed to relaunch Brawl Stars: {exc}")
+            return False
+
+        time.sleep(self.APP_RELAUNCH_WAIT)
+        return True
+
     def wait_for_next_frame(self, last_frame_time=0.0, timeout=None, copy_frame=True):
         if timeout is None:
             timeout = 15.0 if last_frame_time <= 0 else self.FRAME_STALE_TIMEOUT
@@ -115,6 +145,7 @@ class WindowController:
         waiting_for_first_frame = last_frame_time <= 0
         did_log_wait = False
         latest_frame_time = 0.0
+        checked_app_state = False
 
         while True:
             if waiting_for_first_frame and not did_log_wait:
@@ -131,6 +162,10 @@ class WindowController:
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    if not checked_app_state and self.ensure_brawl_stars_running(force=True):
+                        checked_app_state = True
+                        deadline = time.monotonic() + self.APP_RELAUNCH_WAIT + 2.0
+                        continue
                     return None, latest_frame_time
 
                 self.frame_condition.wait(timeout=remaining)

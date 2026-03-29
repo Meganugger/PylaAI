@@ -19,6 +19,7 @@ It will:
 - create `.venv`
 - ask whether you want `CUDA`, `DirectML`, or `CPU`
 - install the selected backend
+- apply a recommended backend-specific thread preset to `cfg/general_config.toml`
 - create `start.bat`
 
 Use a Python 3.10.0 virtual environment and install one ONNX Runtime backend explicitly.
@@ -40,6 +41,13 @@ or run:
 ```powershell
 .\setup.bat
 ```
+
+`setup.bat` also writes a sane default performance preset for the backend you choose:
+- `CUDA`: balanced GPU-friendly limits
+- `DirectML`: slightly higher ONNX CPU-side threading than CUDA
+- `CPU`: a CPU-only preset with higher worker counts
+
+It also remembers the selected backend in `cfg/general_config.toml` so runtime provider selection and default thread tuning can stay aligned with your install choice.
 
 ### 3. Manual setup
 Create and activate a Python 3.10.0 virtual environment:
@@ -71,6 +79,7 @@ The CUDA install path is pinned to the CUDA 12.4 runtime packages plus cuDNN 9.2
 
 - `nvidia-cuda-runtime-cu12==12.4.*`
 - `nvidia-cublas-cu12==12.4.*`
+- `nvidia-cuda-nvrtc-cu12==12.4.*`
 - `nvidia-cufft-cu12>=11,<12`
 - `nvidia-cudnn-cu12==9.20.*`
 
