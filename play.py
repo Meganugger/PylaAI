@@ -390,6 +390,10 @@ class Play(Movement):
 
         return False if incomplete else data
 
+    @staticmethod
+    def _is_non_blocking_tile_class(class_name):
+        return "bush" in class_name.lower()
+
     def track_no_detections(self, data):
         if not data:
             data = {
@@ -521,7 +525,7 @@ class Play(Movement):
     def process_tile_data(self, tile_data):
         walls = []
         for class_name, boxes in tile_data.items():
-            if class_name != 'bush':
+            if not self._is_non_blocking_tile_class(class_name):
                 walls.extend(boxes)
 
         # Add walls to history
