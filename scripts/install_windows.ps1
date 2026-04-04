@@ -173,11 +173,11 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"cuda"'
                 cpu_or_gpu = '"gpu"'
-                process_threads = "4"
-                opencv_threads = "2"
+                process_threads = "3"
+                opencv_threads = "1"
                 onnx_intra_threads = "2"
                 onnx_inter_threads = "1"
-                torch_threads = "2"
+                torch_threads = "1"
                 torch_interop_threads = "1"
             }
         }
@@ -185,11 +185,11 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"directml"'
                 cpu_or_gpu = '"gpu"'
-                process_threads = "4"
-                opencv_threads = "2"
-                onnx_intra_threads = "3"
+                process_threads = "3"
+                opencv_threads = "1"
+                onnx_intra_threads = "2"
                 onnx_inter_threads = "1"
-                torch_threads = "2"
+                torch_threads = "1"
                 torch_interop_threads = "1"
             }
         }
@@ -197,11 +197,11 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"cpu"'
                 cpu_or_gpu = '"cpu"'
-                process_threads = "6"
-                opencv_threads = "2"
-                onnx_intra_threads = "4"
+                process_threads = "4"
+                opencv_threads = "1"
+                onnx_intra_threads = "2"
                 onnx_inter_threads = "1"
-                torch_threads = "2"
+                torch_threads = "1"
                 torch_interop_threads = "1"
             }
         }
@@ -244,15 +244,15 @@ try {
     elseif ($selectedBackend -eq "directml") {
         Write-Host "DirectML mode selected." -ForegroundColor Green
         Write-Host "DirectML works on a broader range of Windows GPUs and is the safest default for most users." -ForegroundColor Yellow
-        Write-Host "Setup will also apply a balanced DirectML-friendly thread preset." -ForegroundColor Cyan
+        Write-Host "Setup will also apply an IPS-friendly DirectML thread preset." -ForegroundColor Cyan
     }
     else {
         Write-Host "CPU mode selected." -ForegroundColor Green
-        Write-Host "Setup will also apply a CPU-friendly thread preset for lower oversubscription." -ForegroundColor Cyan
+        Write-Host "Setup will also apply an IPS-friendly CPU thread preset for lower oversubscription." -ForegroundColor Cyan
     }
 
     if ($selectedBackend -eq "cuda") {
-        Write-Host "Setup will also apply a balanced CUDA-friendly thread preset." -ForegroundColor Cyan
+        Write-Host "Setup will also apply an IPS-friendly CUDA thread preset." -ForegroundColor Cyan
     }
 
     Ensure-Venv -BasePython $basePython
