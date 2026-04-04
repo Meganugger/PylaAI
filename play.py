@@ -526,6 +526,8 @@ class Play(Movement):
             return None
 
         now = time.time()
+        if self._search_target_switch_time == 0.0:
+            self._search_target_switch_time = now
         idx = self._search_target_idx % len(targets)
         target = targets[idx]
         target_distance = self.get_distance(target, player_pos)
