@@ -54,10 +54,10 @@ or run:
 .\setup.bat
 ```
 
-`setup.bat` also writes a sane default performance preset for the backend you choose:
-- `CUDA`: balanced GPU-friendly limits
-- `DirectML`: slightly higher ONNX CPU-side threading than CUDA
-- `CPU`: a CPU-only preset with higher worker counts
+`setup.bat` also writes an IPS-friendly default preset for the backend you choose on this branch:
+- `CUDA`: tighter GPU-side thread pressure
+- `DirectML`: low-oversubscription GPU defaults
+- `CPU`: a CPU-only preset that stays conservative on thread count
 
 It also remembers the selected backend in `cfg/general_config.toml` so runtime provider selection and default thread tuning can stay aligned with your install choice.
 
