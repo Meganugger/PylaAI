@@ -17,6 +17,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.12,
         "dodge_chance": 0.45,
         "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
     },
     "sniper": {
         "range_mult": 1.0,
@@ -24,6 +26,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.15,
         "dodge_chance": 0.60,
         "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
     },
     "tank": {
         "range_mult": 1.0,
@@ -31,6 +35,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.10,
         "dodge_chance": 0.15,
         "retreat_on_low_ammo": False,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
     },
     "assassin": {
         "range_mult": 1.0,
@@ -38,6 +44,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.10,
         "dodge_chance": 0.70,
         "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
     },
     "thrower": {
         "range_mult": 1.0,
@@ -45,6 +53,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.10,
         "dodge_chance": 0.55,
         "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
     },
     "support": {
         "range_mult": 1.0,
@@ -52,6 +62,8 @@ PLAYSTYLE_CONFIG = {
         "attack_interval": 0.14,
         "dodge_chance": 0.40,
         "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
     },
 }
 
@@ -226,6 +238,10 @@ class Play(Movement):
         self._teammate_positions = []
         self._last_known_enemies = []
         self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
+        self._no_enemy_duration = 0.0
+        self._last_enemy_seen_at = time.time()
+        self._search_target_idx = 0
+        self._search_target_switch_time = 0.0
         self.target_info = {
             "name": None,
             "distance": 0,
@@ -385,6 +401,19 @@ class Play(Movement):
             # If no movement is possible, return empty string
             return preferred_movement
 
+    def _get_move_toward(self, player_pos, target_pos, wall_context):
+        direction_x = target_pos[0] - player_pos[0]
+        direction_y = target_pos[1] - player_pos[1]
+        moves = [
+            self.get_vertical_move_key(direction_y) + self.get_horizontal_move_key(direction_x),
+            self.get_vertical_move_key(direction_y),
+            self.get_horizontal_move_key(direction_x),
+        ]
+        for move in moves:
+            if move and not self.is_path_blocked(player_pos, move, wall_context):
+                return move
+        return None
+
     def is_enemy_hittable(self, player_pos, enemy_pos, wall_context, skill_type):
         if self.can_attack_through_walls(self.current_brawler, skill_type, self.brawlers_info):
             return True
@@ -475,6 +504,39 @@ class Play(Movement):
             return None
         newest = max(self._last_known_enemies, key=lambda entry: entry[2])
         return newest[0], newest[1]
+
+    def _get_search_targets(self):
+        width = self.window_controller.width
+        height = self.window_controller.height
+        if self.game_mode == 3:
+            return [
+                (width * 0.5, height * 0.22),
+                (width * 0.3, height * 0.28),
+                (width * 0.7, height * 0.28),
+            ]
+        return [
+            (width * 0.78, height * 0.5),
+            (width * 0.72, height * 0.3),
+            (width * 0.72, height * 0.7),
+        ]
+
+    def _get_search_movement(self, player_pos, wall_context):
+        targets = self._get_search_targets()
+        if not targets:
+            return None
+
+        now = time.time()
+        idx = self._search_target_idx % len(targets)
+        target = targets[idx]
+        target_distance = self.get_distance(target, player_pos)
+        stale_target = (now - self._search_target_switch_time) > 3.5
+
+        if target_distance < 90 or stale_target:
+            self._search_target_idx = (self._search_target_idx + 1) % len(targets)
+            self._search_target_switch_time = now
+            target = targets[self._search_target_idx]
+
+        return self._get_move_toward(player_pos, target, wall_context)
 
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
@@ -718,18 +780,24 @@ class Play(Movement):
         current_time = time.time()
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
+            if style.get("prefer_teammates") and self._teammate_positions:
+                centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
+                centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
+                teammate_target = (centroid_x, centroid_y)
+                if self.get_distance(teammate_target, player_pos) > 160:
+                    team_move = self._get_move_toward(player_pos, teammate_target, wall_context)
+                    if team_move:
+                        return team_move
+
             last_enemy_pos = self._get_last_known_enemy_pos()
             if last_enemy_pos is not None:
-                direction_x = last_enemy_pos[0] - player_pos[0]
-                direction_y = last_enemy_pos[1] - player_pos[1]
-                preferred_moves = [
-                    self.get_vertical_move_key(direction_y) + self.get_horizontal_move_key(direction_x),
-                    self.get_vertical_move_key(direction_y),
-                    self.get_horizontal_move_key(direction_x),
-                ]
-                for move in preferred_moves:
-                    if move and not self.is_path_blocked(player_pos, move, wall_context):
-                        return move
+                memory_move = self._get_move_toward(player_pos, last_enemy_pos, wall_context)
+                if memory_move:
+                    return memory_move
+            if style.get("aggressive_no_enemy") and self._no_enemy_duration > 1.0:
+                search_move = self._get_search_movement(player_pos, wall_context)
+                if search_move:
+                    return search_move
             return self.no_enemy_movement(player_data, wall_context)
         enemy_coords, enemy_distance, target_bbox, target_hittable = self.find_best_target(
             enemy_data,
@@ -879,6 +947,10 @@ class Play(Movement):
         enemies = data.get('enemy') or []
         if enemies:
             self._update_enemy_memory(enemies)
+            self._last_enemy_seen_at = current_time
+            self._no_enemy_duration = 0.0
+        else:
+            self._no_enemy_duration = current_time - self._last_enemy_seen_at
         should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
