@@ -5,6 +5,11 @@ import sys
 from io import BytesIO
 import ctypes
 import json
+
+from runtime_threads import apply_process_thread_limits, configure_torch_threads
+
+apply_process_thread_limits()
+
 import aiohttp
 import google_play_scraper
 import requests
@@ -101,6 +106,11 @@ class DefaultEasyOCR:
 
     def _ensure_loaded(self):
         if self._reader is None:
+            try:
+                import torch
+                configure_torch_threads(torch)
+            except Exception:
+                pass
             self._reader = easyocr.Reader(['en'], gpu=False, verbose=False)
 
     def readtext(self, image_input):
