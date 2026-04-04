@@ -1,6 +1,7 @@
 import hashlib
 import io
 import os
+import sys
 from io import BytesIO
 import ctypes
 import json
@@ -8,33 +9,73 @@ import aiohttp
 import google_play_scraper
 import requests
 import toml
-from runtime_threads import apply_process_thread_limits, configure_torch_threads, configure_opencv_threads
-
-apply_process_thread_limits()
-
 from PIL import Image
 from discord import Webhook
 import discord
 import cv2
 import numpy as np
 from packaging import version
-import bettercam
 import time
-import onnxruntime as ort
+import easyocr
 
-configure_opencv_threads(cv2)
 
-def to_bgr_array(image):
-    if isinstance(image, Image.Image):
-        return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
-    if isinstance(image, np.ndarray):
-        return image
-    raise TypeError(f"Unsupported image type: {type(image)}")
+# frameData: zero-copy frame wrapper
+class FrameData:
+    """Lightweight frame wrapper that avoids redundant PIL↔numpy conversions.
+    The numpy array is the primary representation; PIL is created lazily only
+    when a PIL-specific operation (like OCR) actually needs it."""
+    __slots__ = ('arr', '_pil')
 
-def extract_text_and_positions(image_input):
-    if isinstance(image_input, Image.Image):
-        image_input = np.asarray(image_input)
-    results = reader.readtext(image_input)
+    def __init__(self, arr):
+        self.arr = arr          # numpy RGB uint8 (H, W, 3)
+        self._pil = None
+
+    # --- support np.array(frame) / np.asarray(frame) without copy ---
+    def __array__(self, dtype=None):
+        if dtype is not None:
+            return self.arr.astype(dtype)
+        return self.arr
+
+    @property
+    def pil(self):
+        """Lazy PIL Image -- only created when really needed."""
+        if self._pil is None:
+            self._pil = Image.fromarray(self.arr)
+        return self._pil
+
+    @property
+    def shape(self):
+        return self.arr.shape
+
+    @property
+    def size(self):
+        """(width, height) like PIL Image."""
+        return (self.arr.shape[1], self.arr.shape[0])
+
+    def crop(self, box):
+        """Numpy-based crop -- returns numpy array, zero-copy view.
+        box: (left, top, right, bottom) matching PIL convention."""
+        left, top, right, bottom = (int(v) for v in box)
+        return self.arr[top:bottom, left:right]
+
+    def resize(self, size):
+        """Returns a new PIL Image resized (for lobby OCR compatibility)."""
+        return self.pil.resize(size)
+
+    def save(self, *args, **kwargs):
+        """Delegate to PIL Image save (for Discord webhook screenshots)."""
+        return self.pil.save(*args, **kwargs)
+
+    @property
+    def width(self):
+        return self.arr.shape[1]
+
+    @property
+    def height(self):
+        return self.arr.shape[0]
+
+def extract_text_and_positions(image_path):
+    results = reader.readtext(image_path)
     text_details = {}
     for (bbox, text, prob) in results:
         top_left, top_right, bottom_right, bottom_left = bbox
@@ -54,87 +95,145 @@ def extract_text_and_positions(image_input):
     return text_details
 
 class DefaultEasyOCR:
+    """Lazy-loading EasyOCR -- delays ~3-5s model load until first OCR call."""
     def __init__(self):
-        self.reader = None
-        self.easyocr_module = None
+        self._reader = None
 
-    @staticmethod
-    def _should_use_gpu():
-        configured_value = str(load_toml_as_dict("cfg/general_config.toml").get("easyocr_gpu", "auto")).lower()
-        if configured_value in ("yes", "true", "1", "gpu"):
-            return True
-        if configured_value in ("no", "false", "0", "cpu"):
-            return False
-
-        preferred_device = str(load_toml_as_dict("cfg/general_config.toml").get("cpu_or_gpu", "auto")).lower()
-        if preferred_device not in ("gpu", "auto"):
-            return False
-
-        available_providers = ort.get_available_providers()
-        return "CUDAExecutionProvider" not in available_providers and "DmlExecutionProvider" not in available_providers
-
-    def _get_reader(self):
-        if self.reader is None:
-            if self.easyocr_module is None:
-                import easyocr
-                self.easyocr_module = easyocr
-                try:
-                    import torch
-                    configure_torch_threads(torch)
-                except Exception:
-                    pass
-            use_gpu = self._should_use_gpu()
-            print(f"Initializing EasyOCR (gpu={use_gpu})")
-            self.reader = self.easyocr_module.Reader(['en'], gpu=use_gpu)
-        return self.reader
+    def _ensure_loaded(self):
+        if self._reader is None:
+            self._reader = easyocr.Reader(['en'], gpu=False, verbose=False)
 
     def readtext(self, image_input):
-        return self._get_reader().readtext(image_input)
+        self._ensure_loaded()
+        return self._reader.readtext(image_input)
+
+_CONFIG_DEFAULTS = {
+    "cfg/general_config.toml": {
+        "personal_webhook": "",
+        "discord_id": "",
+        "super_debug": "yes",
+        "cpu_or_gpu": "auto",
+        "preferred_backend": "auto",
+        "max_ips": "auto",
+        "pyla_version": "1.0.0-full",
+        "long_press_star_drop": "yes",
+        "trophies_multiplier": 1,
+        "run_for_minutes": 600,
+        "emulator_port": 5037,
+        "brawlstars_package": "com.supercell.brawlstars",
+        "brawlstars_api_key": "",
+        "brawlstars_player_tag": "",
+        "auto_push_target_trophies": 1000,
+        "process_threads": "auto",
+        "opencv_threads": "auto",
+        "onnx_intra_threads": "auto",
+        "onnx_inter_threads": "auto",
+        "torch_threads": "auto",
+        "torch_interop_threads": "auto",
+        "visual_overlay_enabled": "no",
+        "visual_overlay_player_dot": "yes",
+        "visual_overlay_attack_range": "yes",
+        "visual_overlay_safe_range": "yes",
+        "visual_overlay_super_range": "yes",
+        "visual_overlay_movement_arrow": "yes",
+        "visual_overlay_los_all_enemies": "yes",
+        "visual_overlay_enemies": "yes",
+        "visual_overlay_teammates": "yes",
+        "visual_overlay_walls": "yes",
+        "visual_overlay_hide_when_dead": "yes",
+        "visual_overlay_brawler_hud": "yes",
+        "visual_overlay_gas_zone": "yes",
+        "visual_overlay_danger_zones": "yes",
+        "visual_overlay_decision_banner": "yes",
+        "visual_overlay_hp_bars": "yes",
+        "visual_overlay_target_info": "yes",
+        "visual_overlay_ghost_dots": "yes",
+        "visual_overlay_opacity": 194,
+        "visual_overlay_hud_position": "top-left",
+        "map_orientation": "vertical",
+        "ai_mode": "hybrid",
+        "manual_aim_enabled": "yes",
+        "projectile_detection_enabled": "yes",
+        "rl_training_enabled": "yes",
+        "rl_model_dir": "rl_models",
+        "rl_kpi_adj_profile": "balanced",
+        "visual_overlay_bt_path": "yes",
+        "visual_overlay_projectiles": "yes",
+        "visual_overlay_spatial_grid": "yes",
+        "visual_overlay_combo_queue": "yes",
+        "visual_overlay_aim_stats": "yes",
+        "rl_kpi_adj_bonus_base": 0.05,
+        "rl_kpi_adj_bonus_threat_scale": 0.05,
+        "rl_kpi_adj_attack_block_base_penalty": 0.02,
+        "rl_kpi_adj_attack_block_threat_penalty": 0.04,
+        "rl_kpi_adj_pattern_block_penalty": 0.012,
+        "rl_kpi_adj_clip_abs": 2.5,
+        "hp_check_interval_s": 0.1,
+        "hp_conf_low_threshold": 0.35,
+        "hp_stale_timeout_s": 0.7,
+        "hp_warning_enter_pct": 45,
+        "hp_warning_exit_pct": 55,
+        "hp_critical_enter_pct": 20,
+        "hp_critical_exit_pct": 26,
+    },
+    "cfg/bot_config.toml": {
+        "gamemode_type": 3,
+        "bot_uses_gadgets": "yes",
+        "minimum_movement_delay": 0.08,
+        "gamemode": "knockout",
+        "unstuck_movement_delay": 1.5,
+        "unstuck_movement_hold_time": 0.8,
+        "wall_model_classes": ["wall", "bush", "close_bush"],
+        "gadget_pixels_minimum": 500.0,
+        "hypercharge_pixels_minimum": 500.0,
+        "super_pixels_minimum": 800.0,
+        "wall_detection_confidence": 0.9,
+        "entity_detection_confidence": 0.6,
+        "seconds_to_hold_attack_after_reaching_max": 1.5,
+        "play_again_on_win": "no",
+        "smart_trophy_farm": "yes",
+        "trophy_farm_target": 500,
+        "trophy_farm_strategy": "lowest_first",
+        "trophy_farm_excluded": [],
+        "quest_farm_enabled": "no",
+        "quest_farm_mode": "games",
+        "quest_farm_excluded": [],
+        "dynamic_rotation_enabled": "no",
+        "dynamic_rotation_every": 20,
+    },
+}
+
+
+def _config_defaults_for_path(file_path):
+    normalized = file_path.replace("\\", "/").lstrip("./")
+    return _CONFIG_DEFAULTS.get(normalized, {})
+
 
 def load_toml_as_dict(file_path):
+    loaded = {}
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
-            return toml.load(f)
-    else:
-        return {}
+            loaded = toml.load(f)
+
+    defaults = _config_defaults_for_path(file_path)
+    if not defaults:
+        return loaded
+
+    merged = dict(defaults)
+    merged.update(loaded)
+    return merged
 
 
 reader = DefaultEasyOCR()
 api_base_url = "localhost"
 brawlers_info_file_path = "cfg/brawlers_info.json"
-_timing_stats = {}
-_timing_enabled = None
-STATE_ICON_PATHS = (
-    "./state_finder/images_to_detect/brawl_stars_icon_big.png",
-    "./state_finder/images_to_detect/brawl_stars_icon.png",
-)
-
-def timing_enabled():
-    global _timing_enabled
-    if _timing_enabled is None:
-        _timing_enabled = str(load_toml_as_dict("cfg/general_config.toml").get("timing_debug", "no")).lower() in ("yes", "true", "1")
-    return _timing_enabled
-
-def record_timing(name, duration_seconds, print_every=120):
-    if not timing_enabled():
-        return
-
-    stats = _timing_stats.setdefault(name, {"count": 0, "total": 0.0, "max": 0.0})
-    stats["count"] += 1
-    stats["total"] += duration_seconds
-    stats["max"] = max(stats["max"], duration_seconds)
-
-    if stats["count"] % print_every == 0:
-        avg_ms = (stats["total"] / stats["count"]) * 1000
-        max_ms = stats["max"] * 1000
-        print(f"[timing] {name}: avg={avg_ms:.2f}ms max={max_ms:.2f}ms samples={stats['count']}")
 
 def count_hsv_pixels(pil_image, low_hsv, high_hsv):
-    opencv_image = to_bgr_array(pil_image)
-    hsv_image = cv2.cvtColor(opencv_image, cv2.COLOR_BGR2HSV)
+    # Accept both numpy (RGB) and PIL; single cvtColor RGB->HSV (was double: RGB->BGR->HSV)
+    arr = np.asarray(pil_image)
+    hsv_image = cv2.cvtColor(arr, cv2.COLOR_RGB2HSV)
     mask = cv2.inRange(hsv_image, np.array(low_hsv), np.array(high_hsv))
-    pixel_count = np.count_nonzero(mask)
-    return pixel_count
+    return int(np.count_nonzero(mask))
 
 def save_brawler_data(data):
     """
@@ -144,14 +243,8 @@ def save_brawler_data(data):
         json.dump(data, f, indent=4)
 
 
-
 def find_template_center(main_img, template, threshold=0.8):
-    main_image_arr = to_bgr_array(main_img)
-    if len(main_image_arr.shape) == 3 and main_image_arr.shape[2] == 3:
-        main_image_cv = cv2.cvtColor(main_image_arr, cv2.COLOR_BGR2GRAY)
-    else:
-        main_image_cv = main_image_arr
-
+    main_image_cv = cv2.cvtColor(np.asarray(main_img), cv2.COLOR_RGB2GRAY)
     template_arr = np.asarray(template)
     if len(template_arr.shape) == 3 and template_arr.shape[2] == 3:
         template_cv = cv2.cvtColor(template_arr, cv2.COLOR_BGR2GRAY)
@@ -171,9 +264,6 @@ def find_template_center(main_img, template, threshold=0.8):
         return center_x, center_y
     else:
         return False
-
-
-
 
 
 def save_dict_as_toml(data, file_path):
@@ -308,17 +398,6 @@ def update_icons():
         print(f"Failed to download latest icon. Status code: {response.status_code}")
 
 
-def state_icons_present():
-    return all(os.path.exists(path) for path in STATE_ICON_PATHS)
-
-
-def ensure_state_icons_present():
-    if state_icons_present():
-        return True
-    update_icons()
-    return state_icons_present()
-
-
 def get_latest_version():
     url = f'https://{api_base_url}/check_version'
     response = requests.get(url)
@@ -448,11 +527,36 @@ def cprint(text: str, hex_color: str): #omg color!!!
     try:
         hex_color = hex_color.lstrip("#")
         r, g, b = tuple(int(hex_color[i:i+2], 16) for i in (0, 2, 4))
-        print(f"\033[38;2;{r};{g};{b}m{text}\033[0m")
+        out = f"\033[38;2;{r};{g};{b}m{text}\033[0m"
     except Exception:
-        print(text)
+        out = str(text)
+    try:
+        print(out)
+    except UnicodeEncodeError:
+        try:
+            # Windows console may not support all Unicode chars — replace silently.
+            enc = getattr(sys.stdout, 'encoding', None) or 'ascii'
+            safe = out.encode(enc, errors='replace').decode(enc, errors='replace')
+            print(safe)
+        except Exception:
+            pass
 
 def get_dpi_scale():
     user32 = ctypes.windll.user32
     user32.SetProcessDPIAware()
     return int(user32.GetDpiForSystem())
+
+
+def find_brawler_by_hp(hp_value: int, brawlers_info: dict, tolerance: int = 400) -> str | None:
+    """Find the most likely brawler based on their max HP value."""
+    best_match = None
+    best_diff = tolerance + 1
+    for name, info in brawlers_info.items():
+        brawler_hp = info.get('health', 0)
+        diff = abs(brawler_hp - hp_value)
+        if diff < best_diff:
+            best_diff = diff
+            best_match = name
+    if best_diff <= tolerance:
+        return best_match
+    return None

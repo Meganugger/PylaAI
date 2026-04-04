@@ -1,33 +1,27 @@
 import atexit
-import ctypes
 import math
 import threading
 import time
 import cv2
-import numpy as np
-import win32gui
-import win32con
-import win32ui
-import pyautogui
-from PIL import Image
 from typing import List
 
 # New libraries
 import scrcpy
 from adbutils import adb
 
-from utils import load_toml_as_dict
+from utils import FrameData, load_toml_as_dict
 
 # --- Configuration ---
 brawl_stars_width, brawl_stars_height = 1920, 1080
-BRAWL_STARS_PACKAGE = "com.supercell.brawlstars"
+BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml").get("brawlstars_package", "com.supercell.brawlstars")
 
 key_coords_dict = {
     "H": (1400, 990),
     "G": (1640, 990),
     "M": (1725, 800),
     "Q": (1740, 1000),
-    "E": (1510, 880)
+    "E": (1510, 880),
+    "F": (1360, 920),
 }
 
 directions_xy_deltas_dict = {
@@ -188,7 +182,7 @@ class WindowController:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        return Image.fromarray(frame_rgb)
+        return FrameData(frame_rgb)
 
     def touch_down(self, x, y, pointer_id=0):
         # We explicitly pass the pointer_id
@@ -226,22 +220,24 @@ class WindowController:
             self.touch_move(self.joystick_x + delta_x, self.joystick_y + delta_y, pointer_id=self.PID_JOYSTICK)
             self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
 
-    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True):
+    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True, touch_up=True, touch_down=True):
         if not already_include_ratio:
             x = x * self.width_ratio
             y = y * self.height_ratio
         # Use PID_ATTACK for clicks so we don't interrupt movement
-        self.touch_down(x, y, pointer_id=self.PID_ATTACK)
+        if touch_down:
+            self.touch_down(x, y, pointer_id=self.PID_ATTACK)
         time.sleep(delay)
-        self.touch_up(x, y, pointer_id=self.PID_ATTACK)
+        if touch_up:
+            self.touch_up(x, y, pointer_id=self.PID_ATTACK)
 
-    def press_key(self, key, delay=0.05):
+    def press_key(self, key, delay=0.05, touch_up=True, touch_down=True):
         if key not in key_coords_dict:
             return
         x, y = key_coords_dict[key]
         target_x = x * self.width_ratio
         target_y = y * self.height_ratio
-        self.click(target_x, target_y, delay)
+        self.click(target_x, target_y, delay, touch_up=touch_up, touch_down=touch_down)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration=0.2):
         dist_x = end_x - start_x
@@ -267,3 +263,37 @@ class WindowController:
     def close(self):
         if hasattr(self, 'scrcpy_client'):
             self.scrcpy_client.stop()
+
+    def is_stream_alive(self):
+        if not hasattr(self, "scrcpy_client"):
+            return False
+        for thread in threading.enumerate():
+            if "stream" in thread.name.lower() or "__stream_loop" in str(getattr(thread, "_target", "")):
+                return thread.is_alive()
+        _, frame_time = self.get_latest_frame(copy_frame=False)
+        return frame_time > 0 and (time.time() - frame_time) < self.FRAME_STALE_TIMEOUT * 3
+
+    def reconnect_scrcpy(self):
+        try:
+            print("[RECOVERY] Attempting to reconnect scrcpy...")
+            try:
+                self.scrcpy_client.stop()
+            except Exception:
+                pass
+
+            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
+
+            def on_frame(frame):
+                if frame is not None:
+                    with self.frame_condition:
+                        self.last_frame = frame
+                        self.last_frame_time = time.time()
+                        self.frame_condition.notify_all()
+
+            self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+            self.scrcpy_client.start(threaded=True)
+            self.last_app_state_check = 0.0
+            return True
+        except Exception as exc:
+            print(f"[RECOVERY] Failed to reconnect scrcpy: {exc}")
+            return False
