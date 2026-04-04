@@ -223,6 +223,9 @@ class Play(Movement):
         self.strafe_direction = 1
         self.strafe_switch_time = time.time()
         self.strafe_interval = float(bot_config.get("strafe_interval", 0.25))
+        self._teammate_positions = []
+        self._last_known_enemies = []
+        self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
         self.target_info = {
             "name": None,
             "distance": 0,
@@ -442,11 +445,36 @@ class Play(Movement):
             if previous_pos and self.get_distance(enemy_pos, previous_pos) < 80:
                 score += 120
 
+            for teammate_pos in self._teammate_positions:
+                teammate_distance = self.get_distance(enemy_pos, teammate_pos)
+                if teammate_distance < attack_range * 0.8:
+                    score += 100
+                elif teammate_distance < attack_range * 1.2:
+                    score += 50
+
             if score > best_score:
                 best_score = score
                 best_target = (enemy_pos, distance, enemy, hittable)
 
         return best_target if best_target else (None, None, None, False)
+
+    def _update_enemy_memory(self, enemies):
+        now = time.time()
+        for enemy in enemies:
+            enemy_pos = self.get_enemy_pos(enemy)
+            self._last_known_enemies.append((enemy_pos[0], enemy_pos[1], now))
+
+        self._last_known_enemies = [
+            (x, y, seen_at)
+            for x, y, seen_at in self._last_known_enemies
+            if now - seen_at < self._enemy_memory_duration
+        ]
+
+    def _get_last_known_enemy_pos(self):
+        if not self._last_known_enemies:
+            return None
+        newest = max(self._last_known_enemies, key=lambda entry: entry[2])
+        return newest[0], newest[1]
 
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
@@ -690,6 +718,18 @@ class Play(Movement):
         current_time = time.time()
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
+            last_enemy_pos = self._get_last_known_enemy_pos()
+            if last_enemy_pos is not None:
+                direction_x = last_enemy_pos[0] - player_pos[0]
+                direction_y = last_enemy_pos[1] - player_pos[1]
+                preferred_moves = [
+                    self.get_vertical_move_key(direction_y) + self.get_horizontal_move_key(direction_x),
+                    self.get_vertical_move_key(direction_y),
+                    self.get_horizontal_move_key(direction_x),
+                ]
+                for move in preferred_moves:
+                    if move and not self.is_path_blocked(player_pos, move, wall_context):
+                        return move
             return self.no_enemy_movement(player_data, wall_context)
         enemy_coords, enemy_distance, target_bbox, target_hittable = self.find_best_target(
             enemy_data,
@@ -709,7 +749,7 @@ class Play(Movement):
             "hittable": target_hittable,
             "bbox": target_bbox,
             "n_enemies": len(enemy_data or []),
-            "n_teammates": 0,
+            "n_teammates": len(self._teammate_positions),
         })
 
         # Determine initial movement direction
@@ -834,6 +874,11 @@ class Play(Movement):
             return
         self.time_since_last_proceeding = time.time()
         wall_context = self.get_wall_context(data['wall'])
+        teammates = data.get('teammate') or []
+        self._teammate_positions = [self.get_enemy_pos(teammate) for teammate in teammates]
+        enemies = data.get('enemy') or []
+        if enemies:
+            self._update_enemy_memory(enemies)
         should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
