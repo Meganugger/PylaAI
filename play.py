@@ -15,6 +15,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 1.1,
         "attack_interval": 0.12,
+        "team_cohesion": 0.30,
         "dodge_chance": 0.45,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
@@ -24,6 +25,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 0.55,
         "attack_interval": 0.15,
+        "team_cohesion": 0.20,
         "dodge_chance": 0.60,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
@@ -33,6 +35,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 1.5,
         "attack_interval": 0.10,
+        "team_cohesion": 0.35,
         "dodge_chance": 0.15,
         "retreat_on_low_ammo": False,
         "aggressive_no_enemy": True,
@@ -42,6 +45,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 1.3,
         "attack_interval": 0.10,
+        "team_cohesion": 0.12,
         "dodge_chance": 0.70,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
@@ -51,6 +55,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 0.75,
         "attack_interval": 0.10,
+        "team_cohesion": 0.35,
         "dodge_chance": 0.55,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
@@ -60,6 +65,7 @@ PLAYSTYLE_CONFIG = {
         "range_mult": 1.0,
         "approach_factor": 0.75,
         "attack_interval": 0.14,
+        "team_cohesion": 0.50,
         "dodge_chance": 0.40,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
@@ -232,6 +238,12 @@ class Play(Movement):
         self.max_ammo = 3
         self.current_ammo = self.max_ammo
         self.shot_timestamps = []
+        self._ammo_conserve_threshold = int(bot_config.get("ammo_conserve_threshold", 1))
+        self._burst_mode = False
+        self._burst_start_time = 0.0
+        self._last_burst_end_time = 0.0
+        self._burst_defensive_duration = float(bot_config.get("burst_defensive_duration", 2.5))
+        self._burst_attack_interval = float(bot_config.get("burst_attack_interval", 0.07))
         self.strafe_direction = 1
         self.strafe_switch_time = time.time()
         self.strafe_interval = float(bot_config.get("strafe_interval", 0.25))
@@ -504,6 +516,52 @@ class Play(Movement):
             return None
         newest = max(self._last_known_enemies, key=lambda entry: entry[2])
         return newest[0], newest[1]
+
+    def _get_teammate_centroid(self):
+        if not self._teammate_positions:
+            return None
+        centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
+        centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
+        return centroid_x, centroid_y
+
+    def _is_post_burst_defensive(self, current_time):
+        return (
+            self._last_burst_end_time > 0.0
+            and not self._burst_mode
+            and (current_time - self._last_burst_end_time) < self._burst_defensive_duration
+        )
+
+    def _get_attack_interval(self, style, brawler_info, enemy_distance, safe_range, attack_range, burst_active):
+        if burst_active:
+            return self._burst_attack_interval
+
+        attack_interval = style["attack_interval"]
+        attack_damage = int(brawler_info.get("attack_damage", 0))
+        projectile_count = int(brawler_info.get("projectile_count", 1))
+
+        if attack_damage >= 2500 and projectile_count <= 1:
+            attack_interval *= 1.1
+        elif attack_damage < 1200:
+            attack_interval *= 0.82
+
+        if projectile_count >= 4:
+            attack_interval *= 0.90
+
+        if enemy_distance < safe_range:
+            attack_interval *= 0.78
+        elif enemy_distance < attack_range * 0.7:
+            attack_interval *= 0.90
+
+        return max(0.06, attack_interval)
+
+    def _should_fire(self, enemy_distance, safe_range, attack_range, burst_active):
+        if burst_active:
+            return self.current_ammo > 0
+        if self.current_ammo > self._ammo_conserve_threshold:
+            return True
+        if self.current_ammo == self._ammo_conserve_threshold:
+            return enemy_distance < min(safe_range * 0.9, attack_range * 0.55)
+        return False
 
     def _get_search_targets(self):
         width = self.window_controller.width
@@ -782,10 +840,8 @@ class Play(Movement):
         current_time = time.time()
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
-            if style.get("prefer_teammates") and self._teammate_positions:
-                centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
-                centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
-                teammate_target = (centroid_x, centroid_y)
+            teammate_target = self._get_teammate_centroid()
+            if teammate_target and (style.get("prefer_teammates") or self._is_post_burst_defensive(current_time)):
                 if self.get_distance(teammate_target, player_pos) > 160:
                     team_move = self._get_move_toward(player_pos, teammate_target, wall_context)
                     if team_move:
@@ -812,7 +868,20 @@ class Play(Movement):
             return self.no_enemy_movement(player_data, wall_context)
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
-        should_retreat_for_ammo = style["retreat_on_low_ammo"] and self.current_ammo <= 0
+        post_burst_defensive = self._is_post_burst_defensive(current_time)
+        teammate_target = self._get_teammate_centroid()
+        if teammate_target:
+            teammate_distance = self.get_distance(teammate_target, player_pos)
+            if teammate_distance > 100:
+                dist_factor = min(1.0, (teammate_distance - 100) / 300.0)
+                cohesion_strength = style.get("team_cohesion", 0.0) * dist_factor
+                direction_x = direction_x * (1.0 - cohesion_strength) + (teammate_target[0] - player_pos[0]) * cohesion_strength
+                direction_y = direction_y * (1.0 - cohesion_strength) + (teammate_target[1] - player_pos[1]) * cohesion_strength
+
+        should_retreat_for_ammo = style["retreat_on_low_ammo"] and (
+            self.current_ammo <= 0
+            or (post_burst_defensive and self.current_ammo <= self._ammo_conserve_threshold)
+        )
         self.target_info.update({
             "distance": int(enemy_distance),
             "hp": -1,
@@ -872,10 +941,33 @@ class Play(Movement):
         else:
             self.last_movement_time = current_time  # Reset timer if movement didn't change
 
+        burst_active = False
+        if self.target_info["hittable"] and enemy_distance <= attack_range:
+            if self.current_ammo >= self.max_ammo and not self._burst_mode:
+                self._burst_mode = True
+                self._burst_start_time = current_time
+            if self._burst_mode and self.current_ammo > 0:
+                burst_active = True
+            elif self._burst_mode and self.current_ammo <= 0:
+                self._burst_mode = False
+                self._last_burst_end_time = current_time
+        else:
+            self._burst_mode = False
+
+        attack_interval = self._get_attack_interval(
+            style,
+            brawler_info,
+            enemy_distance,
+            safe_range,
+            effective_attack_range,
+            burst_active,
+        )
+        should_fire = self._should_fire(enemy_distance, safe_range, effective_attack_range, burst_active)
         can_attack_now = (
             enemy_distance <= effective_attack_range
             and self.current_ammo > 0
-            and (current_time - self.time_since_last_attack >= style["attack_interval"])
+            and should_fire
+            and (current_time - self.time_since_last_attack >= attack_interval)
         )
 
         if enemy_distance <= attack_range:
@@ -891,6 +983,9 @@ class Play(Movement):
             self.attack()
             self._consume_ammo(current_time)
             self.time_since_last_attack = current_time
+            if self._burst_mode and self.current_ammo <= 0:
+                self._burst_mode = False
+                self._last_burst_end_time = current_time
         if self.is_super_ready:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
@@ -910,6 +1005,9 @@ class Play(Movement):
             self.current_brawler = brawler
             self.shot_timestamps = []
             self.current_ammo = self.max_ammo
+            self._burst_mode = False
+            self._burst_start_time = 0.0
+            self._last_burst_end_time = 0.0
         current_time = time.time()
         data = self.get_main_data(frame)
         if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:

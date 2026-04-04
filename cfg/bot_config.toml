@@ -12,3 +12,6 @@ wall_detection_confidence = 0.9
 entity_detection_confidence = 0.6
 strafe_interval = 0.25
 enemy_memory_duration = 2.0
+ammo_conserve_threshold = 1
+burst_defensive_duration = 2.5
+burst_attack_interval = 0.07

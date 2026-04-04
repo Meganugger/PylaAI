@@ -10,6 +10,7 @@ Its goal is to make the bot as strong as possible in matches:
 - richer combat logic
 - better target choice
 - better teammate-aware behavior
+- smarter ammo discipline and burst pacing
 - more aggressive enemy search when vision is lost
 
 This branch may use more runtime budget than the `performance` branch when that tradeoff improves gameplay quality.
