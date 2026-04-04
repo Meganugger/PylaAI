@@ -10,6 +10,51 @@ from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
 
 brawl_stars_width, brawl_stars_height = 1920, 1080
 
+PLAYSTYLE_CONFIG = {
+    "fighter": {
+        "range_mult": 1.0,
+        "approach_factor": 1.1,
+        "attack_interval": 0.12,
+        "dodge_chance": 0.45,
+        "retreat_on_low_ammo": True,
+    },
+    "sniper": {
+        "range_mult": 1.0,
+        "approach_factor": 0.55,
+        "attack_interval": 0.15,
+        "dodge_chance": 0.60,
+        "retreat_on_low_ammo": True,
+    },
+    "tank": {
+        "range_mult": 1.0,
+        "approach_factor": 1.5,
+        "attack_interval": 0.10,
+        "dodge_chance": 0.15,
+        "retreat_on_low_ammo": False,
+    },
+    "assassin": {
+        "range_mult": 1.0,
+        "approach_factor": 1.3,
+        "attack_interval": 0.10,
+        "dodge_chance": 0.70,
+        "retreat_on_low_ammo": True,
+    },
+    "thrower": {
+        "range_mult": 1.0,
+        "approach_factor": 0.75,
+        "attack_interval": 0.10,
+        "dodge_chance": 0.55,
+        "retreat_on_low_ammo": True,
+    },
+    "support": {
+        "range_mult": 1.0,
+        "approach_factor": 0.75,
+        "attack_interval": 0.14,
+        "dodge_chance": 0.40,
+        "retreat_on_low_ammo": True,
+    },
+}
+
 class Movement:
 
     def __init__(self, window_controller):
@@ -171,6 +216,22 @@ class Play(Movement):
 
         self.last_movement = ''
         self.last_movement_time = time.time()
+        self.time_since_last_attack = 0.0
+        self.max_ammo = 3
+        self.current_ammo = self.max_ammo
+        self.shot_timestamps = []
+        self.strafe_direction = 1
+        self.strafe_switch_time = time.time()
+        self.strafe_interval = float(bot_config.get("strafe_interval", 0.25))
+        self.target_info = {
+            "name": None,
+            "distance": 0,
+            "hp": -1,
+            "hittable": False,
+            "bbox": None,
+            "n_enemies": 0,
+            "n_teammates": 0,
+        }
         self.wall_history = []
         self.wall_history_length = 3  # Number of frames to keep walls
         self.wall_context = {
@@ -356,6 +417,36 @@ class Play(Movement):
             return closest_unhittable
 
         return None, None
+
+    def find_best_target(self, enemy_data, player_coords, wall_context, skill_type, attack_range):
+        best_target = None
+        best_score = float("-inf")
+        previous_bbox = self.target_info.get("bbox")
+        previous_pos = self.get_enemy_pos(previous_bbox) if previous_bbox else None
+
+        for enemy in enemy_data:
+            enemy_pos = self.get_enemy_pos(enemy)
+            distance = self.get_distance(enemy_pos, player_coords)
+            hittable = self.is_enemy_hittable(player_coords, enemy_pos, wall_context, skill_type)
+            bbox_w = max(1, enemy[2] - enemy[0])
+            bbox_h = max(1, enemy[3] - enemy[1])
+            size_factor = bbox_w * bbox_h
+
+            score = 0.0
+            score -= distance * 0.3
+            score += 200 if hittable else -350
+            if distance <= attack_range:
+                score += 100
+            score -= size_factor * 0.001
+
+            if previous_pos and self.get_distance(enemy_pos, previous_pos) < 80:
+                score += 120
+
+            if score > best_score:
+                best_score = score
+                best_target = (enemy_pos, distance, enemy, hittable)
+
+        return best_target if best_target else (None, None, None, False)
 
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
@@ -551,23 +642,81 @@ class Play(Movement):
 
         return combined_walls
 
+    def _update_ammo(self, current_time, brawler):
+        reload_speed = float(self.brawlers_info.get(brawler, {}).get("reload_speed", 1.5))
+        self.shot_timestamps = [
+            timestamp for timestamp in self.shot_timestamps
+            if current_time - timestamp < reload_speed
+        ]
+        self.current_ammo = max(0, self.max_ammo - len(self.shot_timestamps))
+
+    def _consume_ammo(self, current_time):
+        self.shot_timestamps.append(current_time)
+        self.current_ammo = max(0, self.max_ammo - len(self.shot_timestamps))
+
+    def _get_playstyle(self, brawler):
+        playstyle = self.brawlers_info.get(brawler, {}).get("playstyle", "fighter")
+        return PLAYSTYLE_CONFIG.get(playstyle, PLAYSTYLE_CONFIG["fighter"])
+
+    def _add_strafe(self, movement, direction_x, direction_y, current_time, style):
+        if style["dodge_chance"] <= 0:
+            return movement
+
+        if current_time - self.strafe_switch_time >= self.strafe_interval:
+            self.strafe_direction *= -1
+            self.strafe_switch_time = current_time
+
+        if abs(direction_x) > abs(direction_y):
+            strafe_key = "W" if self.strafe_direction > 0 else "S"
+        else:
+            strafe_key = "A" if self.strafe_direction > 0 else "D"
+
+        opposite = {"W": "S", "S": "W", "A": "D", "D": "A"}
+        movement_upper = movement.upper()
+        if strafe_key not in movement_upper and opposite[strafe_key] not in movement_upper:
+            return movement + strafe_key
+        return movement
+
     def get_movement(self, player_data, enemy_data, wall_context, brawler):
         brawler_info = self.brawlers_info.get(brawler)
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
+        style = self._get_playstyle(brawler)
+        effective_safe_range = int(safe_range * style["approach_factor"])
+        effective_attack_range = attack_range * style["range_mult"]
 
         player_pos = self.get_player_pos(player_data)
+        current_time = time.time()
+        self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
             return self.no_enemy_movement(player_data, wall_context)
-        enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, wall_context, "attack")
+        enemy_coords, enemy_distance, target_bbox, target_hittable = self.find_best_target(
+            enemy_data,
+            player_pos,
+            wall_context,
+            "attack",
+            effective_attack_range,
+        )
         if enemy_coords is None:
             return self.no_enemy_movement(player_data, wall_context)
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
+        should_retreat_for_ammo = style["retreat_on_low_ammo"] and self.current_ammo <= 0
+        self.target_info.update({
+            "distance": int(enemy_distance),
+            "hp": -1,
+            "hittable": target_hittable,
+            "bbox": target_bbox,
+            "n_enemies": len(enemy_data or []),
+            "n_teammates": 0,
+        })
 
         # Determine initial movement direction
-        if enemy_distance > safe_range:  # Move towards the enemy
+        if should_retreat_for_ammo:
+            move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
+            move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
+        elif enemy_distance > effective_safe_range:  # Move towards the enemy
             move_horizontal = self.get_horizontal_move_key(direction_x)
             move_vertical = self.get_vertical_move_key(direction_y)
         else:  # Move away from the enemy
@@ -601,7 +750,9 @@ class Play(Movement):
                 # because it's better than doing nothing
                 movement = move_horizontal + move_vertical
 
-        current_time = time.time()
+        if enemy_distance <= attack_range * 1.2 and self.current_ammo > 0:
+            movement = self._add_strafe(movement, direction_x, direction_y, current_time, style)
+
         if movement != self.last_movement:
             if current_time - self.last_movement_time >= self.minimum_movement_delay:
                 self.last_movement = movement
@@ -611,7 +762,12 @@ class Play(Movement):
         else:
             self.last_movement_time = current_time  # Reset timer if movement didn't change
 
-        # Attack if enemy is within attack range and hittable
+        can_attack_now = (
+            enemy_distance <= effective_attack_range
+            and self.current_ammo > 0
+            and (current_time - self.time_since_last_attack >= style["attack_interval"])
+        )
+
         if enemy_distance <= attack_range:
             if self.should_use_gadget == True and self.is_gadget_ready:
                 self.use_gadget()
@@ -621,10 +777,10 @@ class Play(Movement):
                 self.use_hypercharge()
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
-            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
-            # print("enemy hittable", enemy_hittable, "enemy_distance", enemy_distance)
-            if enemy_hittable:
-                self.attack()
+        if can_attack_now and self.target_info["hittable"]:
+            self.attack()
+            self._consume_ammo(current_time)
+            self.time_since_last_attack = current_time
         if self.is_super_ready:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
@@ -640,6 +796,10 @@ class Play(Movement):
         return movement
 
     def main(self, frame, brawler):
+        if brawler != self.current_brawler:
+            self.current_brawler = brawler
+            self.shot_timestamps = []
+            self.current_ammo = self.max_ammo
         current_time = time.time()
         data = self.get_main_data(frame)
         if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:
