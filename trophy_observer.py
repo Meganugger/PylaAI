@@ -19,9 +19,9 @@ class TrophyObserver:
                                    for brawler in brawler_list}
         self.win_streak = 0
         self.match_counter = 0  # New counter for the number of matches
-        self.trophy_lose_ranges = [(49, 0), (199, 1), (399, 2), (599, 3), (699, 4), (799, 5), (899, 6), (999, 7),
-                                   (1099, 8), (1199, 11), (1299, 13), (1399, 16), (1499, 19), (1599, 22), (1699, 25), (1799, 28), (1899, 31), (1999, 34), (float("inf"), 50)]
-        self.trophy_win_ranges = [(1099, 8), (1199, 7), (1299, 6), (1399, 5), (1499, 4), (1599, 3), (1699, 2), (float("inf"), 1)]
+        self.trophy_lose_ranges = [(49, 0), (299, 1), (599, 2), (799, 3), (999, 4), (1099, 5), (1199, 6), (1299, 7),
+                                   (1499, 8), (1799, 9), (3999, 10), (float("inf"), 15)]
+        self.trophy_win_ranges = [(1999, 10), (2499, 8), (2799, 6), (2999, 4), (3099, 2), (float("inf"), 1)]
         self.crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
         self.trophies_multiplier = int(load_toml_as_dict("./cfg/general_config.toml")["trophies_multiplier"])
 

@@ -27,6 +27,7 @@ CONFIG_SPECS = {
             "hypercharge": 2,
             "wall_detection": 0.2,
             "no_detection_proceed": 6.5,
+            "check_if_brawl_stars_crashed": 10,
         },
         "legacy_keys": {"game_start"},
     },

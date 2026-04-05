@@ -101,7 +101,7 @@ def get_in_game_state(image):
     if is_in_end_of_a_match(image):
         return "end"
 
-    if count_hsv_pixels(image, (0, 0, 240), (180, 20, 255)) > 200000:
+    if count_hsv_pixels(image, (0, 0, 240), (180, 20, 255)) > 300000:
         return "play_store"
 
     if is_in_brawl_pass(image) or is_in_star_road(image):
@@ -163,5 +163,4 @@ def get_state(screenshot):
     record_timing("state_detection", time.perf_counter() - started_at, print_every=60)
     print(f"State: {state}")
     return state
-
 

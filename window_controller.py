@@ -30,6 +30,12 @@ key_coords_dict = {
     "E": (1510, 880)
 }
 
+continue_fallback_targets = (
+    (960, 540),
+    (960, 950),
+    (1660, 980),
+)
+
 directions_xy_deltas_dict = {
     "w": (0, -100),
     "a": (-100, 0),
@@ -45,6 +51,7 @@ class WindowController:
         self.width_ratio = None
         self.height_ratio = None
         self.joystick_x, self.joystick_y = None, None
+        time_config = load_toml_as_dict("cfg/time_tresholds.toml")
         # --- 2. ADB & Scrcpy Connection ---
         print("Connecting to ADB...")
         try:
@@ -72,7 +79,7 @@ class WindowController:
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 5.0
-            self.APP_STATE_CHECK_INTERVAL = 5.0
+            self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
             self.last_app_state_check = 0.0
 
@@ -242,6 +249,16 @@ class WindowController:
         target_x = x * self.width_ratio
         target_y = y * self.height_ratio
         self.click(target_x, target_y, delay)
+
+    def press_continue(self, hold_seconds=0.0, include_fallback_clicks=True):
+        delay = float(hold_seconds) if hold_seconds and hold_seconds > 0 else 0.05
+        self.press_key("Q", delay)
+        if not include_fallback_clicks:
+            return
+
+        for x, y in continue_fallback_targets:
+            self.click(x, y, 0.02, already_include_ratio=False)
+            time.sleep(0.5)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration=0.2):
         dist_x = end_x - start_x
