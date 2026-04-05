@@ -139,6 +139,7 @@ class StageManager:
             'lobby': self.start_game,
             'play_store': self.click_brawl_stars,
             'star_drop': self.click_star_drop,
+            'reward_claim': self.claim_reward,
             'trophy_reward': self.dismiss_trophy_reward,
             'idle_disconnect': self.handle_idle_disconnect,
             'mode_selection': self.handle_mode_selection,
@@ -676,12 +677,27 @@ class StageManager:
 
     def click_star_drop(self):
         if self.long_press_star_drop == "yes":
-            self.window_controller.press_key("Q",10)
+            self.window_controller.press_continue(hold_seconds=10, include_fallback_clicks=False)
         else:
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
 
-    def end_game(self):
-        screenshot = self.window_controller.screenshot()
+    def claim_reward(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
+        if self.close_popup_icon is None:
+            self.close_popup_icon = load_image(
+                "state_finder/images_to_detect/close_popup.png",
+                self.window_controller.scale_factor
+            )
+
+        popup_location = find_template_center(screenshot, self.close_popup_icon)
+        if popup_location:
+            self.window_controller.click(*popup_location)
+            return
+
+        self.window_controller.press_continue()
+
+    def end_game(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
         read_match_stats = False
@@ -848,7 +864,7 @@ class StageManager:
                 self.window_controller.press_key("F")
                 if debug: print("Victory - pressing F (Play Again)")
             else:
-                self.window_controller.press_key("Q")
+                self.window_controller.press_continue()
                 if debug: print("Game has ended, pressing Q")
             time.sleep(1)  # Reduced from 3s to avoid long main-thread blocks
             screenshot = self.window_controller.screenshot()
@@ -870,9 +886,9 @@ class StageManager:
                     return
                 time.sleep(0.5)
             print("[PLAY-AGAIN] Match did not start within 25s, pressing Q to return to lobby.")
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
             time.sleep(2)
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
 
         # --- LOBBY TROPHY VERIFICATION ---
         # After exiting the end screen, we should be in the lobby.
@@ -938,7 +954,7 @@ class StageManager:
         self.window_controller.click(btn_x2, btn_y2)
         time.sleep(0.3)
         # Press ESC/Q as fallback dismissal
-        self.window_controller.press_key("Q")
+        self.window_controller.press_continue(include_fallback_clicks=False)
         time.sleep(0.2)
         # Also try clicking center of screen as last resort
         self.window_controller.click(int(960 * wr), int(540 * hr))

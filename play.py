@@ -4926,7 +4926,7 @@ class Play(Movement):
                     self.time_since_last_proceeding = current_time
                 else:
                     print("haven't detected the player in a while proceeding")
-                    self.window_controller.press_key("Q")
+                    self.window_controller.press_continue()
                     self.time_since_last_proceeding = time.time()
             # Show debug overlay even when no player detected
             self._show_debug_overlay(frame, {}, "NO PLAYER", brawler,
@@ -5858,3 +5858,4 @@ class Play(Movement):
         movement = movement.lower()
         movement = ''.join(sorted(movement))
         return mapping.get(movement, 'idle' if movement == '' else movement)
+
