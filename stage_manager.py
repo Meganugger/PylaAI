@@ -113,7 +113,7 @@ class StageManager:
                 max_attempts = 30
                 attempts = 0
                 while current_state != "lobby" and attempts < max_attempts:
-                    self.window_controller.press_key("Q")
+                    self.window_controller.press_continue()
                     if debug: print("Pressed Q to return to lobby")
                     time.sleep(1)
                     screenshot = self.window_controller.screenshot()
@@ -145,9 +145,9 @@ class StageManager:
             self.window_controller.click(x=x + 50, y=y)
     def click_star_drop(self):
         if self.long_press_star_drop == "yes":
-            self.window_controller.press_key("Q",10)
+            self.window_controller.press_continue(hold_seconds=10, include_fallback_clicks=False)
         else:
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
 
     def claim_reward(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
@@ -162,7 +162,7 @@ class StageManager:
             self.window_controller.click(*popup_location)
             return
 
-        self.window_controller.press_key("Q")
+        self.window_controller.press_continue()
 
     def end_game(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
@@ -213,7 +213,7 @@ class StageManager:
                         self.window_controller.keys_up(list("wasd"))
                         self.window_controller.close()
                         sys.exit(0)
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
             if debug: print("Game has ended, pressing Q")
             time.sleep(3)
             screenshot = self.window_controller.screenshot()
