@@ -927,8 +927,8 @@ class StageManager:
     def quit_shop(self):
         self.window_controller.click(100*self.window_controller.width_ratio, 60*self.window_controller.height_ratio)
 
-    def close_pop_up(self):
-        screenshot = self.window_controller.screenshot()
+    def close_pop_up(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
         if self.close_popup_icon is None:
             self.close_popup_icon = load_image("state_finder/images_to_detect/close_popup.png", self.window_controller.scale_factor)
         popup_location = find_template_center(screenshot, self.close_popup_icon)

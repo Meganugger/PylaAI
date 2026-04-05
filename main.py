@@ -100,7 +100,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             main_module = sys.modules.get('__main__')
             if main_module:
                 main_module._active_stage_manager = self.Stage_manager
-            self.states_requiring_data = ["play_store", "lobby"]
+            self.states_requiring_data = ["play_store", "lobby", "popup", "end", "reward_claim"]
             if data[0]['automatically_pick']:
                 if debug: print("Picking brawler automatically")
                 try:
