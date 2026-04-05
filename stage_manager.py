@@ -215,7 +215,7 @@ class StageManager:
                         sys.exit(0)
             self.window_controller.press_continue()
             if debug: print("Game has ended, pressing Q")
-            time.sleep(3)
+            time.sleep(1)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot)
             end_attempts += 1
