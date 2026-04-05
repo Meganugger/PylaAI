@@ -33,7 +33,7 @@ def pyla_main(data):
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
-            self.states_requiring_frame_data = ["play_store", "lobby", "popup", "end"]
+            self.states_requiring_frame_data = ["play_store", "lobby", "popup", "end", "reward_claim"]
             if data[0]['automatically_pick']:
                 if debug: print("Picking brawler automatically")
                 self.lobby_automator.select_brawler(data[0]['brawler'])
