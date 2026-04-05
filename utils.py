@@ -237,6 +237,28 @@ def load_toml_as_dict(file_path):
 reader = DefaultEasyOCR()
 api_base_url = "localhost"
 brawlers_info_file_path = "cfg/brawlers_info.json"
+_timing_state = {}
+
+
+def to_bgr_array(image):
+    arr = np.asarray(image)
+    if arr.ndim == 2:
+        return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+    if arr.ndim == 3 and arr.shape[2] == 4:
+        return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+    if arr.ndim == 3 and arr.shape[2] == 3:
+        return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    raise ValueError(f"Unsupported image shape for BGR conversion: {arr.shape}")
+
+
+def record_timing(name, duration_seconds, print_every=120):
+    state = _timing_state.setdefault(name, {"count": 0, "total": 0.0})
+    state["count"] += 1
+    state["total"] += duration_seconds
+
+    if print_every and state["count"] % print_every == 0:
+        avg_ms = (state["total"] / state["count"]) * 1000.0
+        print(f"[TIMING] {name}: avg {avg_ms:.1f} ms over {state['count']} calls")
 
 def count_hsv_pixels(pil_image, low_hsv, high_hsv):
     # Accept both numpy (RGB) and PIL; single cvtColor RGB->HSV (was double: RGB->BGR->HSV)
