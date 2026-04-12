@@ -1,4 +1,5 @@
 import asyncio
+import threading
 import time
 
 from runtime_threads import apply_process_thread_limits
@@ -22,17 +23,25 @@ from window_controller import WindowController
 pyla_version = load_toml_as_dict("./cfg/general_config.toml")['pyla_version']
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
+_active_dashboard = None
+_active_stage_manager = None
 
 
-def pyla_main(data):
+def pyla_main(data, external_stop_event=None, external_pause_event=None):
     class Main:
 
         def __init__(self):
+            self._stop_event = external_stop_event if external_stop_event is not None else threading.Event()
+            self._pause_event = external_pause_event if external_pause_event is not None else threading.Event()
             self.window_controller = WindowController()
             self.Play = Play(*self.load_models(), self.window_controller)
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
+            import sys
+            main_module = sys.modules.get('__main__')
+            if main_module:
+                main_module._active_stage_manager = self.Stage_manager
             self.states_requiring_frame_data = ["play_store", "lobby", "popup", "end", "reward_claim"]
             if data[0]['automatically_pick']:
                 if debug: print("Picking brawler automatically")
@@ -50,6 +59,8 @@ def pyla_main(data):
             self.cooldown_start_time = 0
             self.cooldown_duration = 3 * 60
             self.last_processed_frame_time = 0.0
+            self.current_ips = 0.0
+            self.current_state = "starting"
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -103,6 +114,7 @@ def pyla_main(data):
         def manage_time_tasks(self, frame):
             if self.Time_management.state_check():
                 state = get_state(frame)
+                self.current_state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                 frame_data = frame if state in self.states_requiring_frame_data else None
@@ -131,6 +143,15 @@ def pyla_main(data):
             s_time = time.time()
             c = 0
             while True:
+                if self._stop_event.is_set():
+                    break
+                if self._pause_event.is_set():
+                    try:
+                        self.window_controller.keys_up(list("wasd"))
+                    except Exception:
+                        pass
+                    time.sleep(0.1)
+                    continue
                 loop_started_at = time.perf_counter()
                 if self.max_ips:
                     frame_start = time.perf_counter()
@@ -147,7 +168,8 @@ def pyla_main(data):
                 if abs(s_time - time.time()) > 1:
                     elapsed = time.time() - s_time
                     if elapsed > 0:
-                        print(f"{c / elapsed:.2f} IPS")
+                        self.current_ips = c / elapsed
+                        print(f"{self.current_ips:.2f} IPS")
                     s_time = time.time()
                     c = 0
 
@@ -175,12 +197,55 @@ def pyla_main(data):
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
                 c += 1
 
+                global _active_dashboard
+                if _active_dashboard is not None:
+                    try:
+                        hist = self.Stage_manager.Trophy_observer.match_history.get(brawler, {})
+                        _active_dashboard.update_live(
+                            start_time=self.start_time,
+                            ips=self.current_ips,
+                            state=self.current_state,
+                            brawler=brawler,
+                            trophies=self.Stage_manager.Trophy_observer.current_trophies,
+                            target=self.Stage_manager.brawlers_pick_data[0].get("push_until", 0),
+                            victories=hist.get("victory", 0),
+                            defeats=hist.get("defeat", 0),
+                            draws=hist.get("draw", 0),
+                            streak=self.Stage_manager.Trophy_observer.win_streak,
+                            game_mode=getattr(self.Play, "game_mode_name", ""),
+                            gadget_ready=getattr(self.Play, "is_gadget_ready", False),
+                            super_ready=getattr(self.Play, "is_super_ready", False),
+                            hypercharge_ready=getattr(self.Play, "is_hypercharge_ready", False),
+                            movement=getattr(self.Play, "last_movement", ""),
+                            ammo=getattr(self.Play, "_ammo", 0),
+                            farm_mode=getattr(self.Stage_manager, "smart_trophy_farm", "no"),
+                            farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                        )
+                    except Exception:
+                        pass
+
                 if self.max_ips:
                     target_period = 1 / self.max_ips
                     work_time = time.perf_counter() - frame_start
                     if work_time < target_period:
                         time.sleep(target_period - work_time)
                 record_timing("runtime_loop", time.perf_counter() - loop_started_at, print_every=120)
+
+            try:
+                self.window_controller.keys_up(list("wasd"))
+            except Exception:
+                pass
+            try:
+                self.window_controller.close()
+            except Exception:
+                pass
+            import sys
+            main_module = sys.modules.get('__main__')
+            if main_module:
+                if hasattr(main_module, '_active_dashboard'):
+                    main_module._active_dashboard = None
+                if hasattr(main_module, '_active_stage_manager'):
+                    main_module._active_stage_manager = None
 
     main = Main()
     main.main()
