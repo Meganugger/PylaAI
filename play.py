@@ -4561,8 +4561,8 @@ class Play(Movement):
                     self.time_since_holding_attack = None
                     self.last_decision_reason = "HOLD-ATTACK CANCELLED: out of range"
 
-        # Use hypercharge proactively in combat (not gated behind attack range)
-        if self.is_hypercharge_ready and enemy_distance <= attack_range * 1.5:
+        # Mirror official 0.6.5 behavior: only spend hypercharge when a super is ready too.
+        if self.is_hypercharge_ready and self.is_super_ready and enemy_distance <= attack_range * 1.5:
             if self.use_hypercharge():
                 self.time_since_hypercharge_checked = now
                 self.is_hypercharge_ready = False

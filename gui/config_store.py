@@ -59,6 +59,7 @@ CONFIG_SPECS = {
             "personal_webhook": "",
             "discord_id": "",
             "brawlstars_package": "com.supercell.brawlstars",
+            "api_base_url": "localhost",
             "visual_overlay_enabled": "no",
             "visual_overlay_player_dot": "yes",
             "visual_overlay_attack_range": "yes",
