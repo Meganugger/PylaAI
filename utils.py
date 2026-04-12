@@ -101,7 +101,8 @@ def load_toml_as_dict(file_path):
 
 
 reader = DefaultEasyOCR()
-api_base_url = "localhost"
+cfg_api_base_url = str(load_toml_as_dict("cfg/general_config.toml").get("api_base_url", "localhost")).strip()
+api_base_url = cfg_api_base_url if cfg_api_base_url and cfg_api_base_url != "default" else "localhost"
 brawlers_info_file_path = "cfg/brawlers_info.json"
 _timing_stats = {}
 _timing_enabled = None
