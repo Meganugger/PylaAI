@@ -22,6 +22,8 @@ from customtkinter import CTkImage
 from tkinter import filedialog
 
 from gui.theme import COLORS, FONT_FAMILY, FONT_FAMILY_ALT, S, apply_appearance, font, ui_font
+from lobby_automation import LobbyAutomation
+from stage_manager import StageManager
 from utils import (
     load_toml_as_dict, save_dict_as_toml, update_toml_file,
     load_brawlers_info, save_brawler_icon,
@@ -97,7 +99,9 @@ class Dashboard(ctk.CTk):
         self._latest_version_fn = latest_version_fn
         self._capabilities = {
             "visual_overlay": os.path.exists("visual_overlay.py"),
-            "quest_farm": True,
+            "brawler_scan": hasattr(LobbyAutomation, "scan_all_brawlers"),
+            "quest_farm": hasattr(StageManager, "_handle_quest_rotation"),
+            "quest_scan": hasattr(LobbyAutomation, "scan_quest_brawlers"),
         }
         self._page_nav_owner = {
             "home": "home",
@@ -721,11 +725,14 @@ class Dashboard(ctk.CTk):
                      font=(FONT_FAMILY_ALT, S(12)), text_color=DIM_ALT).pack(anchor="w", padx=S(18), pady=(0, S(10)))
 
         gm_values = [v[0] for v in GAMEMODES.values()]
+        self._cc_gm_primary_values = ["Brawl Ball", "Knockout", "Gem Grab", "Other"]
         current_gm = self.bot_config.get("gamemode", "brawlball")
-        self._cc_gm_var = ctk.StringVar(value=GAMEMODES.get(current_gm, ("Brawl Ball", 3))[0])
-        self._control_segment_row(launch_card, "Gamemode", gm_values[:3], self._cc_gm_var, self._on_control_center_gamemode_change)
+        current_display_gm = GAMEMODES.get(current_gm, ("Brawl Ball", 3))[0]
+        current_primary = current_display_gm if current_display_gm in self._cc_gm_primary_values[:-1] else "Other"
+        self._cc_gm_var = ctk.StringVar(value=current_primary)
+        self._control_segment_row(launch_card, "Gamemode", self._cc_gm_primary_values, self._cc_gm_var, self._on_control_center_gamemode_change)
 
-        self._cc_other_gm_var = ctk.StringVar(value=self._cc_gm_var.get())
+        self._cc_other_gm_var = ctk.StringVar(value=current_display_gm)
         other_row = ctk.CTkFrame(launch_card, fg_color="transparent")
         other_row.pack(fill="x", padx=S(18), pady=(0, S(10)))
         ctk.CTkLabel(other_row, text="Extended List", font=(FONT_FAMILY_ALT, S(12), "bold"), text_color=TXT).pack(side="left")
@@ -1425,8 +1432,10 @@ class Dashboard(ctk.CTk):
             self._home_gm_lbl.configure(text=display_name)
         if hasattr(self, "_gm_var") and self._gm_var.get() != display_name:
             self._gm_var.set(display_name)
-        if hasattr(self, "_cc_gm_var") and self._cc_gm_var.get() != display_name:
-            self._cc_gm_var.set(display_name)
+        if hasattr(self, "_cc_gm_var"):
+            primary_value = display_name if display_name in getattr(self, "_cc_gm_primary_values", [])[:-1] else "Other"
+            if self._cc_gm_var.get() != primary_value:
+                self._cc_gm_var.set(primary_value)
         if hasattr(self, "_cc_other_gm_var") and self._cc_other_gm_var.get() != display_name:
             self._cc_other_gm_var.set(display_name)
 
@@ -1447,6 +1456,8 @@ class Dashboard(ctk.CTk):
             self._cc_orient_var.set(val)
 
     def _on_control_center_gamemode_change(self, display_name):
+        if display_name == "Other":
+            display_name = self._cc_other_gm_var.get()
         self._on_gamemode_change(display_name)
 
     def _on_control_center_emulator_change(self, emu):
@@ -1617,13 +1628,15 @@ class Dashboard(ctk.CTk):
             font=("Segoe UI", S(12), "bold"), fg_color=BLUE,
             hover_color=CYAN, text_color=BG, corner_radius=S(6),
             command=self._start_brawler_scan)
-        self._scan_btn.pack(side="left", padx=S(4))
+        if self._capabilities.get("brawler_scan"):
+            self._scan_btn.pack(side="left", padx=S(4))
 
         # Scan status label (shows progress during scan)
         self._scan_status_label = ctk.CTkLabel(
             action_row, text="", font=("Segoe UI", S(11)),
             text_color=GOLD)
-        self._scan_status_label.pack(side="left", padx=S(6))
+        if self._capabilities.get("brawler_scan"):
+            self._scan_status_label.pack(side="left", padx=S(6))
 
         ctk.CTkButton(action_row, text="Select Visible", width=S(120), height=S(32),
                       font=("Segoe UI", S(12), "bold"), fg_color=ACCENT,
@@ -1813,6 +1826,10 @@ class Dashboard(ctk.CTk):
         """Start scanning all brawlers in-game to detect trophies and unlock status.
         Works both with a running bot (reuses connection) and standalone
         (creates its own WindowController + LobbyAutomation)."""
+        if not self._capabilities.get("brawler_scan"):
+            self._status_label.configure(
+                text="\u26A0 Brawler scan is not available on this branch.", text_color=GOLD)
+            return
         if self._scan_in_progress:
             self._status_label.configure(
                 text="\u26A0 Scan already in progress!", text_color=GOLD)
@@ -2230,27 +2247,39 @@ class Dashboard(ctk.CTk):
 
         mode_switch = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(14), border_width=1, border_color=SEP)
         mode_switch.pack(fill="x", padx=S(20), pady=(S(2), S(10)))
+        mode_switch_text = (
+            "Switch between trophy routing and quest routing without leaving the unified shell."
+            if self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan")
+            else "Trophy routing is available on this branch. Quest routing is not exposed here."
+        )
         ctk.CTkLabel(mode_switch,
-                     text="Switch between trophy routing and quest routing without leaving the unified shell.",
+                     text=mode_switch_text,
                      font=(FONT_FAMILY_ALT, S(12)), text_color=TXT).pack(side="left", padx=S(14), pady=S(12))
-        ctk.CTkButton(
-            mode_switch,
-            text="Quest Farm",
-            font=(FONT_FAMILY_ALT, S(12), "bold"),
-            fg_color=SECTION,
-            hover_color=CARD,
-            height=S(36),
-            corner_radius=S(10),
-            border_width=1,
-            border_color=SEP,
-            command=lambda: self.show_page("quest"),
-        ).pack(side="right", padx=S(12), pady=S(10))
+        if self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan"):
+            ctk.CTkButton(
+                mode_switch,
+                text="Quest Farm",
+                font=(FONT_FAMILY_ALT, S(12), "bold"),
+                fg_color=SECTION,
+                hover_color=CARD,
+                height=S(36),
+                corner_radius=S(10),
+                border_width=1,
+                border_color=SEP,
+                command=lambda: self.show_page("quest"),
+            ).pack(side="right", padx=S(12), pady=S(10))
 
         desc = ctk.CTkFrame(page, fg_color=SECTION, corner_radius=S(10))
         desc.pack(fill="x", padx=S(20), pady=S(6))
+        farm_desc_text = (
+            "\u2139  Trophy Farm automatically rotates through eligible brawlers below your target count.\n"
+            "Use Quest Farm when you want the bot to route by active quests instead."
+            if self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan")
+            else "\u2139  Trophy Farm automatically rotates through eligible brawlers below your target count.\n"
+                 "This branch keeps the farm flow focused on trophy routing."
+        )
         ctk.CTkLabel(desc,
-                     text="\u2139  Trophy Farm automatically rotates through eligible brawlers below your target count.\n"
-                          "Use Quest Farm when you want the bot to route by active quests instead.",
+                     text=farm_desc_text,
                      font=(FONT_FAMILY_ALT, S(12)), text_color=TXT, justify="left",
                      wraplength=S(750)).pack(padx=S(14), pady=S(10))
 
@@ -2602,6 +2631,8 @@ class Dashboard(ctk.CTk):
     # --- qUEST FARM PAGE ---
 
     def _build_quest_page(self):
+        if not (self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan")):
+            return
         page = ctk.CTkScrollableFrame(self._content, fg_color=BG,
                                       corner_radius=0,
                                       scrollbar_button_color=ACCENT)
@@ -2835,6 +2866,10 @@ class Dashboard(ctk.CTk):
 
     def _scan_quests(self):
         """Scan the brawler grid for quest icons in a background thread."""
+        if not (self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan")):
+            self._status_label.configure(
+                text="\u26A0 Quest farm scanning is not available on this branch.", text_color=GOLD)
+            return
         if self._quest_scan_in_progress:
             self._status_label.configure(
                 text="\u26A0 Quest scan already in progress!", text_color=GOLD)
@@ -2936,6 +2971,10 @@ class Dashboard(ctk.CTk):
 
     def _start_quest_farm(self):
         """Build brawler queue from quest scan results and start the bot."""
+        if not (self._capabilities.get("quest_farm") and self._capabilities.get("quest_scan")):
+            self._status_label.configure(
+                text="\u26A0 Quest farm is not available on this branch.", text_color=GOLD)
+            return
         # Save config first
         self._save_quest_config()
 
