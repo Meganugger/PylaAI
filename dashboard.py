@@ -15,50 +15,45 @@ import json
 import re
 import subprocess
 import webbrowser
+import inspect
 
-import pyautogui
 from PIL import Image
 from customtkinter import CTkImage
 from tkinter import filedialog
 
+from gui.theme import COLORS, FONT_FAMILY, FONT_FAMILY_ALT, S, apply_appearance, font, ui_font
 from utils import (
     load_toml_as_dict, save_dict_as_toml, update_toml_file,
-    get_dpi_scale, load_brawlers_info, save_brawler_icon,
+    load_brawlers_info, save_brawler_icon,
     api_base_url, save_brawler_data, get_discord_link
 )
 
-# scaling
-_OW, _OH = 1920, 1080
-_sw, _sh = pyautogui.size()
-_sf = min(_sw / _OW, _sh / _OH) * (96 / get_dpi_scale())
 
-
-def S(v):
-    """Scale pixel value for current screen resolution."""
-    return int(v * _sf)
-
-
-# brawl Stars Palette
-BG       = "#0d0d1a"
-SIDEBAR  = "#0a0a1e"
-PANEL    = "#1a1a2e"
-SECTION  = "#16213e"
-ACCENT   = "#FF6B00"
-ACCENT_H = "#FF8C00"
-ACCENT_D = "#CC5500"
-GOLD     = "#FFD700"
-GREEN    = "#00DC64"
-RED      = "#FF4444"
-BLUE     = "#00BFFF"
-CYAN     = "#00CED1"
-PURPLE   = "#AA66FF"
-TXT      = "#E0E0E0"
-DIM      = "#555555"
-BRIGHT   = "#FFFFFF"
-SEP      = "#2a2a4e"
-HP_G     = "#00FF00"
-HP_Y     = "#FFDD00"
-HP_R     = "#FF3333"
+# Unified control-center palette
+BG       = COLORS["bg"]
+BG_ALT   = COLORS["bg_alt"]
+SIDEBAR  = COLORS["sidebar"]
+PANEL    = COLORS["surface"]
+SECTION  = COLORS["surface_alt"]
+CARD     = COLORS["surface_alt_2"]
+ACCENT   = COLORS["accent"]
+ACCENT_H = COLORS["accent_hover"]
+ACCENT_D = COLORS["accent_soft"]
+GOLD     = COLORS["gold"]
+GREEN    = COLORS["success"]
+RED      = COLORS["danger"]
+BLUE     = COLORS["info"]
+CYAN     = COLORS["accent_muted"]
+PURPLE   = COLORS["accent_dim"]
+TXT      = COLORS["text"]
+DIM      = COLORS["muted"]
+DIM_ALT  = COLORS["muted_alt"]
+BRIGHT   = COLORS["text_bright"]
+SEP      = COLORS["border"]
+SEP_STRONG = COLORS["border_strong"]
+HP_G     = COLORS["success"]
+HP_Y     = COLORS["warning"]
+HP_R     = COLORS["danger"]
 
 PS_COLORS = {
     "fighter": GOLD, "tank": RED, "sniper": CYAN,
@@ -99,6 +94,20 @@ class Dashboard(ctk.CTk):
         self._pyla_main = pyla_main_fn
         self._login_fn = login_fn
         self._logged_in = False
+        self._latest_version_fn = latest_version_fn
+        self._capabilities = {
+            "visual_overlay": os.path.exists("visual_overlay.py"),
+            "quest_farm": True,
+        }
+        self._page_nav_owner = {
+            "home": "home",
+            "brawler": "brawler",
+            "farm": "farm",
+            "quest": "farm",
+            "live": "live",
+            "history": "history",
+            "settings": "settings",
+        }
 
         # state
         self.bot_running = False
@@ -128,6 +137,7 @@ class Dashboard(ctk.CTk):
         self._wins_per_hour_ema = None
         self._training_stats_cache = {}
         self._training_stats_mtime = 0.0
+        self._last_history_refresh_ts = 0.0
         self._quest_farm_active = False
         self._quest_brawlers = []          # brawler names with active quests
         self._quest_farm_excluded = set()
@@ -144,12 +154,12 @@ class Dashboard(ctk.CTk):
         self._load_excluded_brawlers()
 
         # window
-        self.title(f"\u2605 PylaAI Dashboard - {self.version_tag}")
-        w, h = S(1300), S(820)
+        self.title(f"Pyla Control Center - {self.version_tag}")
+        w, h = S(1420), S(860)
         self.geometry(f"{w}x{h}")
-        self.minsize(S(1050), S(650))
+        self.minsize(S(1140), S(700))
         self.configure(fg_color=BG)
-        ctk.set_appearance_mode("dark")
+        apply_appearance()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # build UI
@@ -159,13 +169,13 @@ class Dashboard(ctk.CTk):
 
         self._pages = {}
         self._current_page = None
-        self._build_home_page()
         self._build_settings_page()
+        self._build_home_page()
         self._build_brawler_page()
         self._build_farm_page()
         self._build_quest_page()
         self._build_live_page()
-        self._build_credits_page()
+        self._build_history_page()
         self.show_page("home")
         self.after(250, self._tick)
 
@@ -500,76 +510,134 @@ class Dashboard(ctk.CTk):
     # --- sIDEBAR ---
 
     def _build_sidebar(self):
-        sb = ctk.CTkFrame(self, width=S(230), fg_color=SIDEBAR, corner_radius=0)
+        sb = ctk.CTkFrame(self, width=S(252), fg_color=SIDEBAR, corner_radius=0)
         sb.pack(side="left", fill="y")
         sb.pack_propagate(False)
         self._sidebar = sb
 
-        # logo
-        logo = ctk.CTkFrame(sb, fg_color="transparent", height=S(90))
-        logo.pack(fill="x")
+        logo = ctk.CTkFrame(sb, fg_color="transparent", height=S(112))
+        logo.pack(fill="x", padx=S(18), pady=(S(14), S(8)))
         logo.pack_propagate(False)
-        ctk.CTkLabel(logo, text="\u2605 PylaAI",
-                     font=("Segoe UI", S(28), "bold"),
-                     text_color=ACCENT).pack(expand=True)
+        ctk.CTkLabel(
+            logo,
+            text="PYLA",
+            font=(FONT_FAMILY, S(23), "bold"),
+            text_color=BRIGHT,
+            anchor="w",
+        ).pack(anchor="w", pady=(S(10), 0))
+        ctk.CTkFrame(logo, fg_color=ACCENT, width=S(34), height=S(3), corner_radius=S(6)).pack(anchor="w", pady=(S(6), S(10)))
+        ctk.CTkLabel(
+            logo,
+            text="CONTROL CENTER",
+            font=(FONT_FAMILY_ALT, S(10), "bold"),
+            text_color=DIM,
+            anchor="w",
+        ).pack(anchor="w")
+        ctk.CTkLabel(
+            logo,
+            text=f"Unified shell  {self.version_tag}",
+            font=(FONT_FAMILY_ALT, S(11)),
+            text_color=DIM_ALT,
+            anchor="w",
+        ).pack(anchor="w", pady=(S(6), 0))
 
-        ctk.CTkFrame(sb, fg_color=SEP, height=1).pack(fill="x", padx=S(18), pady=(0, S(8)))
+        ctk.CTkFrame(sb, fg_color=SEP, height=1).pack(fill="x", padx=S(18), pady=(0, S(12)))
 
         # navigation
         self._nav_btns = {}
         nav_items = [
-            ("home",     "\U0001F3E0  Home"),
-            ("settings", "\u2699  Settings"),
-            ("brawler",  "\U0001F3AE  Brawlers"),
-            ("farm",     "\U0001F3C6  Trophy Farm"),
-            ("quest",    "\U0001F4DC  Quest Farm"),
-            ("live",     "\U0001F4CA  Live Stats"),
-            ("credits",  "\U0001F3C5  Credits"),
+            ("home", "Control Center"),
+            ("brawler", "Brawlers"),
+            ("farm", "Farm"),
+            ("live", "Live"),
+            ("history", "History"),
         ]
+        ctk.CTkLabel(
+            sb,
+            text="NAVIGATION",
+            font=(FONT_FAMILY_ALT, S(10), "bold"),
+            text_color=DIM,
+        ).pack(anchor="w", padx=S(18), pady=(0, S(8)))
         for key, label in nav_items:
             btn = ctk.CTkButton(
-                sb, text=f"  {label}", anchor="w",
-                font=("Segoe UI", S(15)),
-                fg_color="transparent", text_color=TXT,
-                hover_color=SEP, height=S(46), corner_radius=S(8),
+                sb,
+                text=label,
+                anchor="w",
+                font=(FONT_FAMILY_ALT, S(14), "bold"),
+                fg_color="transparent",
+                text_color=TXT,
+                hover_color=SECTION,
+                height=S(48),
+                corner_radius=S(12),
+                border_width=1,
+                border_color=SIDEBAR,
                 command=lambda k=key: self.show_page(k)
             )
-            btn.pack(fill="x", padx=S(12), pady=S(2))
+            btn.pack(fill="x", padx=S(14), pady=S(3))
             self._nav_btns[key] = btn
 
         # spacer
         ctk.CTkFrame(sb, fg_color="transparent").pack(fill="both", expand=True)
 
-        # selected brawler display
-        self._sb_brawler_frame = ctk.CTkFrame(sb, fg_color=PANEL, corner_radius=S(10))
-        self._sb_brawler_frame.pack(fill="x", padx=S(12), pady=S(4))
-        ctk.CTkLabel(self._sb_brawler_frame, text="SELECTED",
-                     font=("Segoe UI", S(10)), text_color=DIM).pack(
-                         anchor="w", padx=S(10), pady=(S(6), 0))
+        self._sb_brawler_frame = ctk.CTkFrame(sb, fg_color=PANEL, corner_radius=S(14), border_width=1, border_color=SEP)
+        self._sb_brawler_frame.pack(fill="x", padx=S(14), pady=(S(4), S(8)))
+        ctk.CTkLabel(self._sb_brawler_frame, text="SELECTED ROSTER",
+                     font=(FONT_FAMILY_ALT, S(10), "bold"), text_color=DIM).pack(
+                         anchor="w", padx=S(12), pady=(S(10), 0))
         self._sb_brawler_label = ctk.CTkLabel(
             self._sb_brawler_frame, text="None",
-            font=("Segoe UI", S(16), "bold"), text_color=ACCENT)
-        self._sb_brawler_label.pack(anchor="w", padx=S(10), pady=(0, S(6)))
+            font=(FONT_FAMILY_ALT, S(16), "bold"), text_color=BRIGHT)
+        self._sb_brawler_label.pack(anchor="w", padx=S(12), pady=(S(2), 0))
+        self._sb_brawler_meta = ctk.CTkLabel(
+            self._sb_brawler_frame,
+            text="0 ready",
+            font=(FONT_FAMILY_ALT, S(11)),
+            text_color=DIM_ALT,
+        )
+        self._sb_brawler_meta.pack(anchor="w", padx=S(12), pady=(0, S(10)))
 
-        # status indicator
         self._status_frame = ctk.CTkFrame(sb, fg_color=PANEL,
-                                          corner_radius=S(8), height=S(46))
-        self._status_frame.pack(fill="x", padx=S(12), pady=S(4))
+                                          corner_radius=S(12), height=S(48), border_width=1, border_color=SEP)
+        self._status_frame.pack(fill="x", padx=S(14), pady=S(4))
         self._status_frame.pack_propagate(False)
         self._status_label = ctk.CTkLabel(
             self._status_frame, text="\u25CF READY",
-            font=("Segoe UI", S(13), "bold"), text_color=DIM)
+            font=(FONT_FAMILY_ALT, S(12), "bold"), text_color=DIM)
         self._status_label.pack(expand=True)
 
-        # start/Stop button
         self._start_btn = ctk.CTkButton(
             sb, text="\u25B6  START BOT",
-            font=("Segoe UI", S(16), "bold"),
+            font=(FONT_FAMILY_ALT, S(16), "bold"),
             fg_color=ACCENT, hover_color=ACCENT_H, text_color=BRIGHT,
-            height=S(50), corner_radius=S(10),
+            height=S(52), corner_radius=S(12),
             command=self._toggle_bot
         )
-        self._start_btn.pack(fill="x", padx=S(12), pady=(S(4), S(14)))
+        self._start_btn.pack(fill="x", padx=S(14), pady=(S(6), S(10)))
+
+        bottom = ctk.CTkFrame(sb, fg_color="transparent")
+        bottom.pack(fill="x", padx=S(14), pady=(0, S(16)))
+        self._settings_btn = ctk.CTkButton(
+            bottom,
+            text="Settings",
+            anchor="w",
+            font=(FONT_FAMILY_ALT, S(13), "bold"),
+            fg_color=SECTION,
+            hover_color=CARD,
+            text_color=TXT,
+            height=S(44),
+            corner_radius=S(12),
+            border_width=1,
+            border_color=SEP,
+            command=lambda: self.show_page("settings"),
+        )
+        self._settings_btn.pack(fill="x")
+        self._sidebar_footer = ctk.CTkLabel(
+            bottom,
+            text="Device: disconnected",
+            font=(FONT_FAMILY_ALT, S(10)),
+            text_color=DIM_ALT,
+        )
+        self._sidebar_footer.pack(anchor="w", pady=(S(8), 0))
 
     # --- pAGE SWITCHING ---
 
@@ -579,11 +647,17 @@ class Dashboard(ctk.CTk):
         if name in self._pages:
             self._pages[name].pack(fill="both", expand=True)
         self._current_page = name
+        active_key = self._page_nav_owner.get(name, name)
         for key, btn in self._nav_btns.items():
-            if key == name:
-                btn.configure(fg_color=SEP, text_color=ACCENT)
+            if key == active_key:
+                btn.configure(fg_color=SECTION, text_color=BRIGHT, border_color=SEP_STRONG)
             else:
-                btn.configure(fg_color="transparent", text_color=TXT)
+                btn.configure(fg_color="transparent", text_color=TXT, border_color=SIDEBAR)
+        if hasattr(self, "_settings_btn"):
+            if active_key == "settings":
+                self._settings_btn.configure(fg_color=SECTION, border_color=SEP_STRONG, text_color=BRIGHT)
+            else:
+                self._settings_btn.configure(fg_color=SECTION, border_color=SEP, text_color=TXT)
 
     # --- hOME PAGE ---
 
@@ -593,27 +667,38 @@ class Dashboard(ctk.CTk):
                                       scrollbar_button_color=ACCENT)
         self._pages["home"] = page
 
-        # Header
-        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(12), height=S(65))
-        hdr.pack(fill="x", padx=S(20), pady=(S(16), S(10)))
+        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(18), height=S(92), border_width=1, border_color=SEP)
+        hdr.pack(fill="x", padx=S(20), pady=(S(16), S(12)))
         hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="Dashboard",
-                     font=("Segoe UI", S(24), "bold"),
-                     text_color=BRIGHT).pack(side="left", padx=S(20))
-        ctk.CTkLabel(hdr, text=self.version_tag,
-                     font=("Segoe UI", S(14)), text_color=DIM
-                     ).pack(side="left")
-        ctk.CTkLabel(hdr, text="Brawl Stars Bot",
-                     font=("Segoe UI", S(13)), text_color=DIM
-                     ).pack(side="right", padx=S(20))
+        left = ctk.CTkFrame(hdr, fg_color="transparent")
+        left.pack(side="left", fill="both", expand=True, padx=S(20), pady=S(16))
+        ctk.CTkLabel(left, text="PYLA CONTROL CENTER",
+                     font=(FONT_FAMILY, S(28), "bold"),
+                     text_color=BRIGHT).pack(anchor="w")
+        ctk.CTkLabel(left, text="One place for launch setup, roster management, farm routing and live control.",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=DIM_ALT).pack(anchor="w", pady=(S(4), 0))
+        right = ctk.CTkFrame(hdr, fg_color="transparent")
+        right.pack(side="right", padx=S(18), pady=S(16))
+        self._home_status_pill = ctk.CTkLabel(
+            right,
+            text="READY",
+            fg_color=SECTION,
+            corner_radius=S(999),
+            padx=S(16),
+            pady=S(8),
+            font=(FONT_FAMILY_ALT, S(11), "bold"),
+            text_color=BRIGHT,
+        )
+        self._home_status_pill.pack(anchor="e")
+        ctk.CTkLabel(right, text=self.version_tag,
+                     font=(FONT_FAMILY_ALT, S(11)), text_color=DIM).pack(anchor="e", pady=(S(8), 0))
 
-        # quick info cards
         cards = ctk.CTkFrame(page, fg_color="transparent")
-        cards.pack(fill="x", padx=S(20), pady=S(6))
+        cards.pack(fill="x", padx=S(20), pady=S(4))
         cards.grid_columnconfigure((0, 1, 2, 3), weight=1)
 
         self._home_brawler_lbl = self._info_card(
-            cards, "Brawler", "None", ACCENT, 0, 0)
+            cards, "Primary Brawler", "None", ACCENT, 0, 0)
         gm = self.bot_config.get("gamemode", "?").title()
         self._home_gm_lbl = self._info_card(
             cards, "Gamemode", gm, GOLD, 0, 1)
@@ -622,45 +707,173 @@ class Dashboard(ctk.CTk):
             cards, "Emulator", emu, CYAN, 0, 2)
         t = int(self.general_config.get("run_for_minutes", 0))
         self._home_timer_lbl = self._info_card(
-            cards, "Timer", f"{t} min" if t > 0 else "\u221E", PURPLE, 0, 3)
+            cards, "Runtime", f"{t} min" if t > 0 else "\u221E", PURPLE, 0, 3)
 
-        # quick-start hint
-        hint = ctk.CTkFrame(page, fg_color=SECTION, corner_radius=S(10))
-        hint.pack(fill="x", padx=S(20), pady=S(8))
-        ctk.CTkLabel(hint, text="\u2139  Select a Brawler in the Brawlers tab, "
-                     "then press START BOT to begin.",
-                     font=("Segoe UI", S(13)), text_color=TXT,
-                     wraplength=S(800)).pack(padx=S(16), pady=S(12))
+        control_grid = ctk.CTkFrame(page, fg_color="transparent")
+        control_grid.pack(fill="x", padx=S(20), pady=(S(6), S(4)))
+        control_grid.grid_columnconfigure((0, 1), weight=1)
 
-        # match history
+        launch_card = ctk.CTkFrame(control_grid, fg_color=PANEL, corner_radius=S(18), border_width=1, border_color=SEP)
+        launch_card.grid(row=0, column=0, sticky="nsew", padx=(0, S(8)), pady=0)
+        ctk.CTkLabel(launch_card, text="Launch Configuration",
+                     font=(FONT_FAMILY_ALT, S(17), "bold"), text_color=BRIGHT).pack(anchor="w", padx=S(18), pady=(S(16), S(4)))
+        ctk.CTkLabel(launch_card, text="Set the essentials once, then launch from here.",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=DIM_ALT).pack(anchor="w", padx=S(18), pady=(0, S(10)))
+
+        gm_values = [v[0] for v in GAMEMODES.values()]
+        current_gm = self.bot_config.get("gamemode", "brawlball")
+        self._cc_gm_var = ctk.StringVar(value=GAMEMODES.get(current_gm, ("Brawl Ball", 3))[0])
+        self._control_segment_row(launch_card, "Gamemode", gm_values[:3], self._cc_gm_var, self._on_control_center_gamemode_change)
+
+        self._cc_other_gm_var = ctk.StringVar(value=self._cc_gm_var.get())
+        other_row = ctk.CTkFrame(launch_card, fg_color="transparent")
+        other_row.pack(fill="x", padx=S(18), pady=(0, S(10)))
+        ctk.CTkLabel(other_row, text="Extended List", font=(FONT_FAMILY_ALT, S(12), "bold"), text_color=TXT).pack(side="left")
+        ctk.CTkOptionMenu(
+            other_row,
+            variable=self._cc_other_gm_var,
+            values=gm_values,
+            font=(FONT_FAMILY_ALT, S(12)),
+            fg_color=SECTION,
+            button_color=ACCENT,
+            button_hover_color=ACCENT_H,
+            dropdown_fg_color=PANEL,
+            dropdown_hover_color=CARD,
+            width=S(180),
+            command=self._on_control_center_gamemode_change,
+        ).pack(side="right")
+
+        self._cc_orient_var = ctk.StringVar(value=self.general_config.get("map_orientation", "vertical").title())
+        self._control_segment_row(launch_card, "Map Orientation", ["Vertical", "Horizontal"], self._cc_orient_var, self._on_control_center_orientation_change)
+
+        self._cc_emu_var = ctk.StringVar(value=self.general_config.get("current_emulator", "LDPlayer"))
+        self._control_segment_row(launch_card, "Emulator Target", EMULATORS, self._cc_emu_var, self._on_control_center_emulator_change)
+
+        timer_row = ctk.CTkFrame(launch_card, fg_color="transparent")
+        timer_row.pack(fill="x", padx=S(18), pady=(S(2), S(16)))
+        ctk.CTkLabel(timer_row, text="Run Timer (minutes, 0 = infinite)",
+                     font=(FONT_FAMILY_ALT, S(12), "bold"), text_color=TXT).pack(side="left")
+        self._cc_timer_var = tk.StringVar(value=str(self.general_config.get("run_for_minutes", 0)))
+        ctk.CTkEntry(
+            timer_row,
+            textvariable=self._cc_timer_var,
+            font=(FONT_FAMILY_ALT, S(12)),
+            width=S(92),
+            height=S(34),
+            fg_color=SECTION,
+            border_color=SEP_STRONG,
+            text_color=BRIGHT,
+            corner_radius=S(10),
+            justify="center",
+        ).pack(side="right")
+
+        action_card = ctk.CTkFrame(control_grid, fg_color=PANEL, corner_radius=S(18), border_width=1, border_color=SEP)
+        action_card.grid(row=0, column=1, sticky="nsew", padx=(S(8), 0), pady=0)
+        ctk.CTkLabel(action_card, text="Ready Queue",
+                     font=(FONT_FAMILY_ALT, S(17), "bold"), text_color=BRIGHT).pack(anchor="w", padx=S(18), pady=(S(16), S(4)))
+        self._home_roster_summary = ctk.CTkLabel(
+            action_card,
+            text="No brawlers selected yet. Build your roster in the Brawlers page.",
+            font=(FONT_FAMILY_ALT, S(12)),
+            text_color=DIM_ALT,
+            justify="left",
+            wraplength=S(420),
+        )
+        self._home_roster_summary.pack(anchor="w", padx=S(18), pady=(0, S(12)))
+
+        cta_row = ctk.CTkFrame(action_card, fg_color="transparent")
+        cta_row.pack(fill="x", padx=S(18), pady=(0, S(10)))
+        self._home_action_btn = ctk.CTkButton(
+            cta_row,
+            text="START BOT",
+            font=(FONT_FAMILY_ALT, S(18), "bold"),
+            fg_color=ACCENT,
+            hover_color=ACCENT_H,
+            height=S(54),
+            corner_radius=S(14),
+            command=self._toggle_bot,
+        )
+        self._home_action_btn.pack(fill="x")
+
+        quick_row = ctk.CTkFrame(action_card, fg_color="transparent")
+        quick_row.pack(fill="x", padx=S(18), pady=(0, S(8)))
+        ctk.CTkButton(
+            quick_row,
+            text="Open Brawlers",
+            font=(FONT_FAMILY_ALT, S(12), "bold"),
+            fg_color=SECTION,
+            hover_color=CARD,
+            height=S(38),
+            corner_radius=S(12),
+            border_width=1,
+            border_color=SEP,
+            command=lambda: self.show_page("brawler"),
+        ).pack(side="left", expand=True, fill="x", padx=(0, S(5)))
+        ctk.CTkButton(
+            quick_row,
+            text="Farm Modes",
+            font=(FONT_FAMILY_ALT, S(12), "bold"),
+            fg_color=SECTION,
+            hover_color=CARD,
+            height=S(38),
+            corner_radius=S(12),
+            border_width=1,
+            border_color=SEP,
+            command=lambda: self.show_page("farm"),
+        ).pack(side="left", expand=True, fill="x", padx=(S(5), 0))
+
+        hint = ctk.CTkFrame(page, fg_color=SECTION, corner_radius=S(16), border_width=1, border_color=SEP)
+        hint.pack(fill="x", padx=S(20), pady=(S(12), S(8)))
+        ctk.CTkLabel(hint, text="\u2139  Login stays intact when needed, but the setup flow is now unified here. If you are running localhost mode, you can launch immediately once your roster is ready.",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=TXT,
+                     wraplength=S(980), justify="left").pack(anchor="w", padx=S(16), pady=S(14))
+
         ctk.CTkFrame(page, fg_color=SEP, height=1).pack(
             fill="x", padx=S(20), pady=S(10))
-        ctk.CTkLabel(page, text="Match History",
-                     font=("Segoe UI", S(18), "bold"),
+        ctk.CTkLabel(page, text="Recent Match History",
+                     font=(FONT_FAMILY_ALT, S(18), "bold"),
                      text_color=BRIGHT).pack(anchor="w", padx=S(24), pady=(S(4), S(6)))
         self._home_hist_frame = ctk.CTkFrame(page, fg_color="transparent")
         self._home_hist_frame.pack(fill="x", padx=S(20), pady=S(4))
         self._refresh_home_history()
 
-        # hotkey info
-        info = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
+        info = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(16), border_width=1, border_color=SEP)
         info.pack(fill="x", padx=S(20), pady=(S(10), S(16)))
         ctk.CTkLabel(info,
                      text="F9 Stop  \u2502  F8 Pause/Resume  \u2502  F7 Toggle Overlay",
-                     font=("Segoe UI", S(12)), text_color=DIM).pack(pady=S(10))
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=DIM).pack(pady=S(12))
 
     def _info_card(self, parent, title, value, color, row, col):
-        card = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=S(10),
-                            height=S(90))
+        card = ctk.CTkFrame(parent, fg_color=PANEL, corner_radius=S(16),
+                            height=S(94), border_width=1, border_color=SEP)
         card.grid(row=row, column=col, padx=S(5), pady=S(4), sticky="nsew")
         card.pack_propagate(False)
-        ctk.CTkLabel(card, text=title, font=("Segoe UI", S(11)),
+        ctk.CTkLabel(card, text=title, font=(FONT_FAMILY_ALT, S(10), "bold"),
                      text_color=DIM).pack(anchor="w", padx=S(14), pady=(S(14), 0))
         lbl = ctk.CTkLabel(card, text=str(value),
-                           font=("Segoe UI", S(18), "bold"),
+                           font=(FONT_FAMILY_ALT, S(18), "bold"),
                            text_color=color)
         lbl.pack(anchor="w", padx=S(14))
         return lbl
+
+    def _control_segment_row(self, parent, title, values, variable, command):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=S(18), pady=(0, S(12)))
+        ctk.CTkLabel(row, text=title, font=(FONT_FAMILY_ALT, S(12), "bold"), text_color=TXT).pack(anchor="w", pady=(0, S(6)))
+        ctk.CTkSegmentedButton(
+            row,
+            values=values,
+            variable=variable,
+            command=command,
+            height=S(36),
+            fg_color=SECTION,
+            selected_color=ACCENT,
+            selected_hover_color=ACCENT_H,
+            unselected_color=CARD,
+            unselected_hover_color=SECTION,
+            text_color=TXT,
+            font=(FONT_FAMILY_ALT, S(11), "bold"),
+        ).pack(fill="x")
 
     def _refresh_home_history(self):
         for w in self._home_hist_frame.winfo_children():
@@ -681,7 +894,7 @@ class Dashboard(ctk.CTk):
         if not rows:
             ctk.CTkLabel(self._home_hist_frame,
                          text="No match data yet - pick a brawler and start!",
-                         font=("Segoe UI", S(14)), text_color=DIM
+                         font=(FONT_FAMILY_ALT, S(14)), text_color=DIM
                          ).pack(pady=S(16))
             return
 
@@ -692,32 +905,88 @@ class Dashboard(ctk.CTk):
         hdr.pack_propagate(False)
         for txt, w in [("Brawler", S(130)), ("Record", S(140)),
                        ("Games", S(70)), ("Win Rate", S(90))]:
-            ctk.CTkLabel(hdr, text=txt, font=("Segoe UI", S(10)),
+            ctk.CTkLabel(hdr, text=txt, font=(FONT_FAMILY_ALT, S(10), "bold"),
                          text_color=DIM, width=w, anchor="w"
                          ).pack(side="left", padx=S(4))
 
         for brawler, v, d, dr, total, wr in rows[:12]:
             row = ctk.CTkFrame(self._home_hist_frame, fg_color=PANEL,
-                               corner_radius=S(6), height=S(34))
+                               corner_radius=S(10), height=S(38), border_width=1, border_color=SEP)
             row.pack(fill="x", pady=S(2))
             row.pack_propagate(False)
             ctk.CTkLabel(row, text=brawler.title(),
-                         font=("Segoe UI", S(12), "bold"),
+                         font=(FONT_FAMILY_ALT, S(12), "bold"),
                          text_color=BRIGHT, width=S(130), anchor="w"
                          ).pack(side="left", padx=(S(10), S(4)))
             ctk.CTkLabel(row, text=f"{v}W / {d}L / {dr}D",
-                         font=("Segoe UI", S(11)), text_color=TXT,
+                         font=(FONT_FAMILY_ALT, S(11)), text_color=TXT,
                          width=S(140), anchor="w"
                          ).pack(side="left", padx=S(4))
             ctk.CTkLabel(row, text=str(total),
-                         font=("Segoe UI", S(11)), text_color=TXT,
+                         font=(FONT_FAMILY_ALT, S(11)), text_color=TXT,
                          width=S(70), anchor="w"
                          ).pack(side="left", padx=S(4))
             wr_c = GREEN if wr >= 50 else RED
             ctk.CTkLabel(row, text=f"{wr:.0f}%",
-                         font=("Segoe UI", S(12), "bold"),
+                         font=(FONT_FAMILY_ALT, S(12), "bold"),
                          text_color=wr_c, width=S(90), anchor="w"
                          ).pack(side="left", padx=S(4))
+
+    def _refresh_history_page(self):
+        if not hasattr(self, "_history_results_frame"):
+            return
+        for widget in self._history_results_frame.winfo_children():
+            widget.destroy()
+
+        hist = self.match_history
+        rows = []
+        for brawler, data in hist.items():
+            if isinstance(data, dict):
+                v = int(data.get("victory", 0))
+                d = int(data.get("defeat", 0))
+                dr = int(data.get("draw", 0))
+                total = v + d + dr
+                if total > 0:
+                    rows.append((brawler, v, d, dr, total))
+        rows.sort(key=lambda item: item[4], reverse=True)
+
+        if not rows:
+            ctk.CTkLabel(
+                self._history_results_frame,
+                text="No history yet.",
+                font=(FONT_FAMILY_ALT, S(12)),
+                text_color=DIM,
+            ).pack(anchor="w", padx=S(6), pady=S(4))
+            return
+
+        for idx, (brawler, v, d, dr, total) in enumerate(rows[:12]):
+            wr = (v / total) * 100 if total else 0
+            row = ctk.CTkFrame(
+                self._history_results_frame,
+                fg_color=SECTION if idx % 2 == 0 else PANEL,
+                corner_radius=S(10),
+            )
+            row.pack(fill="x", pady=S(2))
+            ctk.CTkLabel(
+                row,
+                text=brawler.title(),
+                font=(FONT_FAMILY_ALT, S(12), "bold"),
+                text_color=BRIGHT,
+                anchor="w",
+            ).pack(side="left", padx=S(12), pady=S(8))
+            ctk.CTkLabel(
+                row,
+                text=f"{v}W / {d}L / {dr}D  •  {total} matches",
+                font=(FONT_FAMILY_ALT, S(11)),
+                text_color=TXT,
+            ).pack(side="left", padx=S(8))
+            wr_color = GREEN if wr >= 55 else GOLD if wr >= 45 else RED
+            ctk.CTkLabel(
+                row,
+                text=f"{wr:.0f}% WR",
+                font=(FONT_FAMILY_ALT, S(11), "bold"),
+                text_color=wr_color,
+            ).pack(side="right", padx=S(12))
 
     def _load_credit_developers(self):
         """Load contributors from git history (name + commit count)."""
@@ -755,51 +1024,59 @@ class Dashboard(ctk.CTk):
         except Exception:
             return fallback
 
-    def _build_credits_page(self):
+    def _build_history_page(self):
         page = ctk.CTkScrollableFrame(self._content, fg_color=BG,
                                       corner_radius=0,
                                       scrollbar_button_color=ACCENT)
-        self._pages["credits"] = page
+        self._pages["history"] = page
 
-        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(12), height=S(65))
+        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(16), height=S(68), border_width=1, border_color=SEP)
         hdr.pack(fill="x", padx=S(20), pady=(S(16), S(10)))
         hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="\U0001F3C5  Credits & Community",
-                     font=("Segoe UI", S(22), "bold"),
+        ctk.CTkLabel(hdr, text="History",
+                     font=(FONT_FAMILY_ALT, S(22), "bold"),
                      text_color=BRIGHT).pack(side="left", padx=S(16))
         ctk.CTkLabel(hdr, text=self.version_tag,
-                     font=("Segoe UI", S(13)), text_color=DIM).pack(side="right", padx=S(16))
+                     font=(FONT_FAMILY_ALT, S(13)), text_color=DIM).pack(side="right", padx=S(16))
+
+        hist_card = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(16), border_width=1, border_color=SEP)
+        hist_card.pack(fill="x", padx=S(20), pady=(S(2), S(10)))
+        ctk.CTkLabel(hist_card, text="Recent Results",
+                     font=(FONT_FAMILY_ALT, S(15), "bold"),
+                     text_color=BRIGHT).pack(anchor="w", padx=S(14), pady=(S(12), S(8)))
+        self._history_results_frame = ctk.CTkFrame(hist_card, fg_color="transparent")
+        self._history_results_frame.pack(fill="x", padx=S(10), pady=(0, S(10)))
+        self._refresh_history_page()
 
         info = ctk.CTkFrame(page, fg_color=SECTION, corner_radius=S(10))
         info.pack(fill="x", padx=S(20), pady=S(6))
         ctk.CTkLabel(
             info,
-            text="Thanks to everyone building and improving PylaAI.\n"
-                 "Contributors are loaded from git history when available.",
-            font=("Segoe UI", S(12)), text_color=TXT, justify="left"
+            text="This page keeps the practical history view first, while still keeping project links and credits close by.",
+            font=(FONT_FAMILY_ALT, S(12)), text_color=TXT, justify="left"
         ).pack(anchor="w", padx=S(12), pady=S(10))
         ctk.CTkLabel(
             info,
-            text="Fork note: maintained as a newer fork by norphy (Discord: @.norphy).",
-            font=("Segoe UI", S(10)), text_color=DIM, justify="left"
+            text="Match history comes from cfg/match_history.toml and updates after each session.",
+            font=(FONT_FAMILY_ALT, S(10)), text_color=DIM, justify="left"
         ).pack(anchor="w", padx=S(12), pady=(0, S(8)))
 
         project = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
         project.pack(fill="x", padx=S(20), pady=S(4))
         ctk.CTkLabel(project, text="Project Info",
-                     font=("Segoe UI", S(14), "bold"),
+                     font=(FONT_FAMILY_ALT, S(14), "bold"),
                      text_color=ACCENT).pack(anchor="w", padx=S(12), pady=(S(8), S(4)))
         ctk.CTkLabel(project,
                      text=f"Name: PylaAI\nVersion: {self.version_tag}\n"
-                          f"UI: Unified Dashboard\n"
-                          "Main Areas: Home, Settings, Brawlers, Farm, Quest, Live Stats, Credits",
-                     font=("Segoe UI", S(12)), text_color=TXT,
+                          f"UI: Pyla Control Center\n"
+                          "Main Areas: Control Center, Brawlers, Farm, Live, History, Settings",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=TXT,
                      justify="left").pack(anchor="w", padx=S(12), pady=(0, S(10)))
 
         contrib = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
         contrib.pack(fill="x", padx=S(20), pady=S(4))
         ctk.CTkLabel(contrib, text="Developers",
-                     font=("Segoe UI", S(14), "bold"),
+                     font=(FONT_FAMILY_ALT, S(14), "bold"),
                      text_color=ACCENT).pack(anchor="w", padx=S(12), pady=(S(8), S(6)))
 
         developers = self._load_credit_developers()
@@ -820,7 +1097,7 @@ class Dashboard(ctk.CTk):
         discord_card = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
         discord_card.pack(fill="x", padx=S(20), pady=(S(6), S(12)))
         ctk.CTkLabel(discord_card, text="Discord",
-                     font=("Segoe UI", S(14), "bold"),
+                     font=(FONT_FAMILY_ALT, S(14), "bold"),
                      text_color=ACCENT).pack(anchor="w", padx=S(12), pady=(S(8), S(4)))
 
         discord_url = get_discord_link()
@@ -1042,55 +1319,54 @@ class Dashboard(ctk.CTk):
         self._slider_row(tim_f, "Idle Check", self._t_idle, 1, 30, "s")
 
         # oVERLAY SECTION
-        self._section_header(page, "Visual Overlay")
-        ovl_f = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
-        ovl_f.pack(fill="x", padx=S(20), pady=S(4))
-
+        self._ovl_toggles = {}
         self._ovl_var = ctk.StringVar(
             value=self.general_config.get("visual_overlay_enabled", "no"))
-        self._toggle_row(ovl_f, "Overlay Enabled", self._ovl_var)
-
         self._ovl_opacity = tk.DoubleVar(
             value=float(self.general_config.get("visual_overlay_opacity", 180)))
-        self._slider_row(ovl_f, "Opacity", self._ovl_opacity, 50, 255)
+        if self._capabilities.get("visual_overlay"):
+            self._section_header(page, "Visual Overlay")
+            ovl_f = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
+            ovl_f.pack(fill="x", padx=S(20), pady=S(4))
 
-        overlay_toggles = [
-            ("Player Dot", "visual_overlay_player_dot"),
-            ("Attack Range", "visual_overlay_attack_range"),
-            ("Safe Range", "visual_overlay_safe_range"),
-            ("Super Range", "visual_overlay_super_range"),
-            ("Movement Arrow", "visual_overlay_movement_arrow"),
-            ("LoS Lines", "visual_overlay_los_all_enemies"),
-            ("Enemies", "visual_overlay_enemies"),
-            ("Teammates", "visual_overlay_teammates"),
-            ("Walls", "visual_overlay_walls"),
-            ("HP Bars", "visual_overlay_hp_bars"),
-            ("HUD Panel", "visual_overlay_brawler_hud"),
-            ("Gas Zone", "visual_overlay_gas_zone"),
-            ("Danger Zones", "visual_overlay_danger_zones"),
-            ("Decision Banner", "visual_overlay_decision_banner"),
-            ("Target Info", "visual_overlay_target_info"),
-            ("Ghost Dots", "visual_overlay_ghost_dots"),
-            ("Hide When Dead", "visual_overlay_hide_when_dead"),
-        ]
-        self._ovl_toggles = {}
-        # Two-column grid for overlay toggles
-        grid_f = ctk.CTkFrame(ovl_f, fg_color="transparent")
-        grid_f.pack(fill="x", padx=S(14), pady=S(4))
-        grid_f.grid_columnconfigure((0, 1), weight=1)
-        for i, (label, key) in enumerate(overlay_toggles):
-            val = self.general_config.get(key, "yes")
-            var = ctk.StringVar(value=val)
-            self._ovl_toggles[key] = var
-            r, c = divmod(i, 2)
-            f = ctk.CTkFrame(grid_f, fg_color="transparent")
-            f.grid(row=r, column=c, sticky="w", padx=S(4), pady=S(2))
-            cb = ctk.CTkCheckBox(
-                f, text=label, font=("Segoe UI", S(12)),
-                variable=var, onvalue="yes", offvalue="no",
-                fg_color=ACCENT, hover_color=ACCENT_H,
-                text_color=TXT, checkbox_height=S(20), checkbox_width=S(20))
-            cb.pack(anchor="w")
+            self._toggle_row(ovl_f, "Overlay Enabled", self._ovl_var)
+            self._slider_row(ovl_f, "Opacity", self._ovl_opacity, 50, 255)
+
+            overlay_toggles = [
+                ("Player Dot", "visual_overlay_player_dot"),
+                ("Attack Range", "visual_overlay_attack_range"),
+                ("Safe Range", "visual_overlay_safe_range"),
+                ("Super Range", "visual_overlay_super_range"),
+                ("Movement Arrow", "visual_overlay_movement_arrow"),
+                ("LoS Lines", "visual_overlay_los_all_enemies"),
+                ("Enemies", "visual_overlay_enemies"),
+                ("Teammates", "visual_overlay_teammates"),
+                ("Walls", "visual_overlay_walls"),
+                ("HP Bars", "visual_overlay_hp_bars"),
+                ("HUD Panel", "visual_overlay_brawler_hud"),
+                ("Gas Zone", "visual_overlay_gas_zone"),
+                ("Danger Zones", "visual_overlay_danger_zones"),
+                ("Decision Banner", "visual_overlay_decision_banner"),
+                ("Target Info", "visual_overlay_target_info"),
+                ("Ghost Dots", "visual_overlay_ghost_dots"),
+                ("Hide When Dead", "visual_overlay_hide_when_dead"),
+            ]
+            grid_f = ctk.CTkFrame(ovl_f, fg_color="transparent")
+            grid_f.pack(fill="x", padx=S(14), pady=S(4))
+            grid_f.grid_columnconfigure((0, 1), weight=1)
+            for i, (label, key) in enumerate(overlay_toggles):
+                val = self.general_config.get(key, "yes")
+                var = ctk.StringVar(value=val)
+                self._ovl_toggles[key] = var
+                r, c = divmod(i, 2)
+                f = ctk.CTkFrame(grid_f, fg_color="transparent")
+                f.grid(row=r, column=c, sticky="w", padx=S(4), pady=S(2))
+                cb = ctk.CTkCheckBox(
+                    f, text=label, font=("Segoe UI", S(12)),
+                    variable=var, onvalue="yes", offvalue="no",
+                    fg_color=ACCENT, hover_color=ACCENT_H,
+                    text_color=TXT, checkbox_height=S(20), checkbox_width=S(20))
+                cb.pack(anchor="w")
 
         # sAVE BUTTON
         ctk.CTkButton(page, text="\U0001F4BE  Save Settings",
@@ -1145,14 +1421,39 @@ class Dashboard(ctk.CTk):
                 self.bot_config["gamemode"] = key
                 self.bot_config["gamemode_type"] = gtype
                 break
-        self._home_gm_lbl.configure(text=display_name)
+        if hasattr(self, "_home_gm_lbl"):
+            self._home_gm_lbl.configure(text=display_name)
+        if hasattr(self, "_gm_var") and self._gm_var.get() != display_name:
+            self._gm_var.set(display_name)
+        if hasattr(self, "_cc_gm_var") and self._cc_gm_var.get() != display_name:
+            self._cc_gm_var.set(display_name)
+        if hasattr(self, "_cc_other_gm_var") and self._cc_other_gm_var.get() != display_name:
+            self._cc_other_gm_var.set(display_name)
 
     def _on_emulator_change(self, emu):
         self.general_config["current_emulator"] = emu
-        self._home_emu_lbl.configure(text=emu)
+        if hasattr(self, "_home_emu_lbl"):
+            self._home_emu_lbl.configure(text=emu)
+        if hasattr(self, "_emu_var") and self._emu_var.get() != emu:
+            self._emu_var.set(emu)
+        if hasattr(self, "_cc_emu_var") and self._cc_emu_var.get() != emu:
+            self._cc_emu_var.set(emu)
 
     def _on_orient_change(self, val):
         self.general_config["map_orientation"] = val.lower()
+        if hasattr(self, "_orient_var") and self._orient_var.get() != val:
+            self._orient_var.set(val)
+        if hasattr(self, "_cc_orient_var") and self._cc_orient_var.get() != val:
+            self._cc_orient_var.set(val)
+
+    def _on_control_center_gamemode_change(self, display_name):
+        self._on_gamemode_change(display_name)
+
+    def _on_control_center_emulator_change(self, emu):
+        self._on_emulator_change(emu)
+
+    def _on_control_center_orientation_change(self, value):
+        self._on_orient_change(value)
 
     def _save_all_settings(self):
         """Persist all settings to config files."""
@@ -1175,9 +1476,14 @@ class Dashboard(ctk.CTk):
         gc["visual_overlay_enabled"] = self._ovl_var.get()
         gc["visual_overlay_opacity"] = int(self._ovl_opacity.get())
         try:
-            gc["run_for_minutes"] = int(self._timer_var.get())
+            timer_value = int(self._cc_timer_var.get() if hasattr(self, "_cc_timer_var") else self._timer_var.get())
+            gc["run_for_minutes"] = timer_value
+            if hasattr(self, "_timer_var") and self._timer_var.get() != str(timer_value):
+                self._timer_var.set(str(timer_value))
         except ValueError:
             gc["run_for_minutes"] = 0
+            if hasattr(self, "_timer_var"):
+                self._timer_var.set("0")
         for key, var in self._ovl_toggles.items():
             gc[key] = var.get()
         save_dict_as_toml(gc, "cfg/general_config.toml")
@@ -1874,6 +2180,7 @@ class Dashboard(ctk.CTk):
                 print(f"Error loading config: {e}")
 
     def _update_sidebar_brawler(self):
+        roster_count = len(self.brawlers_data)
         if self._quest_farm_active:
             self._sb_brawler_label.configure(text="Quest Farm")
             self._home_brawler_lbl.configure(text="Quest Farm")
@@ -1887,6 +2194,19 @@ class Dashboard(ctk.CTk):
         else:
             self._sb_brawler_label.configure(text="None")
             self._home_brawler_lbl.configure(text="None")
+        self._sb_brawler_meta.configure(text=f"{roster_count} ready" if roster_count else "0 ready")
+        if hasattr(self, "_home_roster_summary"):
+            if self.brawlers_data:
+                preview = ", ".join(item["brawler"].title() for item in self.brawlers_data[:4])
+                if len(self.brawlers_data) > 4:
+                    preview += f" +{len(self.brawlers_data) - 4} more"
+                self._home_roster_summary.configure(
+                    text=f"{roster_count} brawler{'s' if roster_count != 1 else ''} ready.\n{preview}"
+                )
+            else:
+                self._home_roster_summary.configure(
+                    text="No brawlers selected yet. Build your roster in the Brawlers page."
+                )
 
     # --- tROPHY FARM PAGE ---
 
@@ -1896,27 +2216,42 @@ class Dashboard(ctk.CTk):
                                       scrollbar_button_color=ACCENT)
         self._pages["farm"] = page
 
-        # Header
-        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(12),
+        hdr = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(16),
                            height=S(65))
         hdr.pack(fill="x", padx=S(20), pady=(S(16), S(10)))
         hdr.pack_propagate(False)
-        ctk.CTkLabel(hdr, text="\U0001F3C6  Smart Trophy Farm",
-                     font=("Segoe UI", S(22), "bold"),
+        ctk.CTkLabel(hdr, text="Farm",
+                     font=(FONT_FAMILY_ALT, S(22), "bold"),
                      text_color=BRIGHT).pack(side="left", padx=S(16))
         self._farm_status_lbl = ctk.CTkLabel(
-            hdr, text="DISABLED", font=("Segoe UI", S(13), "bold"),
+            hdr, text="DISABLED", font=(FONT_FAMILY_ALT, S(13), "bold"),
             text_color=DIM)
         self._farm_status_lbl.pack(side="right", padx=S(16))
 
-        # Description
+        mode_switch = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(14), border_width=1, border_color=SEP)
+        mode_switch.pack(fill="x", padx=S(20), pady=(S(2), S(10)))
+        ctk.CTkLabel(mode_switch,
+                     text="Switch between trophy routing and quest routing without leaving the unified shell.",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=TXT).pack(side="left", padx=S(14), pady=S(12))
+        ctk.CTkButton(
+            mode_switch,
+            text="Quest Farm",
+            font=(FONT_FAMILY_ALT, S(12), "bold"),
+            fg_color=SECTION,
+            hover_color=CARD,
+            height=S(36),
+            corner_radius=S(10),
+            border_width=1,
+            border_color=SEP,
+            command=lambda: self.show_page("quest"),
+        ).pack(side="right", padx=S(12), pady=S(10))
+
         desc = ctk.CTkFrame(page, fg_color=SECTION, corner_radius=S(10))
         desc.pack(fill="x", padx=S(20), pady=S(6))
         ctk.CTkLabel(desc,
-                     text="\u2139  Automatically plays all brawlers below your target trophy count.\n"
-                          "The bot picks the brawler with the lowest trophies first and switches\n"
-                          "once a brawler reaches the target. Trophies update via OCR after each match.",
-                     font=("Segoe UI", S(12)), text_color=TXT, justify="left",
+                     text="\u2139  Trophy Farm automatically rotates through eligible brawlers below your target count.\n"
+                          "Use Quest Farm when you want the bot to route by active quests instead.",
+                     font=(FONT_FAMILY_ALT, S(12)), text_color=TXT, justify="left",
                      wraplength=S(750)).pack(padx=S(14), pady=S(10))
 
         # aCTION BUTTONS (top, always visible)
@@ -3032,7 +3367,17 @@ class Dashboard(ctk.CTk):
         if not self._live_running:
             return
         try:
+            now = time.time()
+            history_updated = False
+            if now - self._last_history_refresh_ts > 2.0:
+                self.match_history = load_toml_as_dict("cfg/match_history.toml")
+                self._last_history_refresh_ts = now
+                history_updated = True
             self._refresh_live()
+            if history_updated and self._current_page == "home":
+                self._refresh_home_history()
+            elif history_updated and self._current_page == "history":
+                self._refresh_history_page()
             if self._current_page == "live" or self.bot_running:
                 self._update_status_display()
         except Exception:
@@ -3047,12 +3392,24 @@ class Dashboard(ctk.CTk):
             self._start_btn.configure(
                 text="\u25A0  STOP BOT", fg_color=RED,
                 hover_color="#CC2222")
+            if hasattr(self, "_home_status_pill"):
+                self._home_status_pill.configure(text=state, fg_color=ACCENT_D, text_color=BRIGHT)
+            if hasattr(self, "_home_action_btn"):
+                self._home_action_btn.configure(text="STOP BOT", fg_color=RED, hover_color="#CC2222")
+            if hasattr(self, "_sidebar_footer"):
+                self._sidebar_footer.configure(text="Device: bot active")
         else:
             self._status_label.configure(
                 text="\u25CF READY", text_color=DIM)
             self._start_btn.configure(
                 text="\u25B6  START BOT", fg_color=ACCENT,
                 hover_color=ACCENT_H)
+            if hasattr(self, "_home_status_pill"):
+                self._home_status_pill.configure(text="READY", fg_color=SECTION, text_color=BRIGHT)
+            if hasattr(self, "_home_action_btn"):
+                self._home_action_btn.configure(text="START BOT", fg_color=ACCENT, hover_color=ACCENT_H)
+            if hasattr(self, "_sidebar_footer"):
+                self._sidebar_footer.configure(text="Device: ready")
 
     def _refresh_live(self):
         with self._live_lock:
@@ -3456,11 +3813,18 @@ class Dashboard(ctk.CTk):
             main_module = sys.modules.get('__main__')
             if main_module and hasattr(main_module, '_active_dashboard'):
                 main_module._active_dashboard = self
-            self._pyla_main(
-                self.brawlers_data,
-                external_stop_event=self._bot_stop_event,
-                external_pause_event=self._bot_pause_event,
-            )
+            try:
+                sig = inspect.signature(self._pyla_main)
+                if "external_stop_event" in sig.parameters:
+                    self._pyla_main(
+                        self.brawlers_data,
+                        external_stop_event=self._bot_stop_event,
+                        external_pause_event=self._bot_pause_event,
+                    )
+                else:
+                    self._pyla_main(self.brawlers_data)
+            except (TypeError, ValueError):
+                self._pyla_main(self.brawlers_data)
         except Exception as e:
             print(f"[DASHBOARD] Bot thread error: {e}")
             import traceback
