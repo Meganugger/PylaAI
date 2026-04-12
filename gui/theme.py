@@ -5,23 +5,58 @@ from utils import get_dpi_scale
 
 ORIG_SCREEN_WIDTH = 1920
 ORIG_SCREEN_HEIGHT = 1080
-FONT_FAMILY = "Segoe UI"
+FONT_FAMILY = "Bahnschrift"
+FONT_FAMILY_ALT = "Segoe UI"
 
 COLORS = {
-    "bg": "#0F141B",
-    "surface": "#171E28",
-    "surface_alt": "#212A36",
-    "surface_alt_2": "#273241",
-    "border": "#313D4E",
-    "text": "#F3F6FA",
-    "muted": "#AEB8C6",
-    "accent": "#4E86FF",
-    "accent_hover": "#6A99FF",
-    "accent_soft": "#284C8F",
-    "success": "#60C58A",
-    "danger": "#F06F6F",
-    "warning": "#F1B860",
-    "link": "#8FBCFF",
+    "bg": "#090A0E",
+    "bg_alt": "#0D1016",
+    "sidebar": "#07080C",
+    "surface": "#11141B",
+    "surface_alt": "#171C25",
+    "surface_alt_2": "#1E2530",
+    "surface_elevated": "#242D3A",
+    "border": "#2C3442",
+    "border_strong": "#3C4657",
+    "text": "#F4F7FB",
+    "text_bright": "#FFFFFF",
+    "muted": "#9DA7B8",
+    "muted_alt": "#778194",
+    "accent": "#ED2A2A",
+    "accent_hover": "#FF4B36",
+    "accent_soft": "#5D1E23",
+    "accent_muted": "#F18E54",
+    "accent_dim": "#A3645C",
+    "success": "#4FD08E",
+    "danger": "#F16C6C",
+    "warning": "#F5BC52",
+    "info": "#72B7FF",
+    "gold": "#FFD166",
+    "link": "#93C5FD",
+}
+
+TYPOGRAPHY = {
+    "eyebrow": 10,
+    "label": 12,
+    "body": 13,
+    "body_large": 15,
+    "title": 24,
+    "hero": 30,
+}
+
+RADIUS = {
+    "sm": 8,
+    "md": 12,
+    "lg": 18,
+    "xl": 24,
+}
+
+SPACING = {
+    "xs": 6,
+    "sm": 10,
+    "md": 16,
+    "lg": 24,
+    "xl": 32,
 }
 
 
@@ -42,6 +77,10 @@ def S(value):
 
 def font(size, weight="normal"):
     return (FONT_FAMILY, S(size), weight)
+
+
+def ui_font(size, weight="normal"):
+    return (FONT_FAMILY_ALT, S(size), weight)
 
 
 def apply_appearance():
