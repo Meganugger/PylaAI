@@ -1,3 +1,4 @@
+import json
 import os
 import sys
 
@@ -6,36 +7,60 @@ from utils import api_base_url
 
 sys.path.append(os.path.abspath('../'))
 
+BRAWLER_DATA_FILE = "latest_brawler_data.json"
+
 
 class App:
+    """
+    Unified dashboard-based app.
+    Always shows the dashboard UI -- no more autonomous mode bypass.
+    """
 
     def __init__(self, login_page, select_brawler_page, pyla_main, brawlers, hub_menu):
         self.login = login_page
         self.select_brawler = select_brawler_page
+        self.logged_in = False
+        self.brawler_data = None
         self.pyla_main = pyla_main
         self.brawlers = brawlers
         self.hub_menu = hub_menu
 
-    def run_login(self):
-        return bool(self.login())
+    def set_is_logged(self, value):
+        self.logged_in = value
 
-    def run_hub(self, pyla_version, get_latest_version):
-        latest_version = pyla_version if api_base_url == "localhost" else get_latest_version()
-        self.hub_menu(pyla_version, latest_version)
+    def set_data(self, value):
+        self.brawler_data = value
 
-    def run_brawler_setup(self):
-        screen = self.select_brawler(brawlers=self.brawlers)
-        return getattr(screen, "result_data", None)
+    @staticmethod
+    def _load_saved_brawler_data():
+        """Try to load saved brawler data for pre-filling the dashboard."""
+        if not os.path.exists(BRAWLER_DATA_FILE):
+            return None
+        try:
+            with open(BRAWLER_DATA_FILE, "r") as f:
+                data = json.load(f)
+            if isinstance(data, list) and len(data) > 0 and "brawler" in data[0]:
+                return data
+        except (json.JSONDecodeError, KeyError, TypeError):
+            pass
+        return None
 
     def start(self, pyla_version, get_latest_version):
-        if not self.run_login():
-            return
+        from dashboard import Dashboard
 
-        self.run_hub(pyla_version, get_latest_version)
-        brawler_data = self.run_brawler_setup()
-        if not brawler_data:
-            return
+        dashboard = Dashboard(
+            version_str=pyla_version,
+            brawlers=self.brawlers,
+            pyla_main_fn=self.pyla_main,
+            login_fn=self.login,
+        )
 
-        utils.save_brawler_data(brawler_data)
-        self.pyla_main(brawler_data)
+        saved = self._load_saved_brawler_data()
+        if saved:
+            dashboard.brawlers_data = saved
+            dashboard._update_sidebar_brawler()
+            dashboard._refresh_brawler_grid()
+            print(f"[DASHBOARD] Pre-loaded saved brawler: "
+                  f"{', '.join(d['brawler'] for d in saved)}")
 
+        dashboard.run()
