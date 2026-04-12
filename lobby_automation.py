@@ -112,6 +112,7 @@ class LobbyAutomation:
             'shey': BrawlerName.Shelly.value,
             'shlly': BrawlerName.Shelly.value,
             'larryslawrie': BrawlerName.Larry.value,
+            '[eon': BrawlerName.Leon.value,
         }.get(potential_brawler_name, None)
 
         return matched_typo or potential_brawler_name

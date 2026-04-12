@@ -617,7 +617,7 @@ class Play(Movement):
                 self.use_gadget()
                 self.time_since_gadget_checked = time.time()
                 self.is_gadget_ready = False
-            if self.is_hypercharge_ready:
+            if self.is_hypercharge_ready and self.is_super_ready:
                 self.use_hypercharge()
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False

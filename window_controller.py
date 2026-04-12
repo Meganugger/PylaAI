@@ -20,7 +20,10 @@ from utils import load_toml_as_dict
 
 # --- Configuration ---
 brawl_stars_width, brawl_stars_height = 1920, 1080
-BRAWL_STARS_PACKAGE = "com.supercell.brawlstars"
+BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml").get(
+    "brawlstars_package",
+    "com.supercell.brawlstars"
+)
 
 key_coords_dict = {
     "H": (1400, 990),
