@@ -85,6 +85,8 @@ def ui_font(size, weight="normal"):
 
 def apply_appearance():
     ctk.set_appearance_mode("dark")
+    ctk.set_widget_scaling(1.0)
+    ctk.set_window_scaling(1.0)
 
 
 def center_window(window, width=None, height=None):
