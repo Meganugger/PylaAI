@@ -67,6 +67,25 @@ ApplicationWindow {
         const n = Number(value)
         return isNaN(n) ? fallback : n
     }
+    function comboItemText(model, index, role) {
+        if (!model)
+            return ""
+        let item = undefined
+        if (model.count !== undefined && model.get) {
+            if (index < 0 || index >= model.count)
+                return ""
+            item = model.get(index)
+        } else {
+            if (index < 0 || index >= model.length)
+                return ""
+            item = model[index]
+        }
+        if (item === undefined || item === null)
+            return ""
+        if (role && typeof item === "object" && item[role] !== undefined)
+            return String(item[role])
+        return typeof item === "object" ? String(item.text || item.label || "") : String(item)
+    }
     function checkedCount(listModel) {
         let count = 0
         for (let i = 0; i < listModel.count; ++i) {
@@ -303,7 +322,7 @@ ApplicationWindow {
         id: control
         implicitHeight: root.fieldHeight
         font.pixelSize: 14
-        displayText: currentIndex >= 0 ? currentText : ""
+        displayText: comboItemText(control.model, control.currentIndex, control.textRole)
         leftPadding: 14
         rightPadding: 42
         contentItem: Text {
@@ -340,8 +359,7 @@ ApplicationWindow {
             contentItem: ListView {
                 clip: true
                 implicitHeight: Math.min(contentHeight, 260)
-                model: control.popup.visible ? control.delegateModel : null
-                delegate: control.delegate
+                model: control.popup.visible ? control.model : null
                 currentIndex: control.highlightedIndex
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar { }
@@ -351,12 +369,17 @@ ApplicationWindow {
             width: control.width - 12
             implicitHeight: 40
             highlighted: control.highlightedIndex === index
+            onClicked: {
+                control.currentIndex = index
+                control.activated(index)
+                control.popup.close()
+            }
             background: Rectangle {
                 radius: 10
                 color: highlighted ? root.accentSoft : "transparent"
             }
             contentItem: Text {
-                text: modelData[control.textRole] !== undefined ? modelData[control.textRole] : modelData
+                text: comboItemText(control.model, index, control.textRole)
                 color: root.textMain
                 font.pixelSize: 14
                 verticalAlignment: Text.AlignVCenter
