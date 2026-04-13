@@ -1,8 +1,10 @@
 import inspect
 import json
 import os
+import re
 import threading
 
+import requests
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QFileDialog
 
@@ -182,6 +184,43 @@ class QtBridge(QObject):
         except Exception:
             return {}
 
+    @staticmethod
+    def _slug_name(value):
+        return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
+
+    def _resolve_internal_brawler_name(self, external_name):
+        target = self._slug_name(external_name)
+        if not target:
+            return None
+        for name in self._all_brawlers:
+            if self._slug_name(name) == target or self._slug_name(name.title()) == target:
+                return name
+        return None
+
+    def _fetch_player_brawlers_from_api(self):
+        api_key = str(self.general_config.get("brawlstars_api_key", "")).strip()
+        player_tag = str(self.general_config.get("brawlstars_player_tag", "")).strip().upper().replace("#", "")
+        if not api_key:
+            raise ValueError("Add a Brawl Stars API key in Settings first.")
+        if not player_tag:
+            raise ValueError("Add a player tag in Settings first.")
+
+        response = requests.get(
+            f"https://api.brawlstars.com/v1/players/%23{player_tag}",
+            headers={"Authorization": f"Bearer {api_key}"},
+            timeout=15,
+        )
+        if response.status_code == 403:
+            raise ValueError("The Brawl Stars API key was rejected.")
+        if response.status_code == 404:
+            raise ValueError("The player tag was not found.")
+        response.raise_for_status()
+        payload = response.json()
+        brawlers = payload.get("brawlers", [])
+        if not isinstance(brawlers, list):
+            raise ValueError("The API response did not contain a valid brawler list.")
+        return brawlers
+
     def _build_brawler_payload(self):
         scan_data = self._brawler_scan_data()
         roster_lookup = {entry["brawler"]: entry for entry in self.brawlers_data}
@@ -325,6 +364,53 @@ class QtBridge(QObject):
     @Slot(result="QVariantList")
     def getBrawlers(self):
         return self._build_brawler_payload()
+
+    @Slot(str)
+    def importSelectedBrawlerFromBrawlStarsApi(self, brawler):
+        target = str(brawler or "").strip().lower()
+        if not target:
+            self._notification("warning", "Choose a brawler first.")
+            return
+        try:
+            api_brawlers = self._fetch_player_brawlers_from_api()
+        except Exception as exc:
+            self._notification("error", f"Could not import from the Brawl Stars API: {exc}")
+            return
+
+        trophies = None
+        for entry in api_brawlers:
+            internal_name = self._resolve_internal_brawler_name(entry.get("name", ""))
+            if internal_name == target:
+                trophies = self._as_int(entry.get("trophies", 0), 0)
+                break
+
+        if trophies is None:
+            self._notification("warning", f"{target.title()} was not found on that player profile.")
+            return
+
+        updated = False
+        for row in self.brawlers_data:
+            if row.get("brawler") == target:
+                row["trophies"] = trophies
+                updated = True
+                break
+
+        if not updated:
+            self.brawlers_data.append({
+                "brawler": target,
+                "push_until": self._as_int(self.general_config.get("auto_push_target_trophies", 1000), 1000),
+                "trophies": trophies,
+                "wins": 0,
+                "type": "trophies",
+                "automatically_pick": True,
+                "win_streak": 0,
+                "manual_trophies": False,
+            })
+
+        save_brawler_data(self.brawlers_data)
+        self._emit_roster()
+        self._emit_state()
+        self._notification("success", f"Imported {target.title()} trophies from the Brawl Stars API.")
 
     @Slot("QVariantMap")
     def saveControlSettings(self, payload):
