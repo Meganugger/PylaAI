@@ -67,6 +67,14 @@ ApplicationWindow {
         const n = Number(value)
         return isNaN(n) ? fallback : n
     }
+    function checkedCount(listModel) {
+        let count = 0
+        for (let i = 0; i < listModel.count; ++i) {
+            if (listModel.get(i).checked)
+                count += 1
+        }
+        return count
+    }
     function hydrate(newState) {
         state = newState || {}
         roster = (state.roster || []).slice()
@@ -319,6 +327,42 @@ ApplicationWindow {
             anchors.right: parent.right
             anchors.rightMargin: 14
         }
+        popup: Popup {
+            y: control.height + 6
+            width: control.width
+            padding: 6
+            background: Rectangle {
+                radius: 14
+                color: root.panelAlt
+                border.color: root.border
+                border.width: 1
+            }
+            contentItem: ListView {
+                clip: true
+                implicitHeight: Math.min(contentHeight, 260)
+                model: control.popup.visible ? control.delegateModel : null
+                currentIndex: control.highlightedIndex
+                boundsBehavior: Flickable.StopAtBounds
+                ScrollBar.vertical: ScrollBar { }
+            }
+        }
+        delegate: ItemDelegate {
+            width: control.width - 12
+            implicitHeight: 40
+            highlighted: control.highlightedIndex === index
+            background: Rectangle {
+                radius: 10
+                color: highlighted ? root.accentSoft : "transparent"
+            }
+            contentItem: Text {
+                text: modelData[control.textRole] !== undefined ? modelData[control.textRole] : modelData
+                color: root.textMain
+                font.pixelSize: 14
+                verticalAlignment: Text.AlignVCenter
+                leftPadding: 10
+                elide: Text.ElideRight
+            }
+        }
     }
 
     component AppCheckBox: CheckBox {
@@ -541,7 +585,7 @@ ApplicationWindow {
                                                         border.color: root.border
                                                         border.width: 1
                                                         clip: true
-                                                        Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                        Image { anchors.fill: parent; source: modelData.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                                     }
                                                     ColumnLayout {
                                                         Layout.fillWidth: true
@@ -599,7 +643,7 @@ ApplicationWindow {
                                                     border.color: root.border
                                                     border.width: 1
                                                     clip: true
-                                                    Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                    Image { anchors.fill: parent; source: modelData.icon; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                                 }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true
@@ -678,7 +722,7 @@ ApplicationWindow {
                                                     border.color: root.border
                                                     border.width: 1
                                                     clip: true
-                                                    Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                    Image { anchors.fill: parent; source: modelData.icon; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                                 }
                                                 ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true } Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 } }
                                                 Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
@@ -705,8 +749,9 @@ ApplicationWindow {
                                 spacing: root.cardGap
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 360
+                                    implicitHeight: trophyFarmContent.implicitHeight + 44
                                     ColumnLayout {
+                                        id: trophyFarmContent
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
@@ -718,10 +763,21 @@ ApplicationWindow {
                                             AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
                                             AppButton { text: "Save Farm"; onClicked: saveFarm() }
                                         }
+                                        AppTextField {
+                                            id: farmSearch
+                                            Layout.fillWidth: true
+                                            placeholderText: "Search excluded brawlers"
+                                        }
+                                        Label {
+                                            text: checkedCount(excludeModel) + " excluded"
+                                            color: root.textDim
+                                            font.pixelSize: 13
+                                        }
                                         Label { text: "Exclude brawlers from trophy farm"; color: root.textDim; font.pixelSize: 14 }
                                         ListView {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
+                                            Layout.preferredHeight: 220
                                             clip: true
                                             spacing: 8
                                             boundsBehavior: Flickable.StopAtBounds
@@ -729,8 +785,9 @@ ApplicationWindow {
                                             id: trophyList
                                             model: excludeModel
                                             delegate: Rectangle {
+                                                visible: !farmSearch.text || model.displayName.toLowerCase().indexOf(farmSearch.text.toLowerCase()) !== -1
                                                 width: ListView.view.width
-                                                height: 50
+                                                height: visible ? 50 : 0
                                                 radius: 12
                                                 color: root.panelAlt
                                                 border.color: root.border
@@ -740,7 +797,7 @@ ApplicationWindow {
                                                     anchors.margins: 12
                                                     spacing: 12
                                                     AppCheckBox { checked: model.checked; onToggled: excludeModel.setProperty(index, "checked", checked) }
-                                                    Label { text: model.displayName; color: root.textMain; font.pixelSize: 14 }
+                                                    Label { Layout.fillWidth: true; text: model.displayName; color: root.textMain; font.pixelSize: 14; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
                                                 }
                                             }
                                         }
@@ -748,18 +805,26 @@ ApplicationWindow {
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: state.capabilities && state.capabilities.quest_farm ? 310 : 150
+                                    implicitHeight: questFarmContent.implicitHeight + 44
                                     ColumnLayout {
+                                        id: questFarmContent
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
                                         CardTitle { text: "Quest Farm" }
                                         Label { text: state.capabilities && state.capabilities.quest_farm ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                        RowLayout { visible: state.capabilities && state.capabilities.quest_farm; spacing: 12; AppCheckBox { id: questEnabled; text: "Enable" } AppComboBox { id: questMode; implicitWidth: 170; model: ["games","wins"] } }
+                                        RowLayout {
+                                            visible: state.capabilities && state.capabilities.quest_farm
+                                            Layout.preferredHeight: visible ? implicitHeight : 0
+                                            spacing: 12
+                                            Layout.alignment: Qt.AlignVCenter
+                                            AppCheckBox { id: questEnabled; text: "Enable" }
+                                            AppComboBox { id: questMode; implicitWidth: 170; model: ["games","wins"] }
+                                        }
                                         ListView {
                                             visible: state.capabilities && state.capabilities.quest_farm
                                             Layout.fillWidth: true
-                                            Layout.fillHeight: true
+                                            Layout.preferredHeight: visible ? 180 : 0
                                             clip: true
                                             spacing: 8
                                             boundsBehavior: Flickable.StopAtBounds
@@ -777,7 +842,7 @@ ApplicationWindow {
                                                     anchors.margins: 12
                                                     spacing: 12
                                                     AppCheckBox { checked: model.checked; onToggled: questExcludeModel.setProperty(index, "checked", checked) }
-                                                    Label { text: model.displayName; color: root.textMain; font.pixelSize: 14 }
+                                                    Label { Layout.fillWidth: true; text: model.displayName; color: root.textMain; font.pixelSize: 14; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
                                                 }
                                             }
                                         }
@@ -880,7 +945,7 @@ ApplicationWindow {
                                                 border.color: root.border
                                                 border.width: 1
                                                 clip: true
-                                                Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                Image { anchors.fill: parent; source: modelData.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                             }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 17; font.bold: true } Label { text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"; color: root.textDim; font.pixelSize: 13 } }
                                             Label { text: modelData.matches + " matches"; color: root.info; font.pixelSize: 14; font.bold: true }
@@ -907,8 +972,9 @@ ApplicationWindow {
                                 spacing: root.cardGap
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 290
+                                    implicitHeight: accountApiContent.implicitHeight + 44
                                     ColumnLayout {
+                                        id: accountApiContent
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
@@ -929,8 +995,9 @@ ApplicationWindow {
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 290
+                                    implicitHeight: generalRuntimeContent.implicitHeight + 44
                                     ColumnLayout {
+                                        id: generalRuntimeContent
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
@@ -948,23 +1015,15 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: state.emulators || [] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                            ColumnLayout {
-                                                Layout.fillWidth: true
-                                                spacing: 8
-                                                AppLabel { text: "Debug" }
-                                                Item {
-                                                    Layout.fillWidth: true
-                                                    implicitHeight: root.fieldHeight
-                                                    RowLayout { anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } }
-                                                }
-                                            }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } } } }
                                         }
                                     }
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 430
+                                    implicitHeight: combatDetectionContent.implicitHeight + 44
                                     ColumnLayout {
+                                        id: combatDetectionContent
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
