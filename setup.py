@@ -27,6 +27,7 @@ INSTALL_REQUIRES = [
     "pywin32>=311; platform_system == 'Windows'",
     "requests>=2.31.0",
     "shapely>=2.1,<3",
+    "PySide6>=6.7,<7",
     "setuptools<81",
     "toml>=0.10.2",
     SCRCPY_SOURCE,
@@ -71,13 +72,14 @@ setup(
     long_description_content_type="text/markdown",
     python_requires=">=3.10,<3.11",
     packages=find_namespace_packages(
-        include=["api*", "gui*", "rl*", "state_finder*", "typization*"],
+        include=["api*", "gui*", "qt_ui*", "rl*", "state_finder*", "typization*"],
         exclude=["tests", "tests.*"],
     ),
     py_modules=PY_MODULES,
     include_package_data=True,
     package_data={
         "api": ["assets/brawler_icons/*.png", "assets/brawler_icons2/*.png"],
+        "qt_ui": ["qml/*.qml"],
         "state_finder": ["images_to_detect/*"],
     },
     install_requires=INSTALL_REQUIRES,
