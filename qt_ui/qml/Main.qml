@@ -71,7 +71,10 @@ ApplicationWindow {
         manualTrophies.checked = !!d.manual_trophies
     }
     function saveControl() {
-        backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": modeBox.currentValue})
+        let gamemodeValue = "knockout"
+        if (modeBox.currentIndex >= 0 && modeBox.currentIndex < ((state.gamemodes || []).length))
+            gamemodeValue = state.gamemodes[modeBox.currentIndex].value
+        backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue})
     }
     function saveBrawler() {
         backend.addOrUpdateRosterEntry({"brawler": selectedBrawler, "trophies": trophiesField.text, "wins": winsField.text, "push_until": targetField.text, "type": typeBox.currentText.toLowerCase(), "automatically_pick": autoPick.checked, "win_streak": streakField.text, "manual_trophies": manualTrophies.checked})
@@ -286,7 +289,7 @@ ApplicationWindow {
                                     RowLayout {
                                         Layout.fillWidth: true
                                         ColumnLayout { Layout.fillWidth: true; Label { text: "Map Orientation"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: orientationBox; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Gamemode"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: modeBox; Layout.fillWidth: true; model: state.gamemodes || []; textRole: "label"; property string currentValue: currentIndex >= 0 && currentIndex < (model ? model.length : 0) ? model[currentIndex].value : "knockout" } }
+                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Gamemode"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: modeBox; Layout.fillWidth: true; model: state.gamemodes || []; textRole: "label" } }
                                         ColumnLayout { Layout.fillWidth: true; Label { text: "Emulator"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: emulatorBox; Layout.fillWidth: true; model: state.emulators || [] } }
                                         ColumnLayout { Layout.fillWidth: true; Label { text: "Run Minutes"; color: root.textDim; font.pixelSize: 12 } TextField { id: timerField; Layout.fillWidth: true } }
                                     }
