@@ -94,12 +94,31 @@ ApplicationWindow {
         }
         return count
     }
+    function hasCapability(name) {
+        return !!(state.capabilities && state.capabilities[name])
+    }
+    function rebuildComboModels() {
+        gamemodeModel.clear()
+        emulatorModel.clear()
+        const incomingModes = state.gamemodes || []
+        for (let i = 0; i < incomingModes.length; ++i) {
+            const item = incomingModes[i]
+            gamemodeModel.append({
+                "value": String(item && item.value !== undefined ? item.value : ""),
+                "label": String(item && item.label !== undefined ? item.label : "")
+            })
+        }
+        const incomingEmulators = state.emulators || []
+        for (let j = 0; j < incomingEmulators.length; ++j)
+            emulatorModel.append({ "label": String(incomingEmulators[j]) })
+    }
     function hydrate(newState) {
         state = newState || {}
         roster = (state.roster || []).slice()
         brawlers = (state.brawlers || []).slice()
         history = (state.history || []).slice()
         live = state.live || {}
+        rebuildComboModels()
         if (!selectedBrawler && brawlers.length) selectedBrawler = brawlers[0].name
         hydrateEditors()
     }
@@ -117,8 +136,8 @@ ApplicationWindow {
     }
     function saveControl() {
         let gamemodeValue = "knockout"
-        if (modeBox.currentIndex >= 0 && modeBox.currentIndex < ((state.gamemodes || []).length))
-            gamemodeValue = state.gamemodes[modeBox.currentIndex].value
+        if (modeBox.currentIndex >= 0 && modeBox.currentIndex < gamemodeModel.count)
+            gamemodeValue = gamemodeModel.get(modeBox.currentIndex).value
         backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue})
     }
     function saveBrawler() {
@@ -145,14 +164,13 @@ ApplicationWindow {
         settingsOrientation.currentIndex = orientationBox.currentIndex
         timerField.text = String(state.general.run_for_minutes || 600)
         settingsTimer.text = timerField.text
-        let emulators = state.emulators || []
-        let emuIndex = emulators.indexOf(state.general.current_emulator || "LDPlayer")
+        let emuIndex = 0
+        for (let emu = 0; emu < emulatorModel.count; ++emu) if (emulatorModel.get(emu).label === (state.general.current_emulator || "LDPlayer")) emuIndex = emu
         emulatorBox.currentIndex = Math.max(0, emuIndex)
         settingsEmulator.currentIndex = Math.max(0, emuIndex)
-        let modes = state.gamemodes || []
         let gm = String(state.bot.gamemode || "knockout")
         let idx = 0
-        for (let i = 0; i < modes.length; ++i) if (modes[i].value === gm) idx = i
+        for (let i = 0; i < gamemodeModel.count; ++i) if (gamemodeModel.get(i).value === gm) idx = i
         modeBox.currentIndex = idx
         maxIps.text = String(state.general.max_ips || "auto")
         backendBox.currentIndex = Math.max(0, ["auto","cpu","gpu"].indexOf(String(state.general.cpu_or_gpu || "auto").toLowerCase()))
@@ -192,6 +210,8 @@ ApplicationWindow {
 
     ListModel { id: excludeModel }
     ListModel { id: questExcludeModel }
+    ListModel { id: gamemodeModel }
+    ListModel { id: emulatorModel }
 
     function rebuildExcludeModels() {
         excludeModel.clear()
@@ -359,7 +379,7 @@ ApplicationWindow {
             contentItem: ListView {
                 clip: true
                 implicitHeight: Math.min(contentHeight, 260)
-                model: control.popup.visible ? control.model : null
+                model: control.popup.visible ? control.delegateModel : null
                 delegate: control.delegate
                 currentIndex: control.highlightedIndex
                 boundsBehavior: Flickable.StopAtBounds
@@ -545,6 +565,7 @@ ApplicationWindow {
                         id: controlCenterScroll
                         clip: true
                         contentWidth: availableWidth
+                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: controlCenterScroll.availableWidth
@@ -568,8 +589,8 @@ ApplicationWindow {
                                             columnSpacing: 14
                                             rowSpacing: 12
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Map Orientation" } AppComboBox { id: orientationBox; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Gamemode" } AppComboBox { id: modeBox; Layout.fillWidth: true; model: state.gamemodes || []; textRole: "label" } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: emulatorBox; Layout.fillWidth: true; model: state.emulators || [] } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Gamemode" } AppComboBox { id: modeBox; Layout.fillWidth: true; model: gamemodeModel; textRole: "label" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: emulatorBox; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: timerField; Layout.fillWidth: true } }
                                         }
                                         RowLayout {
@@ -708,16 +729,18 @@ ApplicationWindow {
                                         AppCheckBox { id: autoPick; text: "Auto-pick" }
                                         AppCheckBox { id: manualTrophies; text: "Manual trophies" }
                                     }
-                                    GridLayout {
-                                        width: parent.width
-                                        columns: 2
-                                        columnSpacing: 12
-                                        rowSpacing: 12
-                                        AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
-                                        DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
-                                        AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
-                                        AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
-                                    }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 2
+                                            columnSpacing: 12
+                                            rowSpacing: 12
+                                            AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
+                                            DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
+                                            AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
+                                            AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
+                                            AppButton { text: "Import from Tag"; Layout.fillWidth: true; onClicked: backend.importSelectedBrawlerFromBrawlStarsApi(selectedBrawler) }
+                                            Item { Layout.fillWidth: true }
+                                        }
                                     DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: backend.clearRoster() }
                                     CardTitle { text: "Current Queue" }
                                     ListView {
@@ -763,6 +786,7 @@ ApplicationWindow {
                         id: farmScroll
                         clip: true
                         contentWidth: availableWidth
+                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: farmScroll.availableWidth
@@ -837,9 +861,9 @@ ApplicationWindow {
                                         anchors.margins: 22
                                         spacing: 16
                                         CardTitle { text: "Quest Farm" }
-                                        Label { text: state.capabilities && state.capabilities.quest_farm ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        Label { text: hasCapability("quest_farm") ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         RowLayout {
-                                            visible: state.capabilities && state.capabilities.quest_farm
+                                            visible: hasCapability("quest_farm")
                                             Layout.preferredHeight: visible ? implicitHeight : 0
                                             spacing: 12
                                             Layout.alignment: Qt.AlignVCenter
@@ -847,7 +871,7 @@ ApplicationWindow {
                                             AppComboBox { id: questMode; implicitWidth: 170; model: ["games","wins"] }
                                         }
                                         ListView {
-                                            visible: state.capabilities && state.capabilities.quest_farm
+                                            visible: hasCapability("quest_farm")
                                             Layout.fillWidth: true
                                             Layout.preferredHeight: visible ? 180 : 0
                                             clip: true
@@ -881,6 +905,7 @@ ApplicationWindow {
                         id: liveScroll
                         clip: true
                         contentWidth: availableWidth
+                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: liveScroll.availableWidth
@@ -932,7 +957,7 @@ ApplicationWindow {
                                         Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
                                         Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                        Label { visible: state.capabilities && state.capabilities.advanced_live; text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                        Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
                                     }
                                 }
                             }
@@ -943,6 +968,7 @@ ApplicationWindow {
                         id: historyScroll
                         clip: true
                         contentWidth: availableWidth
+                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: historyScroll.availableWidth
@@ -986,6 +1012,7 @@ ApplicationWindow {
                         id: settingsScroll
                         clip: true
                         contentWidth: availableWidth
+                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: settingsScroll.availableWidth
@@ -1038,7 +1065,7 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: settingsTimer; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Port" } AppTextField { id: portField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: state.emulators || [] } }
+                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } } } }
                                         }

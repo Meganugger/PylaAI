@@ -1,6 +1,9 @@
 import os
 import sys
 
+if os.name == "nt":
+    os.environ.setdefault("QT_QPA_PLATFORM", "windows:dpiawareness=1")
+
 from PySide6.QtCore import QUrl
 from PySide6.QtGui import QIcon
 from PySide6.QtQml import QQmlApplicationEngine
