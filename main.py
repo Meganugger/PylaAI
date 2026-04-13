@@ -133,6 +133,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._start_hotkey_listener()
             self.current_ips = 0.0
             self.last_console_stats_time = 0
+            self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
             self._out_of_match_since = 0.0
             self._out_of_match_latched = False
             self._last_match_phase_reset_time = 0.0
@@ -528,6 +529,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     global _active_dashboard
                     if _active_dashboard is not None:
                         try:
+                            current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
+                            _active_dashboard.sync_runtime_roster(
+                                self.Stage_manager.brawlers_pick_data,
+                                emit_history=current_match_counter != self._last_dashboard_match_counter,
+                            )
+                            self._last_dashboard_match_counter = current_match_counter
                             _active_dashboard.update_live(
                                 start_time=self.start_time,
                                 ips=self.current_ips,

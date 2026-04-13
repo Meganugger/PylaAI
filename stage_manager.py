@@ -378,6 +378,14 @@ class StageManager:
             self.Trophy_observer.current_trophies = manual_value
             self.Trophy_observer._lobby_trophy_verified = True
 
+    def _sync_active_brawler_progress(self):
+        if not self.brawlers_pick_data:
+            return
+        active = self.brawlers_pick_data[0]
+        active['trophies'] = self.Trophy_observer.current_trophies
+        active['wins'] = self.Trophy_observer.current_wins
+        active['win_streak'] = self.Trophy_observer.win_streak
+
     def start_game(self, data):
         print("state is lobby, starting game")
 
@@ -595,14 +603,14 @@ class StageManager:
             hr = self.window_controller.height_ratio or 1.0
             self.Trophy_observer.verify_lobby_trophies(lobby_screenshot, wr=wr, hr=hr)
             # Save if corrected
-            if self.Trophy_observer._corrections_log:
-                if self._is_manual_trophy_locked():
-                    self._reset_to_manual_trophies()
-                    print("[VERIFY] Manual trophy lock active - skipped pre-match correction persistence")
-                else:
-                    self.brawlers_pick_data[0]['trophies'] = self.Trophy_observer.current_trophies
-                    save_brawler_data(self.brawlers_pick_data)
-                    print(f"[VERIFY] Pre-match trophy correction saved")
+                if self.Trophy_observer._corrections_log:
+                    if self._is_manual_trophy_locked():
+                        self._reset_to_manual_trophies()
+                        print("[VERIFY] Manual trophy lock active - skipped pre-match correction persistence")
+                    else:
+                        self._sync_active_brawler_progress()
+                        save_brawler_data(self.brawlers_pick_data)
+                        print(f"[VERIFY] Pre-match trophy correction saved")
                 self.Trophy_observer._corrections_log.clear()  # Reset for this match
         except Exception as e:
             print(f"[VERIFY] Pre-match trophy check error: {e}")
@@ -728,6 +736,7 @@ class StageManager:
                     if type_to_push not in values:
                         type_to_push = "trophies"
                     value = values[type_to_push]
+                    self._sync_active_brawler_progress()
                     self.brawlers_pick_data[0][type_to_push] = value
                     save_brawler_data(self.brawlers_pick_data)
                     push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
@@ -822,14 +831,7 @@ class StageManager:
                             self._reset_to_manual_trophies()
                             print("[VERIFY] Manual trophy lock active - skipped end-screen correction persistence")
                         else:
-                            values = {
-                                "trophies": self.Trophy_observer.current_trophies,
-                                "wins": self.Trophy_observer.current_wins
-                            }
-                            type_to_push = self.brawlers_pick_data[0]['type']
-                            if type_to_push not in values:
-                                type_to_push = "trophies"
-                            self.brawlers_pick_data[0][type_to_push] = values[type_to_push]
+                            self._sync_active_brawler_progress()
                             save_brawler_data(self.brawlers_pick_data)
                             print(f"[VERIFY] Saved corrected data after {len(self.Trophy_observer._corrections_log)} correction(s)")
 
@@ -910,14 +912,7 @@ class StageManager:
                         self._reset_to_manual_trophies()
                         print("[VERIFY] Manual trophy lock active - skipped lobby correction persistence")
                     else:
-                        values = {
-                            "trophies": self.Trophy_observer.current_trophies,
-                            "wins": self.Trophy_observer.current_wins
-                        }
-                        type_to_push = self.brawlers_pick_data[0]['type']
-                        if type_to_push not in values:
-                            type_to_push = "trophies"
-                        self.brawlers_pick_data[0][type_to_push] = values[type_to_push]
+                        self._sync_active_brawler_progress()
                         save_brawler_data(self.brawlers_pick_data)
                         print(f"[VERIFY] Lobby verification complete - {latest_corrections} total correction(s) this match")
                     self.Trophy_observer._corrections_log.clear()
