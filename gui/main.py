@@ -59,7 +59,10 @@ class App:
         if saved:
             dashboard.brawlers_data = saved
             dashboard._update_sidebar_brawler()
-            dashboard._refresh_brawler_grid()
+            # The brawler page is built lazily for smoother startup.
+            # Only refresh the grid once that page exists.
+            if hasattr(dashboard, "_brawler_scroll"):
+                dashboard._refresh_brawler_grid()
             print(f"[DASHBOARD] Pre-loaded saved brawler: "
                   f"{', '.join(d['brawler'] for d in saved)}")
 
