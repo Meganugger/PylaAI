@@ -84,6 +84,25 @@ EMULATORS = ["BlueStacks", "LDPlayer", "MEmu", "Others"]
 class Dashboard(ctk.CTk):
     """Unified PylaAI dashboard - single window, sidebar navigation."""
 
+    @staticmethod
+    def _format_version_tag(version_str):
+        raw = str(version_str).strip()
+        if not raw:
+            return "PylaAI"
+        local_labels = {
+            "main": "main",
+            "performance": "performance",
+            "strongestbot": "strongest-bot",
+            "strongestbotfull": "strongest-bot-full",
+        }
+        if "+" in raw:
+            base, local = raw.split("+", 1)
+            pretty_local = local_labels.get(local.lower(), local.replace("_", "-"))
+            return f"PylaAI {pretty_local}  v{base}"
+        if raw.lower().startswith("v"):
+            return f"PylaAI {raw}"
+        return f"PylaAI v{raw}"
+
     # --- iNIT ---
 
     def __init__(self, version_str, brawlers, pyla_main_fn,
@@ -91,14 +110,16 @@ class Dashboard(ctk.CTk):
         super().__init__()
 
         self.version_str = str(version_str).strip()
-        self.version_tag = self.version_str if self.version_str.lower().startswith("v") else f"v{self.version_str}"
+        self.version_tag = self._format_version_tag(self.version_str)
         self.all_brawlers = brawlers
         self._pyla_main = pyla_main_fn
         self._login_fn = login_fn
         self._logged_in = False
         self._latest_version_fn = latest_version_fn
+        self._full_branch_live = all(os.path.exists(path) for path in ("behavior_tree.py", "bt_combat.py"))
         self._capabilities = {
             "visual_overlay": os.path.exists("visual_overlay.py"),
+            "advanced_live": self._full_branch_live,
             "brawler_scan": hasattr(LobbyAutomation, "scan_all_brawlers"),
             "quest_farm": hasattr(StageManager, "_handle_quest_rotation"),
             "quest_scan": hasattr(LobbyAutomation, "scan_quest_brawlers"),
@@ -150,6 +171,7 @@ class Dashboard(ctk.CTk):
         # load configs
         self.bot_config = load_toml_as_dict("cfg/bot_config.toml")
         self.general_config = load_toml_as_dict("cfg/general_config.toml")
+        self.login_config = load_toml_as_dict("cfg/login.toml")
         self.time_tresholds = load_toml_as_dict("cfg/time_tresholds.toml")
         self.match_history = load_toml_as_dict("cfg/match_history.toml")
         self.brawlers_info = load_brawlers_info()
@@ -158,6 +180,7 @@ class Dashboard(ctk.CTk):
         self._load_excluded_brawlers()
 
         # window
+        self.withdraw()
         self.title(f"Pyla Control Center - {self.version_tag}")
         w, h = S(1420), S(860)
         self.geometry(f"{w}x{h}")
@@ -172,16 +195,21 @@ class Dashboard(ctk.CTk):
         self._content.pack(side="right", fill="both", expand=True)
 
         self._pages = {}
+        self._page_builders = {
+            "settings": self._build_settings_page,
+            "home": self._build_home_page,
+            "brawler": self._build_brawler_page,
+            "farm": self._build_farm_page,
+            "quest": self._build_quest_page,
+            "live": self._build_live_page,
+            "history": self._build_history_page,
+        }
         self._current_page = None
         self._build_settings_page()
         self._build_home_page()
-        self._build_brawler_page()
-        self._build_farm_page()
-        self._build_quest_page()
         self._build_live_page()
-        self._build_history_page()
         self.show_page("home")
-        self.after(250, self._tick)
+        self.after_idle(self.deiconify)
 
     def _load_scan_data(self):
         """Load brawler scan data from cfg/brawler_scan.json if it exists."""
@@ -488,6 +516,9 @@ class Dashboard(ctk.CTk):
                              fg_color=PANEL, border_color=ACCENT,
                              text_color=BRIGHT, corner_radius=S(6))
         entry.pack(pady=S(8))
+        existing_key = str(self.login_config.get("key", "")).strip()
+        if existing_key:
+            entry.insert(0, existing_key)
 
         status = ctk.CTkLabel(dialog, text="", font=("Segoe UI", S(12)))
         status.pack()
@@ -499,6 +530,7 @@ class Dashboard(ctk.CTk):
                 if check_if_exists(key):
                     self._logged_in = True
                     update_toml_file("./cfg/login.toml", {"key": key})
+                    self.login_config["key"] = key
                     dialog.destroy()
                 else:
                     status.configure(text="Invalid API Key", text_color=RED)
@@ -646,6 +678,10 @@ class Dashboard(ctk.CTk):
     # --- pAGE SWITCHING ---
 
     def show_page(self, name):
+        if name not in self._pages and name in self._page_builders:
+            self._page_builders[name]()
+        if name not in self._pages:
+            name = "home"
         for frame in self._pages.values():
             frame.pack_forget()
         if name in self._pages:
@@ -1152,6 +1188,21 @@ class Dashboard(ctk.CTk):
                      text_color=BRIGHT).pack(anchor="w", padx=S(24),
                                               pady=(S(16), S(8)))
 
+        # aCCOUNT & API
+        self._section_header(page, "Account & API")
+        account_f = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
+        account_f.pack(fill="x", padx=S(20), pady=S(4))
+
+        self._discord_id_var = tk.StringVar(value=str(self.general_config.get("discord_id", "")))
+        self._pyla_key_var = tk.StringVar(value=str(self.login_config.get("key", "")))
+        self._bs_api_key_var = tk.StringVar(value=str(self.general_config.get("brawlstars_api_key", "")))
+        self._bs_player_tag_var = tk.StringVar(value=str(self.general_config.get("brawlstars_player_tag", "")))
+
+        self._entry_row(account_f, "Discord ID", self._discord_id_var, "Optional user ID for webhook mentions")
+        self._entry_row(account_f, "Pyla API Key", self._pyla_key_var, "Used for non-localhost Pyla auth")
+        self._entry_row(account_f, "Brawl Stars API Key", self._bs_api_key_var, "Official Brawl Stars API key")
+        self._entry_row(account_f, "Player Tag", self._bs_player_tag_var, "Example: #ABC123")
+
         # gAME SECTION
         self._section_header(page, "Game")
         game_f = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
@@ -1421,6 +1472,72 @@ class Dashboard(ctk.CTk):
                       width=S(46), height=S(24)
                       ).pack(side="right")
 
+    def _entry_row(self, parent, label, var, placeholder=""):
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", padx=S(14), pady=S(6))
+        ctk.CTkLabel(row, text=label, font=("Segoe UI", S(13)),
+                     text_color=TXT, width=S(180), anchor="w").pack(side="left")
+        ctk.CTkEntry(
+            row,
+            textvariable=var,
+            placeholder_text=placeholder,
+            font=("Segoe UI", S(13)),
+            height=S(34),
+            fg_color=SECTION,
+            border_color=SEP,
+            text_color=BRIGHT,
+            corner_radius=S(8),
+        ).pack(side="right", fill="x", expand=True)
+
+    @staticmethod
+    def _mousewheel_units(event):
+        delta = getattr(event, "delta", 0)
+        if delta:
+            step = int(-delta / 120)
+            return step if step != 0 else (-1 if delta > 0 else 1)
+        num = getattr(event, "num", None)
+        if num == 4:
+            return -1
+        if num == 5:
+            return 1
+        return 0
+
+    def _bind_scroll_target(self, widget, handler, seen=None):
+        if seen is None:
+            seen = set()
+        widget_id = str(widget)
+        if widget_id in seen:
+            return
+        seen.add(widget_id)
+        try:
+            widget.bind("<MouseWheel>", handler, add="+")
+            widget.bind("<Button-4>", handler, add="+")
+            widget.bind("<Button-5>", handler, add="+")
+        except Exception:
+            return
+        for child in widget.winfo_children():
+            self._bind_scroll_target(child, handler, seen)
+
+    def _install_nested_scroll(self, scrollable):
+        canvas = getattr(scrollable, "_parent_canvas", None)
+        if canvas is None:
+            return
+        try:
+            canvas.configure(yscrollincrement=max(1, S(18)))
+        except Exception:
+            pass
+
+        def _on_wheel(event):
+            units = self._mousewheel_units(event)
+            if units == 0:
+                return None
+            canvas.yview_scroll(units, "units")
+            return "break"
+
+        seen = getattr(scrollable, "_nested_scroll_seen", set())
+        self._bind_scroll_target(scrollable, _on_wheel, seen)
+        scrollable._nested_scroll_seen = seen
+
     # settings callbacks
     def _on_gamemode_change(self, display_name):
         for key, (name, gtype) in GAMEMODES.items():
@@ -1484,6 +1601,13 @@ class Dashboard(ctk.CTk):
         gc["super_debug"] = self._debug_var.get()
         gc["cpu_or_gpu"] = self._device_var.get()
         gc["max_ips"] = self._ips_var.get()
+        gc["discord_id"] = self._discord_id_var.get().strip()
+        gc["brawlstars_api_key"] = self._bs_api_key_var.get().strip()
+        tag_value = self._bs_player_tag_var.get().strip().upper().replace(" ", "")
+        if tag_value and not tag_value.startswith("#"):
+            tag_value = f"#{tag_value}"
+        self._bs_player_tag_var.set(tag_value)
+        gc["brawlstars_player_tag"] = tag_value
         gc["visual_overlay_enabled"] = self._ovl_var.get()
         gc["visual_overlay_opacity"] = int(self._ovl_opacity.get())
         try:
@@ -1498,6 +1622,8 @@ class Dashboard(ctk.CTk):
         for key, var in self._ovl_toggles.items():
             gc[key] = var.get()
         save_dict_as_toml(gc, "cfg/general_config.toml")
+        self.login_config["key"] = self._pyla_key_var.get().strip()
+        save_dict_as_toml(self.login_config, "cfg/login.toml")
 
         # Time thresholds
         tt = self.time_tresholds
@@ -1676,6 +1802,7 @@ class Dashboard(ctk.CTk):
             scrollbar_button_hover_color=ACCENT_H)
         self._brawler_scroll.pack(fill="both", expand=True,
                                   padx=S(16), pady=S(4))
+        self._install_nested_scroll(self._brawler_scroll)
 
         # Load brawler images
         icon_sz = S(52)
@@ -1725,7 +1852,7 @@ class Dashboard(ctk.CTk):
             text_color=ACCENT if n > 0 else DIM)
 
     def _render_brawler_grid_chunk(self, cols=6, has_scan=False):
-        chunk_size = 14
+        chunk_size = 8
         total = len(self._brawler_render_rows)
         start = self._brawler_render_cursor
         end = min(total, start + chunk_size)
@@ -1739,7 +1866,7 @@ class Dashboard(ctk.CTk):
         self._brawler_render_cursor = end
         if end < total:
             self._brawler_render_job_id = self.after(
-                1, lambda: self._render_brawler_grid_chunk(cols=cols, has_scan=has_scan)
+                8, lambda: self._render_brawler_grid_chunk(cols=cols, has_scan=has_scan)
             )
         else:
             self._brawler_render_job_id = None
@@ -2354,6 +2481,7 @@ class Dashboard(ctk.CTk):
             page, fg_color=PANEL, corner_radius=S(10), height=S(220),
             scrollbar_button_color=ACCENT)
         self._farm_exclude_scroll.pack(fill="x", padx=S(20), pady=S(4))
+        self._install_nested_scroll(self._farm_exclude_scroll)
         self._farm_exclude_vars = {}
         self._build_farm_exclude_grid()
 
@@ -2411,6 +2539,7 @@ class Dashboard(ctk.CTk):
 
         for c in range(cols):
             self._farm_exclude_scroll.grid_columnconfigure(c, weight=1)
+        self._install_nested_scroll(self._farm_exclude_scroll)
 
     def _get_farm_queue(self):
         """Build the ordered list of brawlers to farm based on settings."""
@@ -2728,6 +2857,7 @@ class Dashboard(ctk.CTk):
             page, fg_color=PANEL, corner_radius=S(10), height=S(180),
             scrollbar_button_color=ACCENT)
         self._quest_exclude_scroll.pack(fill="x", padx=S(20), pady=S(4))
+        self._install_nested_scroll(self._quest_exclude_scroll)
         self._quest_exclude_vars = {}
         self._build_quest_exclude_grid()
 
@@ -2785,6 +2915,7 @@ class Dashboard(ctk.CTk):
 
         for c in range(cols):
             self._quest_exclude_scroll.grid_columnconfigure(c, weight=1)
+        self._install_nested_scroll(self._quest_exclude_scroll)
 
     def _refresh_quest_queue(self):
         """Refresh the quest brawler queue display."""
@@ -3313,19 +3444,20 @@ class Dashboard(ctk.CTk):
         self._live_perf_total = self._perf_card(perf, "TOTAL", 0, 2)
         self._live_perf_avg = self._perf_card(perf, "AVERAGE", 0, 3)
 
-        self._live_rl_info = ctk.CTkLabel(
-            perf,
-            text="Overview: waiting for live data...",
-            font=("Segoe UI", S(10)),
-            text_color=DIM,
-            anchor="w",
-            justify="left",
-            fg_color=SECTION,
-            corner_radius=S(8),
-            padx=S(10),
-            pady=S(6),
-        )
-        self._live_rl_info.grid(row=1, column=0, columnspan=4, padx=S(4), pady=(S(2), S(4)), sticky="ew")
+        if self._capabilities.get("advanced_live"):
+            self._live_rl_info = ctk.CTkLabel(
+                perf,
+                text="Overview: waiting for live data...",
+                font=("Segoe UI", S(10)),
+                text_color=DIM,
+                anchor="w",
+                justify="left",
+                fg_color=SECTION,
+                corner_radius=S(8),
+                padx=S(10),
+                pady=S(6),
+            )
+            self._live_rl_info.grid(row=1, column=0, columnspan=4, padx=S(4), pady=(S(2), S(4)), sticky="ew")
 
     def _perf_card(self, parent, title, row, col, show_deaths=False):
         """Create a performance stats card and return dict of labels."""
@@ -3511,7 +3643,11 @@ class Dashboard(ctk.CTk):
         de = d.get("defeats", 0)
         dr = d.get("draws", 0)
         total_games = v + de + dr
-        _s(self._live_matches, "mt", text=f"Matches: {total_games}")
+        session_total_matches = d.get("total_matches", total_games)
+        session_victories = d.get("session_victories", v)
+        session_defeats = d.get("session_defeats", de)
+        session_draws = d.get("session_draws", dr)
+        _s(self._live_matches, "mt", text=f"Matches: {session_total_matches}")
 
         # Farm mode badge
         if self._quest_farm_active:
@@ -3754,7 +3890,7 @@ class Dashboard(ctk.CTk):
         dpm_color = GREEN if dpm >= 15000 else GOLD if dpm >= 7000 else DIM
         _s(self._live_kpi_dpm, "kpi_dpm", text=f"{dpm:,}", text_color=dpm_color)
 
-        wins_per_hour_raw = v / max(1e-6, elapsed / 3600.0)
+        wins_per_hour_raw = session_victories / max(1e-6, elapsed / 3600.0)
         if self._wins_per_hour_ema is None:
             self._wins_per_hour_ema = wins_per_hour_raw
         else:
@@ -3770,16 +3906,17 @@ class Dashboard(ctk.CTk):
         rl_mode = "ON" if rl_training_enabled else "OFF"
         summary_mode = "LIVE" if match_active else "SESSION"
         fallback_tag = " +TS" if fallback_used else ""
-        _s(
-            self._live_rl_info,
-            "rl_info",
-            text=(
-                f"Overview [{summary_mode}{fallback_tag}]  Source:{perf_source}  Match K/D/A: {ck}/{cd}/{ca}  Match Dmg:{cdmg:,}\n"
-                f"RL [{rl_mode}]  Ep:{rl_total_episodes}  Upd:{rl_total_updates}  Buf:{buffer_text}  Reward:{rl_episode_reward:.2f}"
-                f"  RL K/D:{rl_kills}/{rl_deaths}  RL Dmg:{rl_damage_dealt:,}/{rl_damage_taken:,}  Hit:{hit_rate_text}"
-            ),
-            text_color=ACCENT if rl_training_enabled else DIM,
-        )
+        if hasattr(self, "_live_rl_info"):
+            _s(
+                self._live_rl_info,
+                "rl_info",
+                text=(
+                    f"Overview [{summary_mode}{fallback_tag}]  Source:{perf_source}  Match K/D/A: {ck}/{cd}/{ca}  Match Dmg:{cdmg:,}\n"
+                    f"RL [{rl_mode}]  Ep:{rl_total_episodes}  Upd:{rl_total_updates}  Buf:{buffer_text}  Reward:{rl_episode_reward:.2f}"
+                    f"  RL K/D:{rl_kills}/{rl_deaths}  RL Dmg:{rl_damage_dealt:,}/{rl_damage_taken:,}  Hit:{hit_rate_text}"
+                ),
+                text_color=ACCENT if rl_training_enabled else DIM,
+            )
 
         if tk_ > 0 or tdmg > 0 or total_games > 0 or fallback_used:
             _s(self._live_perf_last["kills"], "lk_k", text=f"{lk} Kills")

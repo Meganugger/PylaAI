@@ -125,7 +125,7 @@ _CONFIG_DEFAULTS = {
         "cpu_or_gpu": "auto",
         "preferred_backend": "auto",
         "max_ips": "auto",
-        "pyla_version": "1.0.0-full",
+        "pyla_version": "1.0.0+strongestbotfull",
         "long_press_star_drop": "yes",
         "trophies_multiplier": 1,
         "run_for_minutes": 600,
