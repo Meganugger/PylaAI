@@ -647,7 +647,14 @@ ApplicationWindow {
                                                         Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 16; font.bold: true }
                                                         Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 }
                                                     }
-                                                    Label { text: "Trophies " + modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
+                                                    Label {
+                                                        Layout.preferredWidth: 138
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: "Trophies " + modelData.trophies
+                                                        color: root.gold
+                                                        font.pixelSize: 14
+                                                        font.bold: true
+                                                    }
                                                 }
                                             }
                                         }
@@ -705,7 +712,14 @@ ApplicationWindow {
                                                     Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 16; font.bold: true }
                                                     Label { text: "Hold attack " + modelData.holdAttack + "s"; color: root.textDim; font.pixelSize: 12 }
                                                 }
-                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
+                                                Label {
+                                                    Layout.preferredWidth: 72
+                                                    horizontalAlignment: Text.AlignRight
+                                                    text: modelData.trophies
+                                                    color: root.gold
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
                                             }
                                             MouseArea { anchors.fill: parent; onClicked: { selectedBrawler = modelData.name; hydrateEditors() } }
                                         }
@@ -746,7 +760,7 @@ ApplicationWindow {
                                             DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
                                             AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
                                             AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
-                                            AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importRosterFromBrawlStarsApi() }
+                                            AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importAllBrawlersFromBrawlStarsApi() }
                                         }
                                     DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: backend.clearRoster() }
                                     CardTitle { text: "Current Queue" }
@@ -780,7 +794,14 @@ ApplicationWindow {
                                                     Image { anchors.fill: parent; source: modelData.icon; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                                 }
                                                 ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true } Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 } }
-                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
+                                                Label {
+                                                    Layout.preferredWidth: 72
+                                                    horizontalAlignment: Text.AlignRight
+                                                    text: modelData.trophies
+                                                    color: root.gold
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                }
                                             }
                                         }
                                     }
