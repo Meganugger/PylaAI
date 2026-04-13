@@ -26,6 +26,8 @@ ApplicationWindow {
     readonly property color sidebar: "#07080C"
     readonly property color panel: "#11141B"
     readonly property color panelAlt: "#171C25"
+    readonly property color panelHover: "#1C2330"
+    readonly property color fieldFill: "#0D1016"
     readonly property color border: "#2C3442"
     readonly property color textMain: "#F4F7FB"
     readonly property color textDim: "#9DA7B8"
@@ -36,6 +38,10 @@ ApplicationWindow {
     readonly property color danger: "#F16C6C"
     readonly property color info: "#72B7FF"
     readonly property color gold: "#FFD166"
+    readonly property int outerGap: 22
+    readonly property int cardGap: 16
+    readonly property int cardRadius: 20
+    readonly property int fieldHeight: 48
 
     function notify(level, message) { toastLevel = level; toastText = message; toast.open() }
     function colorForLevel(level) { return level === "success" ? success : level === "error" ? danger : level === "warning" ? warning : info }
@@ -48,6 +54,18 @@ ApplicationWindow {
     function rosterEntry() {
         for (let i = 0; i < roster.length; ++i) if (roster[i].brawler === selectedBrawler) return roster[i]
         return null
+    }
+    function secondsSinceStart() { return live.start_time ? Math.max(0, Math.floor(Date.now() / 1000 - Number(live.start_time))) : 0 }
+    function formatDuration(seconds) {
+        const hrs = Math.floor(seconds / 3600)
+        const mins = Math.floor((seconds % 3600) / 60)
+        const secs = seconds % 60
+        function pad(v) { return v < 10 ? "0" + v : "" + v }
+        return pad(hrs) + ":" + pad(mins) + ":" + pad(secs)
+    }
+    function liveMetricNumber(value, fallback) {
+        const n = Number(value)
+        return isNaN(n) ? fallback : n
     }
     function hydrate(newState) {
         state = newState || {}
@@ -157,6 +175,180 @@ ApplicationWindow {
         }
     }
 
+    component AppCard: Rectangle {
+        radius: root.cardRadius
+        color: root.panel
+        border.color: root.border
+        border.width: 1
+    }
+
+    component AppLabel: Label {
+        color: root.textDim
+        font.pixelSize: 12
+    }
+
+    component CardTitle: Label {
+        color: root.textMain
+        font.pixelSize: 20
+        font.bold: true
+    }
+
+    component AppButton: Button {
+        id: control
+        implicitHeight: root.fieldHeight
+        implicitWidth: 150
+        font.pixelSize: 14
+        background: Rectangle {
+            radius: 14
+            color: control.down ? "#31353D" : (control.hovered ? root.panelHover : "#2A2D32")
+            border.color: control.highlighted ? root.accent : root.border
+            border.width: control.highlighted ? 1.2 : 1
+        }
+        contentItem: Text {
+            text: control.text
+            color: root.textMain
+            font: control.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    component AccentButton: Button {
+        id: control
+        implicitHeight: root.fieldHeight
+        implicitWidth: 160
+        font.pixelSize: 14
+        font.bold: true
+        background: Rectangle {
+            radius: 14
+            color: control.down ? "#B31E24" : (control.hovered ? "#F13A3A" : root.accent)
+            border.color: "#FF6767"
+            border.width: 1
+        }
+        contentItem: Text {
+            text: control.text
+            color: "#FFFFFF"
+            font: control.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    component DestructiveButton: Button {
+        id: control
+        implicitHeight: root.fieldHeight
+        implicitWidth: 140
+        font.pixelSize: 14
+        background: Rectangle {
+            radius: 14
+            color: control.down ? "#3B1417" : (control.hovered ? "#48181D" : "#301316")
+            border.color: "#8C323C"
+            border.width: 1
+        }
+        contentItem: Text {
+            text: control.text
+            color: root.textMain
+            font: control.font
+            horizontalAlignment: Text.AlignHCenter
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    component NavButton: Button {
+        id: control
+        implicitHeight: 56
+        font.pixelSize: 15
+        background: Rectangle {
+            radius: 16
+            color: control.checked ? root.accentSoft : "transparent"
+            border.color: control.checked ? root.accent : root.border
+            border.width: 1
+        }
+        contentItem: Text {
+            text: control.text
+            color: control.checked ? root.textMain : root.textDim
+            font.pixelSize: 15
+            font.bold: control.checked
+            leftPadding: 18
+            verticalAlignment: Text.AlignVCenter
+        }
+    }
+
+    component AppTextField: TextField {
+        id: control
+        implicitHeight: root.fieldHeight
+        color: root.textMain
+        placeholderTextColor: "#617089"
+        selectedTextColor: "#FFFFFF"
+        selectionColor: "#6D232A"
+        font.pixelSize: 14
+        padding: 14
+        background: Rectangle {
+            radius: 14
+            color: root.fieldFill
+            border.color: control.activeFocus ? root.accent : root.border
+            border.width: control.activeFocus ? 1.2 : 1
+        }
+    }
+
+    component AppComboBox: ComboBox {
+        id: control
+        implicitHeight: root.fieldHeight
+        font.pixelSize: 14
+        displayText: currentIndex >= 0 ? currentText : ""
+        leftPadding: 14
+        rightPadding: 42
+        contentItem: Text {
+            text: control.displayText
+            color: root.textMain
+            font: control.font
+            verticalAlignment: Text.AlignVCenter
+            elide: Text.ElideRight
+        }
+        background: Rectangle {
+            radius: 14
+            color: root.panelAlt
+            border.color: control.activeFocus ? root.accent : root.border
+            border.width: control.activeFocus ? 1.2 : 1
+        }
+        indicator: Label {
+            text: "v"
+            color: root.textDim
+            font.pixelSize: 20
+            anchors.verticalCenter: parent.verticalCenter
+            anchors.right: parent.right
+            anchors.rightMargin: 14
+        }
+    }
+
+    component AppCheckBox: CheckBox {
+        id: control
+        font.pixelSize: 14
+        spacing: 10
+        indicator: Rectangle {
+            implicitWidth: 24
+            implicitHeight: 24
+            radius: 6
+            color: control.checked ? root.accent : "transparent"
+            border.color: control.checked ? "#FF6D6D" : root.border
+            border.width: 1
+            Text {
+                anchors.centerIn: parent
+                text: control.checked ? "X" : ""
+                color: "#FFFFFF"
+                font.pixelSize: 15
+                font.bold: true
+            }
+        }
+        contentItem: Text {
+            text: control.text
+            color: root.textMain
+            font.pixelSize: 14
+            verticalAlignment: Text.AlignVCenter
+            leftPadding: control.indicator.width + control.spacing
+        }
+    }
+
     Component.onCompleted: {
         hydrate(backend.initialState())
         applyStateToForms()
@@ -197,7 +389,7 @@ ApplicationWindow {
             anchors.margins: 18
             Label { text: "Session Summary"; color: root.textMain; font.pixelSize: 24; font.bold: true }
             TextArea { id: summaryView; Layout.fillWidth: true; Layout.fillHeight: true; readOnly: true; color: root.textMain; wrapMode: TextEdit.Wrap; background: Rectangle { radius: 12; color: root.panelAlt; border.color: root.border; border.width: 1 } }
-            Button { text: "Close"; onClicked: summaryPopup.close() }
+            AppButton { text: "Close"; onClicked: summaryPopup.close() }
         }
     }
 
@@ -206,7 +398,7 @@ ApplicationWindow {
         spacing: 0
 
         Rectangle {
-            Layout.preferredWidth: 238
+            Layout.preferredWidth: 258
             Layout.fillHeight: true
             color: root.sidebar
             border.color: root.border
@@ -214,33 +406,29 @@ ApplicationWindow {
 
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 18
-                spacing: 16
-                Label { text: "PYLAAI"; color: root.textMain; font.pixelSize: 28; font.bold: true; font.letterSpacing: 2 }
-                Rectangle { width: 42; height: 4; radius: 2; color: root.accent }
+                anchors.margins: 20
+                spacing: 18
+                Label { text: "PYLAAI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 2 }
+                Rectangle { width: 52; height: 5; radius: 3; color: root.accent }
                 Label { text: state.branchLabel || ""; color: root.textDim; font.pixelSize: 13 }
                 Repeater {
                     model: ["Control Center","Brawlers","Farm","Live","History","Settings"]
-                    delegate: Button {
+                    delegate: NavButton {
                         Layout.fillWidth: true
-                        implicitHeight: 52
                         text: modelData
+                        checkable: true
+                        checked: pageIndex === index
                         onClicked: pageIndex = index
-                        background: Rectangle { radius: 14; color: pageIndex === index ? root.accentSoft : "transparent"; border.color: pageIndex === index ? root.accent : root.border; border.width: 1 }
-                        contentItem: Text { text: parent.text; color: pageIndex === index ? root.textMain : root.textDim; font.pixelSize: 14; font.bold: pageIndex === index; verticalAlignment: Text.AlignVCenter; leftPadding: 18 }
                     }
                 }
                 Item { Layout.fillHeight: true }
-                Rectangle {
+                AppCard {
                     Layout.fillWidth: true
-                    radius: 14
-                    color: root.panel
-                    border.color: root.border
-                    border.width: 1
-                    implicitHeight: 88
+                    implicitHeight: 94
                     ColumnLayout {
                         anchors.fill: parent
-                        anchors.margins: 14
+                        anchors.margins: 16
+                        spacing: 6
                         Label { text: state.loggedIn ? "Connected" : "Offline / Local"; color: state.loggedIn ? root.success : root.warning; font.pixelSize: 14; font.bold: true }
                         Label { text: roster.length ? roster.length + " brawler(s) queued" : "No roster selected"; color: root.textDim; font.pixelSize: 13; wrapMode: Text.WordWrap }
                     }
@@ -254,8 +442,8 @@ ApplicationWindow {
             color: root.bg
             ColumnLayout {
                 anchors.fill: parent
-                anchors.margins: 22
-                spacing: 16
+                anchors.margins: root.outerGap
+                spacing: 18
                 RowLayout {
                     Layout.fillWidth: true
                     Label { text: ["Control Center","Brawlers","Farm","Live Operations","Match History","Settings"][pageIndex]; color: root.textMain; font.pixelSize: 30; font.bold: true }
@@ -279,43 +467,81 @@ ApplicationWindow {
                     ScrollView {
                         clip: true
                         contentWidth: availableWidth
-                        ColumnLayout {
-                            width: parent.width
-                            spacing: 16
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 210
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 12
-                                    Label { text: "Launch Grid"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Map Orientation"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: orientationBox; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Gamemode"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: modeBox; Layout.fillWidth: true; model: state.gamemodes || []; textRole: "label" } }
-                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Emulator"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: emulatorBox; Layout.fillWidth: true; model: state.emulators || [] } }
-                                        ColumnLayout { Layout.fillWidth: true; Label { text: "Run Minutes"; color: root.textDim; font.pixelSize: 12 } TextField { id: timerField; Layout.fillWidth: true } }
-                                    }
-                                    RowLayout {
-                                        spacing: 12
-                                        Button { text: "Save Controls"; onClicked: saveControl() }
-                                        Button { text: "Start Bot"; onClicked: backend.startBot() }
-                                        Button { text: "Stop Bot"; onClicked: backend.stopBot() }
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        Item {
+                            width: parent.availableWidth
+                            implicitHeight: controlCenterColumn.implicitHeight
+                            Column {
+                                id: controlCenterColumn
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 1320)
+                                spacing: root.cardGap
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 250
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 18
+                                        CardTitle { text: "Launch Grid" }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 4
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Map Orientation" } AppComboBox { id: orientationBox; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Gamemode" } AppComboBox { id: modeBox; Layout.fillWidth: true; model: state.gamemodes || []; textRole: "label" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: emulatorBox; Layout.fillWidth: true; model: state.emulators || [] } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: timerField; Layout.fillWidth: true } }
+                                        }
+                                        RowLayout {
+                                            spacing: 12
+                                            AppButton { text: "Save Controls"; onClicked: saveControl() }
+                                            AccentButton { text: "Start Bot"; onClicked: backend.startBot() }
+                                            DestructiveButton { text: "Stop Bot"; onClicked: backend.stopBot() }
+                                        }
                                     }
                                 }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 320
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 12
-                                    Label { text: "Selected Roster"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    ListView {
-                                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8; model: roster
-                                        delegate: Rectangle {
-                                            width: ListView.view.width; height: 70; radius: 14; color: root.panelAlt; border.color: root.border; border.width: 1
-                                            RowLayout { anchors.fill: parent; anchors.margins: 12; spacing: 12
-                                                Image { source: modelData.icon; width: 44; height: 44; fillMode: Image.PreserveAspectFit; smooth: true }
-                                                ColumnLayout { Layout.fillWidth: true
-                                                    Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true }
-                                                    Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: Math.max(210, 70 + (roster.length * 96))
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 14
+                                        CardTitle { text: "Selected Roster" }
+                                        Label { visible: !roster.length; text: "No brawlers queued yet. Add them from the Brawlers page."; color: root.textDim; font.pixelSize: 14 }
+                                        Repeater {
+                                            model: roster
+                                            delegate: Rectangle {
+                                                width: parent.width
+                                                height: 86
+                                                radius: 16
+                                                color: root.panelAlt
+                                                border.color: root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 14
+                                                    spacing: 14
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 56
+                                                        Layout.preferredHeight: 56
+                                                        radius: 14
+                                                        color: "#0C0F14"
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                        clip: true
+                                                        Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 16; font.bold: true }
+                                                        Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 }
+                                                    }
+                                                    Label { text: "Trophies " + modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
                                                 }
-                                                Label { text: "Trophies " + modelData.trophies; color: root.gold; font.pixelSize: 13; font.bold: true }
                                             }
                                         }
                                     }
@@ -326,48 +552,122 @@ ApplicationWindow {
 
                     Rectangle {
                         color: "transparent"
-                        RowLayout { anchors.fill: parent; spacing: 16
-                            Rectangle {
-                                Layout.fillWidth: true; Layout.fillHeight: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 12
-                                    TextField { id: brawlerSearch; placeholderText: "Search brawlers"; Layout.fillWidth: true }
+                        RowLayout {
+                            anchors.fill: parent
+                            spacing: root.cardGap
+                            AppCard {
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 20
+                                    spacing: 14
+                                    AppTextField { id: brawlerSearch; placeholderText: "Search brawlers"; Layout.fillWidth: true }
                                     ListView {
-                                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        clip: true
+                                        spacing: 10
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar { }
                                         model: brawlers.filter(function(item){ return !brawlerSearch.text || item.displayName.toLowerCase().indexOf(brawlerSearch.text.toLowerCase()) !== -1 })
                                         delegate: Rectangle {
-                                            width: ListView.view.width; height: 72; radius: 14; color: selectedBrawler === modelData.name ? root.accentSoft : root.panelAlt; border.color: selectedBrawler === modelData.name ? root.accent : root.border; border.width: 1
-                                            RowLayout { anchors.fill: parent; anchors.margins: 12; spacing: 12
-                                                Image { source: modelData.icon; width: 48; height: 48; fillMode: Image.PreserveAspectFit; smooth: true }
-                                                ColumnLayout { Layout.fillWidth: true
-                                                    Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true }
+                                            width: ListView.view.width
+                                            height: 86
+                                            radius: 16
+                                            color: selectedBrawler === modelData.name ? root.accentSoft : root.panelAlt
+                                            border.color: selectedBrawler === modelData.name ? root.accent : root.border
+                                            border.width: 1
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 14
+                                                spacing: 14
+                                                Rectangle {
+                                                    Layout.preferredWidth: 58
+                                                    Layout.preferredHeight: 58
+                                                    radius: 14
+                                                    color: "#0C0F14"
+                                                    border.color: root.border
+                                                    border.width: 1
+                                                    clip: true
+                                                    Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                }
+                                                ColumnLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 2
+                                                    Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 16; font.bold: true }
                                                     Label { text: "Hold attack " + modelData.holdAttack + "s"; color: root.textDim; font.pixelSize: 12 }
                                                 }
-                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 13; font.bold: true }
+                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
                                             }
                                             MouseArea { anchors.fill: parent; onClicked: { selectedBrawler = modelData.name; hydrateEditors() } }
                                         }
                                     }
                                 }
                             }
-                            Rectangle {
-                                Layout.preferredWidth: 420; Layout.fillHeight: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
+                            AppCard {
+                                Layout.preferredWidth: 380
+                                Layout.fillHeight: true
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: 20
+                                    spacing: 14
                                     Label { id: brawlerTitle; text: "Select a brawler"; color: root.textMain; font.pixelSize: 24; font.bold: true }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Trophies"; color: root.textDim; font.pixelSize: 12 } TextField { id: trophiesField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Wins"; color: root.textDim; font.pixelSize: 12 } TextField { id: winsField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Push Until"; color: root.textDim; font.pixelSize: 12 } TextField { id: targetField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Win Streak"; color: root.textDim; font.pixelSize: 12 } TextField { id: streakField; Layout.fillWidth: true } } }
-                                    ComboBox { id: typeBox; Layout.fillWidth: true; model: ["Trophies","Wins","Quest"] }
-                                    RowLayout { CheckBox { id: autoPick; text: "Auto-pick" } CheckBox { id: manualTrophies; text: "Manual trophies" } }
-                                    RowLayout { spacing: 12; Button { text: "Add / Update"; onClicked: saveBrawler() } Button { text: "Remove"; onClicked: backend.removeRosterEntry(selectedBrawler) } Button { text: "Clear"; onClicked: backend.clearRoster() } }
-                                    RowLayout { spacing: 12; Button { text: "Load Config"; onClicked: backend.loadRosterFile() } Button { text: "Export"; onClicked: backend.exportRosterFile() } }
-                                    Label { text: "Current Queue"; color: root.textMain; font.pixelSize: 18; font.bold: true }
+                                    GridLayout {
+                                        width: parent.width
+                                        columns: 2
+                                        columnSpacing: 12
+                                        rowSpacing: 10
+                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Trophies" } AppTextField { id: trophiesField; Layout.fillWidth: true } }
+                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Wins" } AppTextField { id: winsField; Layout.fillWidth: true } }
+                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Push Until" } AppTextField { id: targetField; Layout.fillWidth: true } }
+                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Win Streak" } AppTextField { id: streakField; Layout.fillWidth: true } }
+                                    }
+                                    ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Push Type" } AppComboBox { id: typeBox; Layout.fillWidth: true; model: ["Trophies","Wins","Quest"] } }
+                                    RowLayout { Layout.fillWidth: true; spacing: 16; AppCheckBox { id: autoPick; text: "Auto-pick" } AppCheckBox { id: manualTrophies; text: "Manual trophies" } }
+                                    GridLayout {
+                                        width: parent.width
+                                        columns: 2
+                                        columnSpacing: 12
+                                        rowSpacing: 12
+                                        AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
+                                        DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
+                                        AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
+                                        AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
+                                    }
+                                    DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: backend.clearRoster() }
+                                    CardTitle { text: "Current Queue" }
                                     ListView {
-                                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 8; model: roster
+                                        Layout.fillWidth: true
+                                        Layout.fillHeight: true
+                                        clip: true
+                                        spacing: 10
+                                        boundsBehavior: Flickable.StopAtBounds
+                                        ScrollBar.vertical: ScrollBar { }
+                                        model: roster
                                         delegate: Rectangle {
-                                            width: ListView.view.width; height: 60; radius: 12; color: root.panelAlt; border.color: root.border; border.width: 1
-                                            RowLayout { anchors.fill: parent; anchors.margins: 10; spacing: 10
-                                                Image { source: modelData.icon; width: 38; height: 38; fillMode: Image.PreserveAspectFit; smooth: true }
-                                                ColumnLayout { Layout.fillWidth: true; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true } Label { text: modelData.type + " | " + modelData.push_until; color: root.textDim; font.pixelSize: 12 } }
-                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 13; font.bold: true }
+                                            width: ListView.view.width
+                                            height: 74
+                                            radius: 14
+                                            color: root.panelAlt
+                                            border.color: root.border
+                                            border.width: 1
+                                            RowLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                spacing: 12
+                                                Rectangle {
+                                                    Layout.preferredWidth: 46
+                                                    Layout.preferredHeight: 46
+                                                    radius: 12
+                                                    color: "#0C0F14"
+                                                    border.color: root.border
+                                                    border.width: 1
+                                                    clip: true
+                                                    Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true } Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 } }
+                                                Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
                                             }
                                         }
                                     }
@@ -379,33 +679,92 @@ ApplicationWindow {
                     ScrollView {
                         clip: true
                         contentWidth: availableWidth
-                        ColumnLayout { width: parent.width; spacing: 16
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 250
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "Trophy Farm"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    RowLayout { spacing: 12; CheckBox { id: farmEnabled; text: "Enable" } TextField { id: farmTarget; width: 120; placeholderText: "500" } ComboBox { id: farmStrategy; width: 170; model: ["lowest_first","highest_first","in_order"] } Button { text: "Save Farm"; onClicked: saveFarm() } }
-                                    ListView {
-                                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6; id: trophyList; model: excludeModel
-                                        delegate: Rectangle {
-                                            width: ListView.view.width; height: 42; radius: 10; color: root.panelAlt; border.color: root.border; border.width: 1
-                                            RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; CheckBox { checked: model.checked; onToggled: excludeModel.setProperty(index, "checked", checked) } Label { text: model.displayName; color: root.textMain; font.pixelSize: 13 } }
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        Item {
+                            width: parent.availableWidth
+                            implicitHeight: farmColumn.implicitHeight
+                            Column {
+                                id: farmColumn
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 1320)
+                                spacing: root.cardGap
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 360
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "Trophy Farm" }
+                                        RowLayout {
+                                            spacing: 12
+                                            AppCheckBox { id: farmEnabled; text: "Enable" }
+                                            AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500" }
+                                            AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
+                                            AppButton { text: "Save Farm"; onClicked: saveFarm() }
+                                        }
+                                        Label { text: "Exclude brawlers from trophy farm"; color: root.textDim; font.pixelSize: 14 }
+                                        ListView {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            ScrollBar.vertical: ScrollBar { }
+                                            id: trophyList
+                                            model: excludeModel
+                                            delegate: Rectangle {
+                                                width: ListView.view.width
+                                                height: 50
+                                                radius: 12
+                                                color: root.panelAlt
+                                                border.color: root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 12
+                                                    AppCheckBox { checked: model.checked; onToggled: excludeModel.setProperty(index, "checked", checked) }
+                                                    Label { text: model.displayName; color: root.textMain; font.pixelSize: 14 }
+                                                }
+                                            }
                                         }
                                     }
                                 }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: state.capabilities && state.capabilities.quest_farm ? 240 : 120
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "Quest Farm"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    Label { text: state.capabilities && state.capabilities.quest_farm ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14 }
-                                    RowLayout { visible: state.capabilities && state.capabilities.quest_farm; spacing: 12; CheckBox { id: questEnabled; text: "Enable" } ComboBox { id: questMode; model: ["games","wins"] } }
-                                    ListView {
-                                        visible: state.capabilities && state.capabilities.quest_farm
-                                        Layout.fillWidth: true; Layout.fillHeight: true; clip: true; spacing: 6; model: questExcludeModel
-                                        delegate: Rectangle {
-                                            width: ListView.view.width; height: 42; radius: 10; color: root.panelAlt; border.color: root.border; border.width: 1
-                                            RowLayout { anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; CheckBox { checked: model.checked; onToggled: questExcludeModel.setProperty(index, "checked", checked) } Label { text: model.displayName; color: root.textMain; font.pixelSize: 13 } }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: state.capabilities && state.capabilities.quest_farm ? 310 : 150
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "Quest Farm" }
+                                        Label { text: state.capabilities && state.capabilities.quest_farm ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        RowLayout { visible: state.capabilities && state.capabilities.quest_farm; spacing: 12; AppCheckBox { id: questEnabled; text: "Enable" } AppComboBox { id: questMode; implicitWidth: 170; model: ["games","wins"] } }
+                                        ListView {
+                                            visible: state.capabilities && state.capabilities.quest_farm
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            ScrollBar.vertical: ScrollBar { }
+                                            model: questExcludeModel
+                                            delegate: Rectangle {
+                                                width: ListView.view.width
+                                                height: 50
+                                                radius: 12
+                                                color: root.panelAlt
+                                                border.color: root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 12
+                                                    AppCheckBox { checked: model.checked; onToggled: questExcludeModel.setProperty(index, "checked", checked) }
+                                                    Label { text: model.displayName; color: root.textMain; font.pixelSize: 14 }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -416,46 +775,60 @@ ApplicationWindow {
                     ScrollView {
                         clip: true
                         contentWidth: availableWidth
-                        ColumnLayout { width: parent.width; spacing: 16
-                            Repeater {
-                                model: [
-                                    {"title":"Session","value": live.start_time ? Math.max(0, Math.floor(Date.now()/1000 - live.start_time)) + "s" : "0s"},
-                                    {"title":"IPS","value": live.ips ? Number(live.ips).toFixed(1) : "0.0"},
-                                    {"title":"State","value": live.state || "starting"},
-                                    {"title":"Brawler","value": live.brawler || "-"},
-                                    {"title":"Trophies","value": (live.trophies || 0) + " / " + (live.target || 0)},
-                                    {"title":"To Target","value": live.target ? Math.max(0, Number(live.target) - Number(live.trophies || 0)) : 0},
-                                    {"title":"KDA","value": live.current_deaths > 0 ? ((live.current_kills || 0) / Math.max(1, live.current_deaths)).toFixed(2) : String(live.current_kills || 0)},
-                                    {"title":"DMG / MIN","value": live.start_time ? Math.round((Number(live.current_damage || 0) / Math.max(1, ((Date.now()/1000 - live.start_time) / 60)))) : 0},
-                                    {"title":"WINS / H","value": live.start_time ? (((Number(live.session_victories || 0) * 3600) / Math.max(1, (Date.now()/1000 - live.start_time)))).toFixed(1) : "0.0"}
-                                ]
-                                delegate: Rectangle {
-                                    Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 86
-                                    RowLayout { anchors.fill: parent; anchors.margins: 16; Label { text: modelData.title; color: root.textDim; font.pixelSize: 12; Layout.preferredWidth: 150 } Label { text: String(modelData.value); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        Item {
+                            width: parent.availableWidth
+                            implicitHeight: liveColumn.implicitHeight
+                            Column {
+                                id: liveColumn
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 1320)
+                                spacing: root.cardGap
+                                GridLayout {
+                                    width: parent.width
+                                    columns: 3
+                                    rowSpacing: root.cardGap
+                                    columnSpacing: root.cardGap
+                                    Repeater {
+                                        model: [
+                                            {"title":"Session","value": formatDuration(secondsSinceStart()), "color": root.info},
+                                            {"title":"State","value": String(live.state || "READY").toUpperCase(), "color": (live.state || "").toLowerCase() === "match" ? root.success : root.textMain},
+                                            {"title":"Brawler","value": live.brawler || "-", "color": root.textMain},
+                                            {"title":"Trophies","value": liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0), "color": root.gold},
+                                            {"title":"To Target","value": String(Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0))), "color": root.warning},
+                                            {"title":"IPS","value": Number(liveMetricNumber(live.ips, 0)).toFixed(1), "color": root.success},
+                                            {"title":"KDA","value": live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)), "color": root.textMain},
+                                            {"title":"DMG / MIN","value": String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0), "color": root.textMain},
+                                            {"title":"WINS / H","value": secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0", "color": root.textMain}
+                                        ]
+                                        delegate: AppCard {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 118
+                                            ColumnLayout {
+                                                anchors.fill: parent
+                                                anchors.margins: 18
+                                                spacing: 10
+                                                AppLabel { text: modelData.title.toUpperCase(); font.bold: true }
+                                                Item { Layout.fillHeight: true }
+                                                Label { text: String(modelData.value); color: modelData.color; font.pixelSize: 28; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
+                                            }
+                                        }
+                                    }
                                 }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 170
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "Performance"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
-                                    Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                    Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                    Label { visible: state.capabilities && state.capabilities.advanced_live; text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 210
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 14
+                                        CardTitle { text: "Performance" }
+                                        Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
+                                        Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        Label { visible: state.capabilities && state.capabilities.advanced_live; text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                    }
                                 }
-                            }
-                        }
-                    }
-
-                    ListView {
-                        clip: true; spacing: 10; model: history
-                        delegate: Rectangle {
-                            width: ListView.view.width; height: 86; radius: 16; color: root.panel; border.color: root.border; border.width: 1
-                            RowLayout { anchors.fill: parent; anchors.margins: 14; spacing: 12
-                                Image { source: modelData.icon; width: 54; height: 54; fillMode: Image.PreserveAspectFit; smooth: true }
-                                ColumnLayout { Layout.fillWidth: true; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 18; font.bold: true } Label { text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"; color: root.textDim; font.pixelSize: 13 } }
-                                Label { text: modelData.matches + " matches"; color: root.info; font.pixelSize: 14; font.bold: true }
-                                Label { text: Number(modelData.winrate || 0).toFixed(1) + "%"; color: root.gold; font.pixelSize: 18; font.bold: true }
                             }
                         }
                     }
@@ -463,36 +836,151 @@ ApplicationWindow {
                     ScrollView {
                         clip: true
                         contentWidth: availableWidth
-                        ColumnLayout { width: parent.width; spacing: 16
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 260
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "Account & API"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Pyla API Key"; color: root.textDim; font.pixelSize: 12 } TextField { id: pylaKey; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } } ColumnLayout { Layout.fillWidth: true; Label { text: "Discord ID"; color: root.textDim; font.pixelSize: 12 } TextField { id: discordField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Webhook"; color: root.textDim; font.pixelSize: 12 } TextField { id: webhookField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "API Base URL"; color: root.textDim; font.pixelSize: 12 } TextField { id: apiBaseField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Brawl Stars API Key"; color: root.textDim; font.pixelSize: 12 } TextField { id: bsApiField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } } ColumnLayout { Layout.fillWidth: true; Label { text: "Player Tag"; color: root.textDim; font.pixelSize: 12 } TextField { id: playerTagField; Layout.fillWidth: true } } }
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        Item {
+                            width: parent.availableWidth
+                            implicitHeight: historyColumn.implicitHeight
+                            Column {
+                                id: historyColumn
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 1320)
+                                spacing: 12
+                                Label { visible: !history.length; text: "No match history available yet."; color: root.textDim; font.pixelSize: 14 }
+                                Repeater {
+                                    model: history
+                                    delegate: AppCard {
+                                        width: historyColumn.width
+                                        implicitHeight: 90
+                                        RowLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 14
+                                            spacing: 14
+                                            Rectangle {
+                                                Layout.preferredWidth: 58
+                                                Layout.preferredHeight: 58
+                                                radius: 14
+                                                color: "#0C0F14"
+                                                border.color: root.border
+                                                border.width: 1
+                                                clip: true
+                                                Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                            }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 17; font.bold: true } Label { text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"; color: root.textDim; font.pixelSize: 13 } }
+                                            Label { text: modelData.matches + " matches"; color: root.info; font.pixelSize: 14; font.bold: true }
+                                            Label { text: Number(modelData.winrate || 0).toFixed(1) + "%"; color: root.gold; font.pixelSize: 18; font.bold: true }
+                                        }
+                                    }
                                 }
                             }
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 250
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "General Runtime"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Max IPS"; color: root.textDim; font.pixelSize: 12 } TextField { id: maxIps; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Backend"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: backendBox; Layout.fillWidth: true; model: ["auto","cpu","gpu"] } } ColumnLayout { Layout.fillWidth: true; Label { text: "Package"; color: root.textDim; font.pixelSize: 12 } TextField { id: packageField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Run Minutes"; color: root.textDim; font.pixelSize: 12 } TextField { id: settingsTimer; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Port"; color: root.textDim; font.pixelSize: 12 } TextField { id: portField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Auto Push"; color: root.textDim; font.pixelSize: 12 } TextField { id: autoPushField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Emulator"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: settingsEmulator; Layout.fillWidth: true; model: state.emulators || [] } } ColumnLayout { Layout.fillWidth: true; Label { text: "Orientation"; color: root.textDim; font.pixelSize: 12 } ComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } } CheckBox { id: debugBox; text: "Super debug" } }
+                        }
+                    }
+
+                    ScrollView {
+                        clip: true
+                        contentWidth: availableWidth
+                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                        Item {
+                            width: parent.availableWidth
+                            implicitHeight: settingsColumn.implicitHeight
+                            Column {
+                                id: settingsColumn
+                                anchors.horizontalCenter: parent.horizontalCenter
+                                width: Math.min(parent.width, 1320)
+                                spacing: root.cardGap
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 290
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "Account & API" }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 2
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Pyla API Key" } AppTextField { id: pylaKey; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Discord ID" } AppTextField { id: discordField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Webhook" } AppTextField { id: webhookField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "API Base URL" } AppTextField { id: apiBaseField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Brawl Stars API Key" } AppTextField { id: bsApiField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Player Tag" } AppTextField { id: playerTagField; Layout.fillWidth: true } }
+                                        }
+                                    }
                                 }
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true; radius: 18; color: root.panel; border.color: root.border; border.width: 1; implicitHeight: 320
-                                ColumnLayout { anchors.fill: parent; anchors.margins: 18; spacing: 10
-                                    Label { text: "Combat & Detection"; color: root.textMain; font.pixelSize: 22; font.bold: true }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Min Move"; color: root.textDim; font.pixelSize: 12 } TextField { id: minMove; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Unstuck Delay"; color: root.textDim; font.pixelSize: 12 } TextField { id: unstuckDelay; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Unstuck Hold"; color: root.textDim; font.pixelSize: 12 } TextField { id: unstuckHold; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Wall Conf"; color: root.textDim; font.pixelSize: 12 } TextField { id: wallConf; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Entity Conf"; color: root.textDim; font.pixelSize: 12 } TextField { id: entityConf; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Hold Attack"; color: root.textDim; font.pixelSize: 12 } TextField { id: holdAttack; Layout.fillWidth: true } } }
-                                    RowLayout { CheckBox { id: playAgain; text: "Play again on win" } CheckBox { id: useGadgets; text: "Use gadgets" } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "State Check"; color: root.textDim; font.pixelSize: 12 } TextField { id: stateCheck; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "No Detections"; color: root.textDim; font.pixelSize: 12 } TextField { id: noDetect; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Idle"; color: root.textDim; font.pixelSize: 12 } TextField { id: idleField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Gadget"; color: root.textDim; font.pixelSize: 12 } TextField { id: gadgetField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Hyper"; color: root.textDim; font.pixelSize: 12 } TextField { id: hyperField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Super"; color: root.textDim; font.pixelSize: 12 } TextField { id: superField; Layout.fillWidth: true } } }
-                                    RowLayout { Layout.fillWidth: true; ColumnLayout { Layout.fillWidth: true; Label { text: "Wall Detect"; color: root.textDim; font.pixelSize: 12 } TextField { id: wallField; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "No Proceed"; color: root.textDim; font.pixelSize: 12 } TextField { id: noProceed; Layout.fillWidth: true } } ColumnLayout { Layout.fillWidth: true; Label { text: "Crash Check"; color: root.textDim; font.pixelSize: 12 } TextField { id: crashCheck; Layout.fillWidth: true } } }
-                                    Button { text: "Save Settings"; onClicked: saveSettings() }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 290
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "General Runtime" }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 3
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Max IPS" } AppTextField { id: maxIps; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Backend" } AppComboBox { id: backendBox; Layout.fillWidth: true; model: ["auto","cpu","gpu"] } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Package" } AppTextField { id: packageField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: settingsTimer; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Port" } AppTextField { id: portField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: state.emulators || [] } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
+                                                AppLabel { text: "Debug" }
+                                                Item {
+                                                    Layout.fillWidth: true
+                                                    implicitHeight: root.fieldHeight
+                                                    RowLayout { anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 430
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "Combat & Detection" }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 3
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Min Move" } AppTextField { id: minMove; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Unstuck Delay" } AppTextField { id: unstuckDelay; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Unstuck Hold" } AppTextField { id: unstuckHold; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Wall Confidence" } AppTextField { id: wallConf; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Entity Confidence" } AppTextField { id: entityConf; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Hold Attack" } AppTextField { id: holdAttack; Layout.fillWidth: true } }
+                                        }
+                                        RowLayout { spacing: 18; AppCheckBox { id: playAgain; text: "Play again on win" } AppCheckBox { id: useGadgets; text: "Use gadgets" } }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 3
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "State Check" } AppTextField { id: stateCheck; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "No Detections" } AppTextField { id: noDetect; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Idle" } AppTextField { id: idleField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Gadget" } AppTextField { id: gadgetField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Hypercharge" } AppTextField { id: hyperField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Super" } AppTextField { id: superField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Wall Detect" } AppTextField { id: wallField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "No Proceed" } AppTextField { id: noProceed; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Crash Check" } AppTextField { id: crashCheck; Layout.fillWidth: true } }
+                                        }
+                                        AccentButton { text: "Save Settings"; onClicked: saveSettings() }
+                                    }
                                 }
                             }
                         }
