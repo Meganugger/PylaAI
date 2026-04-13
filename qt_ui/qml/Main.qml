@@ -512,7 +512,7 @@ ApplicationWindow {
                         id: brandColumn
                         spacing: 8
                         Label { text: "PYLA AI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 3 }
-                        Rectangle { x: 2; width: 66; height: 5; radius: 3; color: root.accent }
+                        Rectangle { x: 2; width: 84; height: 5; radius: 3; color: root.accent }
                     }
                 }
                 Label { text: state.branchLabel || ""; color: root.textDim; font.pixelSize: 13 }
