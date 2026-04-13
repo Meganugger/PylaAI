@@ -61,6 +61,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.last_processed_frame_time = 0.0
             self.current_ips = 0.0
             self.current_state = "starting"
+            self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -200,6 +201,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 global _active_dashboard
                 if _active_dashboard is not None:
                     try:
+                        current_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
+                        _active_dashboard.sync_runtime_roster(
+                            self.Stage_manager.brawlers_pick_data,
+                            emit_history=current_match_counter != self._last_dashboard_match_counter,
+                        )
+                        self._last_dashboard_match_counter = current_match_counter
                         hist = self.Stage_manager.Trophy_observer.match_history.get(brawler, {})
                         _active_dashboard.update_live(
                             start_time=self.start_time,
