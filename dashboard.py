@@ -1832,6 +1832,9 @@ class Dashboard(ctk.CTk):
                 pass
             self._brawler_render_job_id = None
 
+        if not hasattr(self, "_brawler_scroll"):
+            return
+
         for w in self._brawler_scroll.winfo_children():
             w.destroy()
 
@@ -1847,9 +1850,10 @@ class Dashboard(ctk.CTk):
 
         n = len(self.brawlers_data)
         mode_txt = "Single" if getattr(self, "_selection_mode_var", None) and self._selection_mode_var.get() == "Single" else "Multi"
-        self._sel_count_label.configure(
-            text=(f"{n} selected" if n != 1 else "1 selected") + f"  •  {mode_txt}",
-            text_color=ACCENT if n > 0 else DIM)
+        if hasattr(self, "_sel_count_label"):
+            self._sel_count_label.configure(
+                text=(f"{n} selected" if n != 1 else "1 selected") + f"  •  {mode_txt}",
+                text_color=ACCENT if n > 0 else DIM)
 
     def _render_brawler_grid_chunk(self, cols=6, has_scan=False):
         chunk_size = 8
