@@ -505,8 +505,16 @@ ApplicationWindow {
                 anchors.fill: parent
                 anchors.margins: 20
                 spacing: 18
-                Label { text: "PYLAAI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 2 }
-                Rectangle { width: 52; height: 5; radius: 3; color: root.accent }
+                Item {
+                    Layout.fillWidth: true
+                    implicitHeight: brandColumn.implicitHeight
+                    Column {
+                        id: brandColumn
+                        spacing: 8
+                        Label { text: "PYLA AI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 3 }
+                        Rectangle { x: 2; width: 66; height: 5; radius: 3; color: root.accent }
+                    }
+                }
                 Label { text: state.branchLabel || ""; color: root.textDim; font.pixelSize: 13 }
                 Repeater {
                     model: ["Control Center","Brawlers","Farm","Live","History","Settings"]
@@ -738,8 +746,7 @@ ApplicationWindow {
                                             DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
                                             AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
                                             AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
-                                            AppButton { text: "Import from Tag"; Layout.fillWidth: true; onClicked: backend.importSelectedBrawlerFromBrawlStarsApi(selectedBrawler) }
-                                            Item { Layout.fillWidth: true }
+                                            AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importRosterFromBrawlStarsApi() }
                                         }
                                     DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: backend.clearRoster() }
                                     CardTitle { text: "Current Queue" }
