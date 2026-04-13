@@ -185,6 +185,13 @@ class QtBridge(QObject):
             return {}
 
     @staticmethod
+    def _save_brawler_scan_data(data):
+        scan_path = os.path.join("cfg", "brawler_scan.json")
+        payload = {"brawlers": data if isinstance(data, dict) else {}}
+        with open(scan_path, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, indent=4)
+
+    @staticmethod
     def _slug_name(value):
         return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
@@ -366,10 +373,7 @@ class QtBridge(QObject):
         return self._build_brawler_payload()
 
     @Slot()
-    def importRosterFromBrawlStarsApi(self):
-        if not self.brawlers_data:
-            self._notification("warning", "Add at least one brawler to the queue first.")
-            return
+    def importAllBrawlersFromBrawlStarsApi(self):
         try:
             api_brawlers = self._fetch_player_brawlers_from_api()
         except Exception as exc:
@@ -382,21 +386,30 @@ class QtBridge(QObject):
             if internal_name:
                 trophy_map[internal_name] = self._as_int(entry.get("trophies", 0), 0)
 
-        updated_count = 0
+        if not trophy_map:
+            self._notification("warning", "No compatible brawler data was returned by the Brawl Stars API.")
+            return
+
+        scan_data = self._brawler_scan_data()
+        for brawler_name, trophies in trophy_map.items():
+            existing = scan_data.get(brawler_name, {})
+            if not isinstance(existing, dict):
+                existing = {}
+            existing["trophies"] = trophies
+            scan_data[brawler_name] = existing
+        self._save_brawler_scan_data(scan_data)
+
+        queued_updated_count = 0
         for row in self.brawlers_data:
             brawler = row.get("brawler")
             if brawler in trophy_map:
                 row["trophies"] = trophy_map[brawler]
-                updated_count += 1
-
-        if not updated_count:
-            self._notification("warning", "None of the queued brawlers were found on that player profile.")
-            return
+                queued_updated_count += 1
 
         save_brawler_data(self.brawlers_data)
         self._emit_roster()
         self._emit_state()
-        self._notification("success", f"Imported trophies for {updated_count} queued brawler(s) from the Brawl Stars API.")
+        self._notification("success", f"Imported trophies for {len(trophy_map)} brawler(s) from the Brawl Stars API and synced {queued_updated_count} queued entry(ies).")
 
     @Slot("QVariantMap")
     def saveControlSettings(self, payload):
