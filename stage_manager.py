@@ -54,6 +54,14 @@ class StageManager:
         self.window_controller = window_controller
         self.lobby_start_enabled = True
 
+    def _sync_active_brawler_progress(self):
+        if not self.brawlers_pick_data:
+            return
+        active = self.brawlers_pick_data[0]
+        active['trophies'] = self.Trophy_observer.current_trophies
+        active['wins'] = self.Trophy_observer.current_wins
+        active['win_streak'] = self.Trophy_observer.win_streak
+
     def set_lobby_start_enabled(self, enabled):
         self.lobby_start_enabled = enabled
 
@@ -184,6 +192,7 @@ class StageManager:
                 if type_to_push not in values:
                     type_to_push = "trophies"
                 value = values[type_to_push]
+                self._sync_active_brawler_progress()
                 self.brawlers_pick_data[0][type_to_push] = value
                 save_brawler_data(self.brawlers_pick_data)
                 push_current_brawler_till = self.brawlers_pick_data[0]['push_until']

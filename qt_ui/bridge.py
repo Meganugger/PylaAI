@@ -169,6 +169,16 @@ class QtBridge(QObject):
     def _emit_history(self):
         self.historyChanged.emit(self.getHistory())
 
+    def sync_runtime_roster(self, roster, emit_history=False):
+        normalized = self._normalize_roster(roster)
+        roster_changed = normalized != self.brawlers_data
+        if roster_changed:
+            self.brawlers_data = normalized
+            self._emit_roster()
+            self._emit_state()
+        if emit_history:
+            self._emit_history()
+
     def _icon_url_for(self, brawler):
         icon_path = os.path.abspath(os.path.join("api", "assets", "brawler_icons", f"{brawler}.png"))
         return f"file:///{icon_path.replace(os.sep, '/')}" if os.path.exists(icon_path) else ""
