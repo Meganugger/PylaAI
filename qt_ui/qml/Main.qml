@@ -360,6 +360,7 @@ ApplicationWindow {
                 clip: true
                 implicitHeight: Math.min(contentHeight, 260)
                 model: control.popup.visible ? control.model : null
+                delegate: control.delegate
                 currentIndex: control.highlightedIndex
                 boundsBehavior: Flickable.StopAtBounds
                 ScrollBar.vertical: ScrollBar { }
