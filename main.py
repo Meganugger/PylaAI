@@ -468,10 +468,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     tobs = self.Stage_manager.Trophy_observer
                     bname = brawler
                     hist = tobs.match_history.get(bname, {})
+                    all_brawler_stats = getattr(tobs, 'brawler_stats', {}) or {}
                     brawler_perf = (
-                        tobs.brawler_stats.get(bname, {})
-                        or tobs.brawler_stats.get(str(bname).lower(), {})
-                        or tobs.brawler_stats.get(str(bname).upper(), {})
+                        all_brawler_stats.get(bname, {})
+                        or all_brawler_stats.get(str(bname).lower(), {})
+                        or all_brawler_stats.get(str(bname).upper(), {})
                     )
                     bt = getattr(self.Play, '_bt_combat', None)
                     rc = getattr(bt, '_reward_calculator', None) if bt else None
@@ -502,6 +503,18 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     current_kills_live = max(play_kills, rl_kills_live)
                     current_deaths_live = max(play_deaths, rl_deaths_live)
                     current_damage_live = int(max(bt_damage, rl_damage_live))
+                    if hasattr(tobs, 'update_live_match_stats'):
+                        try:
+                            tobs.update_live_match_stats(
+                                bname,
+                                kills=current_kills_live,
+                                assists=0,
+                                damage=current_damage_live,
+                                deaths=current_deaths_live,
+                            )
+                        except Exception:
+                            pass
+                    session_stats = getattr(tobs, 'session_stats', {}) or {}
 
                     perf_source_parts = []
                     if bt and bt_damage > 0:
@@ -556,13 +569,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 match_active=(self.state == 'match'),
                                 perf_source=perf_source,
                                 # Session totals (updated at end of each match)
-                                total_kills=tobs.session_stats.get('total_kills', 0),
-                                total_assists=tobs.session_stats.get('total_assists', 0),
-                                total_damage=tobs.session_stats.get('total_damage', 0),
-                                total_matches=tobs.session_stats.get('total_matches', 0),
-                                last_kills=tobs.session_stats.get('last_match_kills', 0),
-                                last_assists=tobs.session_stats.get('last_match_assists', 0),
-                                last_damage=tobs.session_stats.get('last_match_damage', 0),
+                                total_kills=session_stats.get('total_kills', 0),
+                                total_assists=session_stats.get('total_assists', 0),
+                                total_damage=session_stats.get('total_damage', 0),
+                                total_matches=session_stats.get('total_matches', 0),
+                                session_victories=session_stats.get('victories', 0),
+                                session_defeats=session_stats.get('defeats', 0),
+                                session_draws=session_stats.get('draws', 0),
+                                last_kills=session_stats.get('last_match_kills', 0),
+                                last_assists=session_stats.get('last_match_assists', 0),
+                                last_damage=session_stats.get('last_match_damage', 0),
                                 avg_kills=brawler_perf.get('avg_kills', 0),
                                 avg_assists=brawler_perf.get('avg_assists', 0),
                                 avg_damage=brawler_perf.get('avg_damage', 0),
