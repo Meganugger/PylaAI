@@ -46,6 +46,22 @@ class App:
         return None
 
     def start(self, pyla_version, get_latest_version):
+        saved = self._load_saved_brawler_data()
+        try:
+            from qt_ui.app import run_qt_app
+
+            run_qt_app(
+                version_str=pyla_version,
+                brawlers=self.brawlers,
+                pyla_main_fn=self.pyla_main,
+                login_fn=self.login,
+                saved_brawler_data=saved,
+            )
+            return
+        except ImportError as exc:
+            print(f"[UI] PySide6 UI unavailable, falling back to CustomTkinter: {exc}")
+        except Exception as exc:
+            print(f"[UI] Qt UI failed to launch, falling back to CustomTkinter: {exc}")
         from dashboard import Dashboard
 
         dashboard = Dashboard(
@@ -55,12 +71,9 @@ class App:
             login_fn=self.login,
         )
 
-        saved = self._load_saved_brawler_data()
         if saved:
             dashboard.brawlers_data = saved
             dashboard._update_sidebar_brawler()
-            # The brawler page is built lazily for smoother startup.
-            # Only refresh the grid once that page exists.
             if hasattr(dashboard, "_brawler_scroll"):
                 dashboard._refresh_brawler_grid()
             print(f"[DASHBOARD] Pre-loaded saved brawler: "

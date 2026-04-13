@@ -1,0 +1,586 @@
+import inspect
+import json
+import os
+import threading
+
+from PySide6.QtCore import QObject, QTimer, Signal, Slot
+from PySide6.QtWidgets import QFileDialog
+
+from gui.api import check_if_exists
+from gui.config_store import load_config
+from lobby_automation import LobbyAutomation
+from stage_manager import StageManager
+from utils import load_brawlers_info, load_toml_as_dict, save_brawler_data, save_dict_as_toml
+
+
+GAMEMODES = [
+    {"value": "knockout", "label": "Knockout"},
+    {"value": "brawlball", "label": "Brawl Ball"},
+    {"value": "gemgrab", "label": "Gem Grab"},
+    {"value": "showdown", "label": "Showdown"},
+    {"value": "basketbrawl", "label": "Basket Brawl"},
+    {"value": "wipeout", "label": "Wipeout"},
+    {"value": "bounty", "label": "Bounty"},
+    {"value": "hotzone", "label": "Hot Zone"},
+    {"value": "heist", "label": "Heist"},
+    {"value": "duels", "label": "Duels"},
+    {"value": "5v5", "label": "5v5"},
+    {"value": "other", "label": "Other"},
+]
+
+EMULATORS = ["LDPlayer", "BlueStacks", "MEmu", "Others"]
+
+
+class QtBridge(QObject):
+    stateChanged = Signal("QVariantMap")
+    rosterChanged = Signal("QVariantList")
+    liveDataChanged = Signal("QVariantMap")
+    historyChanged = Signal("QVariantList")
+    notificationRaised = Signal(str, str)
+    sessionSummaryReady = Signal("QVariantMap")
+
+    def __init__(self, version_str, brawlers, pyla_main_fn, login_fn=None, saved_brawler_data=None):
+        super().__init__()
+        self._version_str = str(version_str).strip()
+        self._pyla_main = pyla_main_fn
+        self._login_fn = login_fn
+        self._all_brawlers = list(brawlers or [])
+        self._bot_thread = None
+        self._bot_stop_event = None
+        self._bot_pause_event = None
+        self._bot_stop_requested = False
+        self._live_data = {}
+        self._session_summary = None
+        self._logged_in = False
+        self._live_lock = threading.Lock()
+
+        self.bot_config = self._load_bot_config()
+        self.general_config = self._load_general_config()
+        self.time_config = load_config("time")
+        self.login_config = load_toml_as_dict("cfg/login.toml")
+        self.brawlers_info = load_brawlers_info()
+        self.brawlers_data = self._normalize_roster(saved_brawler_data or self._load_saved_roster())
+        self.capabilities = {
+            "visual_overlay": os.path.exists("visual_overlay.py"),
+            "advanced_live": all(os.path.exists(path) for path in ("behavior_tree.py", "bt_combat.py")),
+            "brawler_scan": hasattr(LobbyAutomation, "scan_all_brawlers"),
+            "quest_farm": hasattr(StageManager, "_handle_quest_rotation"),
+            "quest_scan": hasattr(LobbyAutomation, "scan_quest_brawlers"),
+        }
+
+        self._validate_existing_login()
+
+    @staticmethod
+    def _as_int(value, default=0):
+        try:
+            return int(value)
+        except Exception:
+            return default
+
+    @staticmethod
+    def _as_float(value, default=0.0):
+        try:
+            return float(value)
+        except Exception:
+            return default
+
+    def _load_bot_config(self):
+        config = load_config("bot")
+        config.setdefault("gamemode", "knockout")
+        config.setdefault("gamemode_type", 3)
+        return config
+
+    def _load_general_config(self):
+        config = load_config("general")
+        config.setdefault("current_emulator", "LDPlayer")
+        config.setdefault("map_orientation", "vertical")
+        return config
+
+    def _validate_existing_login(self):
+        api_base_url = str(self.general_config.get("api_base_url", "localhost")).strip()
+        if api_base_url == "localhost":
+            self._logged_in = True
+            return
+        auth_key = str(self.login_config.get("key", "")).strip()
+        if auth_key:
+            try:
+                self._logged_in = bool(check_if_exists(auth_key))
+            except Exception:
+                self._logged_in = False
+
+    @staticmethod
+    def _format_version_tag(version_str):
+        raw = str(version_str).strip()
+        if not raw:
+            return "PylaAI"
+        local_labels = {
+            "main": "main",
+            "performance": "performance",
+            "strongestbot": "strongest-bot",
+            "strongestbotfull": "strongest-bot-full",
+        }
+        if "+" in raw:
+            base, local = raw.split("+", 1)
+            pretty_local = local_labels.get(local.lower(), local.replace("_", "-"))
+            return f"PylaAI {pretty_local}  v{base}"
+        if raw.lower().startswith("v"):
+            return f"PylaAI {raw}"
+        return f"PylaAI v{raw}"
+
+    @staticmethod
+    def _load_saved_roster():
+        if not os.path.exists("latest_brawler_data.json"):
+            return []
+        try:
+            with open("latest_brawler_data.json", "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data if isinstance(data, list) else []
+        except Exception:
+            return []
+
+    def _normalize_roster(self, roster):
+        normalized = []
+        for entry in roster or []:
+            if not isinstance(entry, dict):
+                continue
+            brawler = str(entry.get("brawler", "")).strip().lower()
+            if not brawler:
+                continue
+            normalized.append({
+                "brawler": brawler,
+                "push_until": self._as_int(entry.get("push_until", self.general_config.get("auto_push_target_trophies", 1000)), 0),
+                "trophies": self._as_int(entry.get("trophies", 0), 0),
+                "wins": self._as_int(entry.get("wins", 0), 0),
+                "type": str(entry.get("type", "trophies") or "trophies"),
+                "automatically_pick": bool(entry.get("automatically_pick", True)),
+                "win_streak": self._as_int(entry.get("win_streak", 0), 0),
+                "manual_trophies": bool(entry.get("manual_trophies", False)),
+            })
+        return normalized
+
+    def _emit_state(self):
+        self.stateChanged.emit(self.initialState())
+
+    def _emit_roster(self):
+        self.rosterChanged.emit(self.getRoster())
+
+    def _emit_history(self):
+        self.historyChanged.emit(self.getHistory())
+
+    def _icon_url_for(self, brawler):
+        icon_path = os.path.abspath(os.path.join("api", "assets", "brawler_icons", f"{brawler}.png"))
+        return f"file:///{icon_path.replace(os.sep, '/')}" if os.path.exists(icon_path) else ""
+
+    def _brawler_scan_data(self):
+        scan_path = os.path.join("cfg", "brawler_scan.json")
+        if not os.path.exists(scan_path):
+            return {}
+        try:
+            with open(scan_path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            return data.get("brawlers", {}) if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _build_brawler_payload(self):
+        scan_data = self._brawler_scan_data()
+        roster_lookup = {entry["brawler"]: entry for entry in self.brawlers_data}
+        items = []
+        for name in self._all_brawlers:
+            scan_entry = scan_data.get(name, {})
+            selected = roster_lookup.get(name, {})
+            trophies = selected.get("trophies", scan_entry.get("trophies", 0))
+            items.append({
+                "name": name,
+                "displayName": name.title(),
+                "icon": self._icon_url_for(name),
+                "selected": bool(selected),
+                "trophies": int(trophies or 0),
+                "pushUntil": int(selected.get("push_until", self.general_config.get("auto_push_target_trophies", 1000)) or 0),
+                "wins": int(selected.get("wins", 0) or 0),
+                "winStreak": int(selected.get("win_streak", 0) or 0),
+                "type": str(selected.get("type", "trophies") or "trophies"),
+                "autoPick": bool(selected.get("automatically_pick", True)),
+                "manualTrophies": bool(selected.get("manual_trophies", False)),
+                "holdAttack": float(self.brawlers_info.get(name, {}).get("hold_attack", 0) or 0),
+            })
+        return items
+
+    def _history_rows(self):
+        rows = []
+        history = load_toml_as_dict("cfg/match_history.toml")
+        if not isinstance(history, dict):
+            return rows
+        for brawler, data in history.items():
+            if not isinstance(data, dict):
+                continue
+            wins = int(data.get("victory", 0) or 0)
+            defeats = int(data.get("defeat", 0) or 0)
+            draws = int(data.get("draw", 0) or 0)
+            total = wins + defeats + draws
+            winrate = round((wins / total) * 100, 1) if total else 0.0
+            rows.append({
+                "brawler": brawler,
+                "displayName": brawler.title(),
+                "wins": wins,
+                "defeats": defeats,
+                "draws": draws,
+                "matches": total,
+                "winrate": winrate,
+                "icon": self._icon_url_for(brawler),
+            })
+        rows.sort(key=lambda item: (-item["matches"], item["displayName"]))
+        return rows
+
+    def _notification(self, level, message):
+        self.notificationRaised.emit(level, message)
+
+    def _prepare_bot_control_events(self):
+        self._bot_stop_requested = False
+        self._bot_stop_event = threading.Event()
+        self._bot_pause_event = threading.Event()
+        self._live_data = {}
+        self.liveDataChanged.emit(self._live_data.copy())
+
+    def _run_bot(self):
+        try:
+            if self._bot_stop_requested:
+                return
+            import sys
+            main_module = sys.modules.get("__main__")
+            if main_module:
+                setattr(main_module, "_active_dashboard", self)
+            try:
+                sig = inspect.signature(self._pyla_main)
+                if "external_stop_event" in sig.parameters:
+                    self._pyla_main(
+                        self.brawlers_data,
+                        external_stop_event=self._bot_stop_event,
+                        external_pause_event=self._bot_pause_event,
+                    )
+                else:
+                    self._pyla_main(self.brawlers_data)
+            except (TypeError, ValueError):
+                self._pyla_main(self.brawlers_data)
+        except Exception as exc:
+            self._notification("error", f"Bot thread error: {exc}")
+        finally:
+            import sys
+            main_module = sys.modules.get("__main__")
+            if main_module:
+                setattr(main_module, "_active_dashboard", None)
+                setattr(main_module, "_active_stage_manager", None)
+
+    def after(self, ms, callback):
+        QTimer.singleShot(int(ms), callback)
+
+    def update_live(self, **kw):
+        with self._live_lock:
+            self._live_data.update(kw)
+            payload = dict(self._live_data)
+        self.liveDataChanged.emit(payload)
+
+    def _show_session_summary(self):
+        summary = getattr(self, "_session_summary", None)
+        if summary:
+            self.sessionSummaryReady.emit(summary)
+        self._live_data.clear()
+        self.liveDataChanged.emit({})
+        self._emit_history()
+
+    @Slot(result="QVariantMap")
+    def initialState(self):
+        return {
+            "versionTag": self._format_version_tag(self._version_str),
+            "version": self._version_str,
+            "branchLabel": self._format_version_tag(self._version_str).replace("PylaAI ", ""),
+            "loggedIn": self._logged_in,
+            "capabilities": dict(self.capabilities),
+            "general": dict(self.general_config),
+            "bot": dict(self.bot_config),
+            "time": dict(self.time_config),
+            "login": {"key": str(self.login_config.get("key", ""))},
+            "roster": self.getRoster(),
+            "brawlers": self._build_brawler_payload(),
+            "history": self.getHistory(),
+            "gamemodes": list(GAMEMODES),
+            "emulators": list(EMULATORS),
+            "live": dict(self._live_data),
+        }
+
+    @Slot(result="QVariantList")
+    def getRoster(self):
+        roster = []
+        for entry in self.brawlers_data:
+            row = dict(entry)
+            row["displayName"] = row["brawler"].title()
+            row["icon"] = self._icon_url_for(row["brawler"])
+            roster.append(row)
+        return roster
+
+    @Slot(result="QVariantList")
+    def getHistory(self):
+        return self._history_rows()
+
+    @Slot(result="QVariantList")
+    def getBrawlers(self):
+        return self._build_brawler_payload()
+
+    @Slot("QVariantMap")
+    def saveControlSettings(self, payload):
+        self.general_config["map_orientation"] = str(payload.get("map_orientation", self.general_config.get("map_orientation", "vertical"))).lower()
+        self.general_config["current_emulator"] = str(payload.get("current_emulator", self.general_config.get("current_emulator", "LDPlayer")))
+        run_for_minutes = payload.get("run_for_minutes", self.general_config.get("run_for_minutes", 600))
+        self.general_config["run_for_minutes"] = self._as_int(run_for_minutes, 600)
+
+        gamemode = str(payload.get("gamemode", self.bot_config.get("gamemode", "knockout"))).lower()
+        self.bot_config["gamemode"] = gamemode
+        matching = next((mode for mode in GAMEMODES if mode["value"] == gamemode), None)
+        if matching:
+            self.bot_config["gamemode_type"] = 1 if gamemode in {"showdown", "duels"} else 5 if gamemode == "5v5" else 3
+
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
+        self._emit_state()
+        self._notification("success", "Control Center settings saved.")
+
+    @Slot("QVariantMap")
+    def saveFarmSettings(self, payload):
+        self.bot_config["smart_trophy_farm"] = "yes" if payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")) in (True, "yes", "true", "1") else "no"
+        self.bot_config["trophy_farm_strategy"] = str(payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first")))
+        self.bot_config["trophy_farm_target"] = self._as_int(payload.get("trophy_farm_target", self.bot_config.get("trophy_farm_target", 500)), 500)
+        excluded = payload.get("trophy_farm_excluded", self.bot_config.get("trophy_farm_excluded", []))
+        if isinstance(excluded, list):
+            self.bot_config["trophy_farm_excluded"] = sorted({str(item).lower() for item in excluded if item})
+
+        if self.capabilities.get("quest_farm"):
+            self.bot_config["quest_farm_enabled"] = "yes" if payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no")) in (True, "yes", "true", "1") else "no"
+            self.bot_config["quest_farm_mode"] = str(payload.get("quest_farm_mode", self.bot_config.get("quest_farm_mode", "games")))
+            quest_excluded = payload.get("quest_farm_excluded", self.bot_config.get("quest_farm_excluded", []))
+            if isinstance(quest_excluded, list):
+                self.bot_config["quest_farm_excluded"] = sorted({str(item).lower() for item in quest_excluded if item})
+
+        save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
+        self._emit_state()
+        self._notification("success", "Farm settings saved.")
+
+    @Slot("QVariantMap")
+    def saveSettings(self, payload):
+        general = payload.get("general", {})
+        bot = payload.get("bot", {})
+        time_cfg = payload.get("time", {})
+        login = payload.get("login", {})
+
+        for key in (
+            "max_ips",
+            "cpu_or_gpu",
+            "super_debug",
+            "personal_webhook",
+            "discord_id",
+            "brawlstars_api_key",
+            "brawlstars_player_tag",
+            "api_base_url",
+            "brawlstars_package",
+            "emulator_port",
+            "run_for_minutes",
+            "auto_push_target_trophies",
+            "current_emulator",
+            "map_orientation",
+        ):
+            if key in general:
+                self.general_config[key] = general[key]
+
+        self.general_config["emulator_port"] = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
+        self.general_config["run_for_minutes"] = self._as_int(self.general_config.get("run_for_minutes", 600), 600)
+        self.general_config["auto_push_target_trophies"] = self._as_int(self.general_config.get("auto_push_target_trophies", 1000), 1000)
+
+        for key in (
+            "minimum_movement_delay",
+            "unstuck_movement_delay",
+            "unstuck_movement_hold_time",
+            "wall_detection_confidence",
+            "entity_detection_confidence",
+            "seconds_to_hold_attack_after_reaching_max",
+            "play_again_on_win",
+            "bot_uses_gadgets",
+        ):
+            if key in bot:
+                self.bot_config[key] = bot[key]
+
+        for key, default in (
+            ("minimum_movement_delay", 0.08),
+            ("unstuck_movement_delay", 1.5),
+            ("unstuck_movement_hold_time", 0.8),
+            ("wall_detection_confidence", 0.9),
+            ("entity_detection_confidence", 0.6),
+            ("seconds_to_hold_attack_after_reaching_max", 1.5),
+        ):
+            self.bot_config[key] = self._as_float(self.bot_config.get(key, default), default)
+
+        for key in (
+            "state_check",
+            "no_detections",
+            "idle",
+            "gadget",
+            "hypercharge",
+            "super",
+            "wall_detection",
+            "no_detection_proceed",
+            "check_if_brawl_stars_crashed",
+        ):
+            if key in time_cfg:
+                self.time_config[key] = time_cfg[key]
+
+        for key, default in (
+            ("state_check", 5),
+            ("no_detections", 10),
+            ("idle", 5),
+            ("gadget", 0.5),
+            ("hypercharge", 1.0),
+            ("super", 0.1),
+            ("wall_detection", 0.2),
+            ("no_detection_proceed", 6.5),
+            ("check_if_brawl_stars_crashed", 10),
+        ):
+            caster = self._as_int if key in {"state_check", "no_detections", "idle", "check_if_brawl_stars_crashed"} else self._as_float
+            self.time_config[key] = caster(self.time_config.get(key, default), default)
+
+        if "key" in login:
+            self.login_config["key"] = str(login.get("key", ""))
+            save_dict_as_toml(self.login_config, "cfg/login.toml")
+
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
+        save_dict_as_toml(self.time_config, "cfg/time_tresholds.toml")
+        self._validate_existing_login()
+        self._emit_state()
+        self._notification("success", "Settings saved.")
+
+    @Slot("QVariantMap")
+    def addOrUpdateRosterEntry(self, payload):
+        brawler = str(payload.get("brawler", "")).strip().lower()
+        if not brawler:
+            self._notification("warning", "Choose a brawler first.")
+            return
+
+        entry = {
+            "brawler": brawler,
+            "push_until": self._as_int(payload.get("push_until", self.general_config.get("auto_push_target_trophies", 1000)), 0),
+            "trophies": self._as_int(payload.get("trophies", 0), 0),
+            "wins": self._as_int(payload.get("wins", 0), 0),
+            "type": str(payload.get("type", "trophies") or "trophies"),
+            "automatically_pick": bool(payload.get("automatically_pick", True)),
+            "win_streak": self._as_int(payload.get("win_streak", 0), 0),
+            "manual_trophies": bool(payload.get("manual_trophies", False)),
+        }
+
+        self.brawlers_data = [row for row in self.brawlers_data if row.get("brawler") != brawler]
+        self.brawlers_data.append(entry)
+        save_brawler_data(self.brawlers_data)
+        self._emit_roster()
+        self._emit_state()
+        self._notification("success", f"{brawler.title()} added to roster.")
+
+    @Slot(str)
+    def removeRosterEntry(self, brawler):
+        target = str(brawler).strip().lower()
+        before = len(self.brawlers_data)
+        self.brawlers_data = [row for row in self.brawlers_data if row.get("brawler") != target]
+        if len(self.brawlers_data) != before:
+            save_brawler_data(self.brawlers_data)
+            self._emit_roster()
+            self._emit_state()
+            self._notification("info", f"{target.title()} removed from roster.")
+
+    @Slot()
+    def clearRoster(self):
+        self.brawlers_data = []
+        save_brawler_data(self.brawlers_data)
+        self._emit_roster()
+        self._emit_state()
+        self._notification("info", "Roster cleared.")
+
+    @Slot()
+    def loadRosterFile(self):
+        path, _ = QFileDialog.getOpenFileName(
+            None,
+            "Load Brawler Config",
+            "",
+            "JSON Files (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            self.brawlers_data = self._normalize_roster(data)
+            save_brawler_data(self.brawlers_data)
+            self._emit_roster()
+            self._emit_state()
+            self._notification("success", f"Loaded roster from {os.path.basename(path)}.")
+        except Exception as exc:
+            self._notification("error", f"Could not load roster: {exc}")
+
+    @Slot()
+    def exportRosterFile(self):
+        path, _ = QFileDialog.getSaveFileName(
+            None,
+            "Export Brawler Config",
+            "pyla-roster.json",
+            "JSON Files (*.json)",
+        )
+        if not path:
+            return
+        try:
+            with open(path, "w", encoding="utf-8") as handle:
+                json.dump(self.brawlers_data, handle, indent=4)
+            self._notification("success", f"Exported roster to {os.path.basename(path)}.")
+        except Exception as exc:
+            self._notification("error", f"Could not export roster: {exc}")
+
+    @Slot()
+    def startBot(self):
+        if not self.brawlers_data:
+            self._notification("warning", "Select at least one brawler first.")
+            return
+
+        api_base_url = str(self.general_config.get("api_base_url", "localhost")).strip()
+        if api_base_url != "localhost":
+            auth_key = str(self.login_config.get("key", "")).strip()
+            if not auth_key:
+                self._notification("warning", "Add your Pyla API key in Settings before starting.")
+                return
+            try:
+                self._logged_in = bool(check_if_exists(auth_key))
+            except Exception as exc:
+                self._notification("error", f"Could not validate API key: {exc}")
+                return
+            if not self._logged_in:
+                self._notification("warning", "The current API key was not accepted.")
+                return
+
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
+        save_dict_as_toml(self.time_config, "cfg/time_tresholds.toml")
+        save_dict_as_toml(self.login_config, "cfg/login.toml")
+        save_brawler_data(self.brawlers_data)
+        self._prepare_bot_control_events()
+
+        self._bot_thread = threading.Thread(target=self._run_bot, daemon=True)
+        self._bot_thread.start()
+        self._notification("success", "Bot started.")
+        self._emit_state()
+
+    @Slot()
+    def stopBot(self):
+        self._bot_stop_requested = True
+        if self._bot_stop_event:
+            self._bot_stop_event.set()
+        if self._bot_pause_event:
+            self._bot_pause_event.clear()
+        self._notification("info", "Stop signal sent to the bot.")
+
+    @Slot()
+    def on_app_about_to_quit(self):
+        if self._bot_stop_event:
+            self._bot_stop_event.set()
