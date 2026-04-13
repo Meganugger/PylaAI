@@ -323,12 +323,14 @@ ApplicationWindow {
 
     component AppCheckBox: CheckBox {
         id: control
+        implicitHeight: 26
         font.pixelSize: 14
         spacing: 10
         indicator: Rectangle {
             implicitWidth: 24
             implicitHeight: 24
             radius: 6
+            y: (control.height - height) / 2
             color: control.checked ? root.accent : "transparent"
             border.color: control.checked ? "#FF6D6D" : root.border
             border.width: 1
@@ -340,12 +342,18 @@ ApplicationWindow {
                 font.bold: true
             }
         }
-        contentItem: Text {
-            text: control.text
-            color: root.textMain
-            font.pixelSize: 14
-            verticalAlignment: Text.AlignVCenter
-            leftPadding: control.indicator.width + control.spacing
+        contentItem: Item {
+            implicitWidth: labelText.implicitWidth + control.indicator.width + control.spacing
+            implicitHeight: Math.max(control.indicator.height, labelText.implicitHeight)
+            Text {
+                id: labelText
+                anchors.left: parent.left
+                anchors.leftMargin: control.indicator.width + control.spacing
+                anchors.verticalCenter: parent.verticalCenter
+                text: control.text
+                color: root.textMain
+                font.pixelSize: 14
+            }
         }
     }
 
@@ -465,11 +473,12 @@ ApplicationWindow {
                     currentIndex: pageIndex
 
                     ScrollView {
+                        id: controlCenterScroll
                         clip: true
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
-                            width: parent.availableWidth
+                            width: controlCenterScroll.availableWidth
                             implicitHeight: controlCenterColumn.implicitHeight
                             Column {
                                 id: controlCenterColumn
@@ -532,7 +541,7 @@ ApplicationWindow {
                                                         border.color: root.border
                                                         border.width: 1
                                                         clip: true
-                                                        Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                        Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
                                                     }
                                                     ColumnLayout {
                                                         Layout.fillWidth: true
@@ -590,7 +599,7 @@ ApplicationWindow {
                                                     border.color: root.border
                                                     border.width: 1
                                                     clip: true
-                                                    Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                    Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
                                                 }
                                                 ColumnLayout {
                                                     Layout.fillWidth: true
@@ -624,7 +633,12 @@ ApplicationWindow {
                                         ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Win Streak" } AppTextField { id: streakField; Layout.fillWidth: true } }
                                     }
                                     ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Push Type" } AppComboBox { id: typeBox; Layout.fillWidth: true; model: ["Trophies","Wins","Quest"] } }
-                                    RowLayout { Layout.fillWidth: true; spacing: 16; AppCheckBox { id: autoPick; text: "Auto-pick" } AppCheckBox { id: manualTrophies; text: "Manual trophies" } }
+                                    RowLayout {
+                                        Layout.alignment: Qt.AlignHCenter
+                                        spacing: 20
+                                        AppCheckBox { id: autoPick; text: "Auto-pick" }
+                                        AppCheckBox { id: manualTrophies; text: "Manual trophies" }
+                                    }
                                     GridLayout {
                                         width: parent.width
                                         columns: 2
@@ -664,7 +678,7 @@ ApplicationWindow {
                                                     border.color: root.border
                                                     border.width: 1
                                                     clip: true
-                                                    Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                    Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
                                                 }
                                                 ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 15; font.bold: true } Label { text: modelData.type + " | target " + modelData.push_until; color: root.textDim; font.pixelSize: 12 } }
                                                 Label { text: modelData.trophies; color: root.gold; font.pixelSize: 14; font.bold: true }
@@ -677,11 +691,12 @@ ApplicationWindow {
                     }
 
                     ScrollView {
+                        id: farmScroll
                         clip: true
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
-                            width: parent.availableWidth
+                            width: farmScroll.availableWidth
                             implicitHeight: farmColumn.implicitHeight
                             Column {
                                 id: farmColumn
@@ -773,11 +788,12 @@ ApplicationWindow {
                     }
 
                     ScrollView {
+                        id: liveScroll
                         clip: true
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
-                            width: parent.availableWidth
+                            width: liveScroll.availableWidth
                             implicitHeight: liveColumn.implicitHeight
                             Column {
                                 id: liveColumn
@@ -834,11 +850,12 @@ ApplicationWindow {
                     }
 
                     ScrollView {
+                        id: historyScroll
                         clip: true
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
-                            width: parent.availableWidth
+                            width: historyScroll.availableWidth
                             implicitHeight: historyColumn.implicitHeight
                             Column {
                                 id: historyColumn
@@ -863,7 +880,7 @@ ApplicationWindow {
                                                 border.color: root.border
                                                 border.width: 1
                                                 clip: true
-                                                Image { anchors.fill: parent; anchors.margins: 4; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
+                                                Image { anchors.fill: parent; anchors.margins: 7; source: modelData.icon || ""; fillMode: Image.PreserveAspectFit; smooth: true; mipmap: true }
                                             }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 17; font.bold: true } Label { text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"; color: root.textDim; font.pixelSize: 13 } }
                                             Label { text: modelData.matches + " matches"; color: root.info; font.pixelSize: 14; font.bold: true }
@@ -876,11 +893,12 @@ ApplicationWindow {
                     }
 
                     ScrollView {
+                        id: settingsScroll
                         clip: true
                         contentWidth: availableWidth
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
-                            width: parent.availableWidth
+                            width: settingsScroll.availableWidth
                             implicitHeight: settingsColumn.implicitHeight
                             Column {
                                 id: settingsColumn
