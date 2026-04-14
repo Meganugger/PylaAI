@@ -288,6 +288,8 @@ class QtBridge(QObject):
         for brawler, data in history.items():
             if not isinstance(data, dict):
                 continue
+            if str(brawler).lower() == "total":
+                continue
             wins = int(data.get("victory", 0) or 0)
             defeats = int(data.get("defeat", 0) or 0)
             draws = int(data.get("draw", 0) or 0)

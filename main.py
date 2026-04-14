@@ -113,6 +113,17 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
         def manage_time_tasks(self, frame):
             if self.Time_management.state_check():
                 state = get_state(frame)
+                if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
+                    try:
+                        screenshot = self.window_controller.screenshot()
+                        confirmed_state = get_state(screenshot)
+                        if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
+                            state = confirmed_state
+                            frame = screenshot
+                        elif confirmed_state == "lobby":
+                            frame = screenshot
+                    except Exception:
+                        pass
                 self.current_state = state
                 self.Play._runtime_state = state
                 if state == "match":

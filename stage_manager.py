@@ -139,7 +139,13 @@ class StageManager:
         if not self._awaiting_lobby_result_sync or not self.brawlers_pick_data:
             return False
 
-        verified_trophies = self._read_lobby_trophies(frame)
+        screenshot = frame
+        try:
+            screenshot = self.window_controller.screenshot()
+        except Exception:
+            pass
+
+        verified_trophies = self._read_lobby_trophies(screenshot)
         if verified_trophies is None:
             return False
 
@@ -166,6 +172,8 @@ class StageManager:
 
     def _apply_match_result(self, game_result):
         if not self.brawlers_pick_data or not game_result:
+            return False
+        if not self._awaiting_lobby_result_sync:
             return False
 
         current_brawler = self.brawlers_pick_data[0]['brawler']

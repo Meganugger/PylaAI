@@ -71,6 +71,12 @@ class TrophyObserver:
         for brawler in brawler_list:
             self._ensure_brawler_stats(brawler)
 
+        try:
+            if not os.path.exists(self.history_file) or os.path.getsize(self.history_file) == 0:
+                self.save_history()
+        except OSError:
+            pass
+
     @staticmethod
     def rework_game_result(res_string):
         res_string = res_string.lower()
