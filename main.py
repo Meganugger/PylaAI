@@ -42,7 +42,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             main_module = sys.modules.get('__main__')
             if main_module:
                 main_module._active_stage_manager = self.Stage_manager
-            self.states_requiring_frame_data = ["play_store", "lobby", "popup", "end", "reward_claim"]
+            self.states_requiring_frame_data = ["lobby", "popup", "end", "reward_claim"]
             if data[0]['automatically_pick']:
                 if debug: print("Picking brawler automatically")
                 self.lobby_automator.select_brawler(data[0]['brawler'])
@@ -86,19 +86,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
 
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot)
-            if current_state == "play_store":
-                self.Stage_manager.click_brawl_stars(screenshot)
-                time.sleep(10)
-                screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
-
-            if current_state != "play_store":
-                now = time.time()
-                self.Play.time_since_last_proceeding = now
-                for key in self.Play.time_since_detections:
-                    self.Play.time_since_detections[key] = now
-                print("Brawl Stars recovered successfully.")
-                return
+            now = time.time()
+            self.Play.time_since_last_proceeding = now
+            for key in self.Play.time_since_detections:
+                self.Play.time_since_detections[key] = now
+            print(f"Brawl Stars recovered successfully (state: {current_state}).")
+            return
 
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
