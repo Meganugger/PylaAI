@@ -1246,7 +1246,7 @@ ApplicationWindow {
                                             }
                                             delegate: Rectangle {
                                                 width: ListView.view.width
-                                                height: logRow.implicitHeight + 14
+                                                implicitHeight: Math.max(42, logRow.implicitHeight + 16)
                                                 radius: 12
                                                 color: root.panelAlt
                                                 border.color: root.border
@@ -1255,31 +1255,40 @@ ApplicationWindow {
                                                     id: logRow
                                                     anchors.fill: parent
                                                     anchors.margins: 12
-                                                    spacing: 12
-                                                    Label {
+                                                    spacing: 14
+                                                    Text {
                                                         Layout.preferredWidth: 64
+                                                        Layout.alignment: Qt.AlignVCenter
                                                         horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
                                                         text: modelData.time || "--:--:--"
                                                         color: root.textDim
                                                         font.pixelSize: 12
+                                                        elide: Text.ElideRight
                                                     }
                                                     Rectangle {
-                                                        Layout.preferredWidth: 8
-                                                        Layout.preferredHeight: 8
-                                                        radius: 4
+                                                        Layout.preferredWidth: 10
+                                                        Layout.preferredHeight: 10
+                                                        Layout.alignment: Qt.AlignVCenter
+                                                        radius: 5
                                                         color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
                                                     }
-                                                    Label {
+                                                    Text {
+                                                        id: logMessage
                                                         Layout.fillWidth: true
+                                                        Layout.alignment: Qt.AlignVCenter
                                                         text: modelData.message || ""
                                                         color: root.textMain
                                                         font.pixelSize: 13
-                                                        wrapMode: Text.WordWrap
+                                                        wrapMode: Text.NoWrap
+                                                        elide: Text.ElideRight
+                                                        height: 18
                                                         verticalAlignment: Text.AlignVCenter
                                                     }
                                                     Rectangle {
                                                         Layout.preferredWidth: 86
                                                         implicitHeight: 28
+                                                        Layout.alignment: Qt.AlignVCenter
                                                         radius: 999
                                                         color: modelData.level === "error" ? "#35161A" : modelData.level === "warning" ? "#352B14" : modelData.level === "success" ? "#153225" : "#172536"
                                                         border.color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
