@@ -71,6 +71,9 @@ def find_game_result(screenshot):
 
 
 def get_in_game_state(image):
+    game_result = find_game_result(image)
+    if game_result:
+        return f"end_{game_result}"
     if is_in_shop(image):
         return "shop"
     if is_in_offer_popup(image):
