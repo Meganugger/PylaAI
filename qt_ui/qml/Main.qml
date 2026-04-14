@@ -293,15 +293,18 @@ ApplicationWindow {
         color: root.panel
         border.color: root.border
         border.width: 1
+        clip: true
         Rectangle {
             anchors.left: parent.left
             anchors.right: parent.right
             anchors.top: parent.top
-            anchors.margins: 1
+            anchors.leftMargin: 20
+            anchors.rightMargin: 20
+            anchors.topMargin: 14
             height: 1
             radius: 1
             color: "#273041"
-            opacity: 0.9
+            opacity: 0.65
         }
     }
 
