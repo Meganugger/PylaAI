@@ -69,6 +69,33 @@ ApplicationWindow {
         const n = Number(value)
         return isNaN(n) ? fallback : n
     }
+    function liveValue() {
+        for (let i = 0; i < arguments.length; ++i) {
+            const key = arguments[i]
+            if (live && live[key] !== undefined && live[key] !== null && live[key] !== "")
+                return live[key]
+        }
+        return undefined
+    }
+    function liveSessionVictories() { return liveMetricNumber(liveValue("session_victories", "victories"), 0) }
+    function liveSessionDefeats() { return liveMetricNumber(liveValue("session_defeats", "defeats"), 0) }
+    function liveSessionDraws() { return liveMetricNumber(liveValue("session_draws", "draws"), 0) }
+    function liveSessionMatches() {
+        const explicitMatches = liveValue("total_matches", "session_matches")
+        if (explicitMatches !== undefined)
+            return liveMetricNumber(explicitMatches, 0)
+        return liveSessionVictories() + liveSessionDefeats() + liveSessionDraws()
+    }
+    function liveCurrentKills() { return liveMetricNumber(liveValue("current_kills", "kills"), 0) }
+    function liveCurrentDeaths() { return liveMetricNumber(liveValue("current_deaths", "deaths"), 0) }
+    function liveCurrentAssists() { return liveMetricNumber(liveValue("current_assists", "assists"), 0) }
+    function liveCurrentDamage() { return liveMetricNumber(liveValue("current_damage", "damage"), 0) }
+    function liveLastKills() { return liveMetricNumber(liveValue("last_kills"), 0) }
+    function liveLastAssists() { return liveMetricNumber(liveValue("last_assists"), 0) }
+    function liveLastDamage() { return liveMetricNumber(liveValue("last_damage"), 0) }
+    function liveTotalKills() { return liveMetricNumber(liveValue("total_kills"), 0) }
+    function liveTotalAssists() { return liveMetricNumber(liveValue("total_assists"), 0) }
+    function liveTotalDamage() { return liveMetricNumber(liveValue("total_damage"), 0) }
     function comboItemText(model, index, role) {
         if (!model)
             return ""
@@ -1169,7 +1196,7 @@ ApplicationWindow {
                                             spacing: 8
                                             CardTitle { text: "Tempo" }
                                             Label { text: Number(liveMetricNumber(live.ips, 0)).toFixed(1) + " IPS"; color: root.success; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
-                                            Label { text: "Wins / h: " + (secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: "Wins / h: " + (secondsSinceStart() > 0 ? ((liveSessionVictories() * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
                                 }
@@ -1195,10 +1222,10 @@ ApplicationWindow {
                                                 columns: 2
                                                 columnSpacing: 20
                                                 rowSpacing: 14
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: (live.current_kills || 0) + "K / " + (live.current_deaths || 0) + "D"; color: root.textMain; font.pixelSize: 20; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(live.current_damage || 0); color: root.textMain; font.pixelSize: 20; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: liveCurrentDeaths() > 0 ? (liveCurrentKills() / Math.max(1, liveCurrentDeaths())).toFixed(2) : String(liveCurrentKills()); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveCurrentDamage() / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: liveCurrentKills() + "K / " + liveCurrentDeaths() + "D / " + liveCurrentAssists() + "A"; color: root.textMain; font.pixelSize: 20; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(liveCurrentDamage()); color: root.textMain; font.pixelSize: 20; font.bold: true } }
                                             }
                                         }
                                         Rectangle {
@@ -1211,8 +1238,10 @@ ApplicationWindow {
                                             Layout.fillHeight: true
                                             spacing: 14
                                             CardTitle { text: "Session Totals" }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "W / L / D" } Label { text: (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 22; font.bold: true } }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "Last Match" } Label { text: (live.last_kills || 0) + "K / " + (live.last_damage || 0) + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap } }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "W / L / D" } Label { text: liveSessionVictories() + " / " + liveSessionDefeats() + " / " + liveSessionDraws(); color: root.textMain; font.pixelSize: 22; font.bold: true } }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "Session Matches" } Label { text: String(liveSessionMatches()); color: root.textMain; font.pixelSize: 18; font.bold: true } }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "Last Match" } Label { text: liveLastKills() + "K / " + liveLastAssists() + "A / " + liveLastDamage() + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap } }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "Session Output" } Label { text: liveTotalKills() + "K / " + liveTotalAssists() + "A / " + liveTotalDamage() + " DMG"; color: root.textDim; font.pixelSize: 16; font.bold: true; wrapMode: Text.WordWrap } }
                                             Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         }
                                     }
