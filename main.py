@@ -574,6 +574,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 current_deaths=current_deaths_live,
                                 current_assists=0,
                                 current_damage=current_damage_live,
+                                kills=current_kills_live,
+                                assists=0,
+                                damage=current_damage_live,
                                 match_active=(self.state == 'match'),
                                 perf_source=perf_source,
                                 # Session totals (updated at end of each match)
@@ -581,6 +584,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 total_assists=session_stats.get('total_assists', 0),
                                 total_damage=session_stats.get('total_damage', 0),
                                 total_matches=session_stats.get('total_matches', 0),
+                                session_matches=session_stats.get('total_matches', 0),
                                 session_victories=session_stats.get('victories', 0),
                                 session_defeats=session_stats.get('defeats', 0),
                                 session_draws=session_stats.get('draws', 0),
