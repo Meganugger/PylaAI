@@ -201,24 +201,46 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             emit_history=current_match_counter != self._last_dashboard_match_counter,
                         )
                         self._last_dashboard_match_counter = current_match_counter
-                        hist = self.Stage_manager.Trophy_observer.match_history.get(brawler, {})
+                        tobs = self.Stage_manager.Trophy_observer
+                        hist = tobs.match_history.get(brawler, {})
+                        session_stats = getattr(tobs, "session_stats", {}) or {}
+                        current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
+                        current_deaths = int(getattr(self.Play, "_death_count", 0) or 0)
                         _active_dashboard.update_live(
                             start_time=self.start_time,
                             ips=self.current_ips,
                             state=self.current_state,
                             brawler=brawler,
-                            trophies=self.Stage_manager.Trophy_observer.current_trophies,
+                            trophies=tobs.current_trophies,
                             target=self.Stage_manager.brawlers_pick_data[0].get("push_until", 0),
                             victories=hist.get("victory", 0),
                             defeats=hist.get("defeat", 0),
                             draws=hist.get("draw", 0),
-                            streak=self.Stage_manager.Trophy_observer.win_streak,
+                            streak=tobs.win_streak,
                             game_mode=getattr(self.Play, "game_mode_name", ""),
                             gadget_ready=getattr(self.Play, "is_gadget_ready", False),
                             super_ready=getattr(self.Play, "is_super_ready", False),
                             hypercharge_ready=getattr(self.Play, "is_hypercharge_ready", False),
                             movement=getattr(self.Play, "last_movement", ""),
                             ammo=getattr(self.Play, "_ammo", 0),
+                            current_kills=current_kills,
+                            current_deaths=current_deaths,
+                            current_assists=0,
+                            current_damage=0,
+                            kills=current_kills,
+                            assists=0,
+                            damage=0,
+                            total_kills=session_stats.get("total_kills", 0),
+                            total_assists=session_stats.get("total_assists", 0),
+                            total_damage=session_stats.get("total_damage", 0),
+                            total_matches=session_stats.get("total_matches", 0),
+                            session_matches=session_stats.get("total_matches", 0),
+                            session_victories=session_stats.get("victories", 0),
+                            session_defeats=session_stats.get("defeats", 0),
+                            session_draws=session_stats.get("draws", 0),
+                            last_kills=session_stats.get("last_match_kills", 0),
+                            last_assists=session_stats.get("last_match_assists", 0),
+                            last_damage=session_stats.get("last_match_damage", 0),
                             farm_mode=getattr(self.Stage_manager, "smart_trophy_farm", "no"),
                             farm_remaining=len(self.Stage_manager.brawlers_pick_data),
                         )
