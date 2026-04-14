@@ -4,7 +4,7 @@ import time
 
 import cv2
 import numpy as np
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from detect import Detect
 from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
 
@@ -312,6 +312,8 @@ class Play(Movement):
         self._match_state_grace_until = 0.0
         self._last_state_guard_log_time = 0.0
         self._last_no_player_log_time = 0.0
+        self._last_end_result_probe_time = 0.0
+        self._pending_end_result = None
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -1066,6 +1068,21 @@ class Play(Movement):
                 else:
                     self._runtime_state = "match"
         if not data:
+            runtime_state = str(getattr(self, "_runtime_state", "") or "")
+            player_missing_for = current_time - self.time_since_player_last_found
+            if (
+                runtime_state == "match"
+                and player_missing_for >= 0.25
+                and (current_time - self._last_end_result_probe_time) >= 0.5
+            ):
+                self._last_end_result_probe_time = current_time
+                game_result = find_game_result(frame)
+                if game_result:
+                    self._pending_end_result = game_result
+                    self._runtime_state = f"end_{game_result}"
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
             if current_time - self.time_since_player_last_found > 1.0:
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()

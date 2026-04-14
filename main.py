@@ -13,7 +13,7 @@ from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
 from stage_manager import StageManager
-from state_finder.main import get_state, find_game_result
+from state_finder.main import get_state
 from time_management import TimeManagement
 from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, ensure_state_icons_present
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
@@ -67,7 +67,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._last_roster_signature = None
             self._last_roster_push_time = 0.0
             self._last_live_exception_time = 0.0
-            self._last_result_probe_time = 0.0
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -192,17 +191,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.manage_time_tasks(frame)
                 record_timing("time_tasks", time.perf_counter() - tasks_started_at, print_every=120)
 
-                if self.current_state == "match" and (time.perf_counter() - self._last_result_probe_time) >= 0.45:
-                    self._last_result_probe_time = time.perf_counter()
-                    result = find_game_result(frame)
-                    if result:
-                        end_state = f"end_{result}"
-                        self.current_state = end_state
-                        self.Play._runtime_state = end_state
-                        self.Stage_manager.do_state(end_state, frame)
-                        continue
-
-
                 brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                 if self.Play.current_brawler != brawler:
                     self.Play.current_brawler = brawler
@@ -213,6 +201,15 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 play_started_at = time.perf_counter()
                 self.Play.main(frame, brawler)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
+                pending_result = getattr(self.Play, "_pending_end_result", None)
+                if pending_result:
+                    end_state = f"end_{pending_result}"
+                    self.Play._pending_end_result = None
+                    self.current_state = end_state
+                    self.Play._runtime_state = end_state
+                    self.Stage_manager.do_state(end_state, frame)
+                    c += 1
+                    continue
                 c += 1
 
                 global _active_dashboard

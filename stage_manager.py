@@ -197,11 +197,14 @@ class StageManager:
 
         self.window_controller.press_continue()
 
-    def end_game(self, frame=None):
+    def end_game(self, frame=None, known_result=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
         current_state = get_state(screenshot)
+        if known_result in {"victory", "defeat", "draw"}:
+            found_game_result = known_result if self._apply_match_result(known_result) else False
+            current_state = f"end_{known_result}"
         max_end_attempts = 30
         end_attempts = 0
         while str(current_state).startswith("end") and end_attempts < max_end_attempts:
@@ -215,14 +218,15 @@ class StageManager:
             )
             if should_probe_result:
                 if state_result is not None:
-                    found_game_result = self._apply_match_result(state_result)
+                    found_game_result = state_result if self._apply_match_result(state_result) else False
                 else:
-                    found_game_result = self.Trophy_observer.find_game_result(
+                    detected = self.Trophy_observer.find_game_result(
                         screenshot,
                         current_brawler=self.brawlers_pick_data[0]['brawler'],
                         game_result=state_result,
                     )
-                    if found_game_result:
+                    if detected:
+                        found_game_result = getattr(self.Trophy_observer, "_last_game_result", False)
                         self.time_since_last_stat_change = time.time()
                         self._sync_active_brawler_progress()
                         save_brawler_data(self.brawlers_pick_data)
@@ -283,11 +287,16 @@ class StageManager:
             self.window_controller.click(*popup_location)
 
     def do_state(self, state, data=None):
+        known_result = None
         if isinstance(state, str) and state.startswith("end_"):
+            known_result = state.split("_", 1)[1]
             state = "end"
         if state == "lobby" and not self.lobby_start_enabled:
             return
 
+        if state == "end":
+            self.state_handlers[state](data, known_result)
+            return
         if data is not None:
             self.state_handlers[state](data)
             return
