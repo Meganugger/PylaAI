@@ -293,11 +293,27 @@ ApplicationWindow {
         color: root.panel
         border.color: root.border
         border.width: 1
+        Rectangle {
+            anchors.left: parent.left
+            anchors.right: parent.right
+            anchors.top: parent.top
+            anchors.margins: 1
+            height: 1
+            radius: 1
+            color: "#273041"
+            opacity: 0.9
+        }
     }
 
     component AppLabel: Label {
         color: root.textDim
         font.pixelSize: 12
+    }
+
+    component SectionEyebrow: Label {
+        color: root.textDim
+        font.pixelSize: 11
+        font.letterSpacing: 2.2
     }
 
     component CardTitle: Label {
@@ -701,16 +717,37 @@ ApplicationWindow {
                 spacing: 18
                 RowLayout {
                     Layout.fillWidth: true
-                    Label { text: ["Control Center","Brawlers","Farm","Live Operations","Match History","Settings"][pageIndex]; color: root.textMain; font.pixelSize: 30; font.bold: true }
+                    ColumnLayout {
+                        spacing: 4
+                        SectionEyebrow { text: "PYLA CONTROL CENTER" }
+                        Label { text: ["Control Center","Brawlers","Farm","Live Operations","Match History","Settings"][pageIndex]; color: root.textMain; font.pixelSize: 30; font.bold: true }
+                    }
                     Item { Layout.fillWidth: true }
                     Rectangle {
                         radius: 999
-                        color: (live.state || "").toLowerCase() === "match" ? "#12361F" : root.panel
-                        border.color: (live.state || "").toLowerCase() === "match" ? root.success : root.border
+                        color: (live.state || "").toLowerCase() === "match" ? "#12361F" : root.panelAlt
+                        border.color: (live.state || "").toLowerCase() === "match" ? root.success : "#334056"
                         border.width: 1
-                        implicitWidth: liveBadge.implicitWidth + 28
+                        implicitWidth: liveBadgeRow.implicitWidth + 28
                         implicitHeight: 40
-                        Label { id: liveBadge; anchors.centerIn: parent; text: live.state ? String(live.state).toUpperCase() : "READY"; color: (live.state || "").toLowerCase() === "match" ? root.success : root.textDim; font.pixelSize: 14; font.bold: true }
+                        RowLayout {
+                            id: liveBadgeRow
+                            anchors.centerIn: parent
+                            spacing: 8
+                            Rectangle {
+                                Layout.preferredWidth: 8
+                                Layout.preferredHeight: 8
+                                radius: 4
+                                color: (live.state || "").toLowerCase() === "match" ? root.success : root.textDim
+                            }
+                            Label {
+                                id: liveBadge
+                                text: live.state ? displayState(live.state) : "READY"
+                                color: (live.state || "").toLowerCase() === "match" ? root.success : root.textDim
+                                font.pixelSize: 14
+                                font.bold: true
+                            }
+                        }
                     }
                 }
 
@@ -740,6 +777,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 18
+                                        SectionEyebrow { text: "RUN SETUP" }
                                         CardTitle { text: "Launch Grid" }
                                         GridLayout {
                                             width: parent.width
@@ -766,6 +804,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 14
+                                        SectionEyebrow { text: "ACTIVE QUEUE" }
                                         CardTitle { text: "Selected Roster" }
                                         Label { visible: !roster.length; text: "No brawlers queued yet. Add them from the Brawlers page."; color: root.textDim; font.pixelSize: 14 }
                                         Repeater {
@@ -826,6 +865,7 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     anchors.margins: 20
                                     spacing: 14
+                                    SectionEyebrow { text: "BRAWLER LIBRARY" }
                                     AppTextField { id: brawlerSearch; placeholderText: "Search brawlers"; Layout.fillWidth: true }
                                     ListView {
                                         id: brawlerList
@@ -884,6 +924,7 @@ ApplicationWindow {
                                     anchors.fill: parent
                                     anchors.margins: 20
                                     spacing: 14
+                                    SectionEyebrow { text: "LOADOUT EDITOR" }
                                     Label { id: brawlerTitle; text: "Select a brawler"; color: root.textMain; font.pixelSize: 24; font.bold: true }
                                     GridLayout {
                                         width: parent.width
@@ -902,18 +943,20 @@ ApplicationWindow {
                                         AppCheckBox { id: autoPick; text: "Auto-pick" }
                                         AppCheckBox { id: manualTrophies; text: "Manual trophies" }
                                     }
-                                        GridLayout {
-                                            width: parent.width
-                                            columns: 2
-                                            columnSpacing: 12
-                                            rowSpacing: 12
-                                            AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
-                                            DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: { preserveBrawlerScroll(); backend.removeRosterEntry(selectedBrawler) } }
-                                            AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
-                                            AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
-                                            AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importAllBrawlersFromBrawlStarsApi() }
-                                        }
+                                    SectionEyebrow { text: "QUEUE ACTIONS" }
+                                    GridLayout {
+                                        width: parent.width
+                                        columns: 2
+                                        columnSpacing: 12
+                                        rowSpacing: 12
+                                        AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
+                                        DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: { preserveBrawlerScroll(); backend.removeRosterEntry(selectedBrawler) } }
+                                        AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
+                                        AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
+                                        AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importAllBrawlersFromBrawlStarsApi() }
+                                    }
                                     DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: { preserveBrawlerScroll(); backend.clearRoster() } }
+                                    SectionEyebrow { text: "READY LINEUP" }
                                     CardTitle { text: "Current Queue" }
                                     ListView {
                                         Layout.fillWidth: true
@@ -983,6 +1026,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "AUTO ROTATION" }
                                         CardTitle { text: "Trophy Farm" }
                                         Label {
                                             Layout.fillWidth: true
@@ -1107,6 +1151,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "QUEST PRIORITY" }
                                         CardTitle { text: "Quest Farm" }
                                         Label { text: hasCapability("quest_farm") ? "Quest Farm lets the bot bias toward quest progress while still respecting your excluded list." : "Quest routing is not exposed on this branch, so this area is informational only."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         RowLayout {
@@ -1303,6 +1348,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "RUNTIME SNAPSHOT" }
                                         CardTitle { text: "Run Summary" }
                                         Rectangle {
                                             Layout.fillWidth: true
@@ -1364,6 +1410,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 12
+                                        SectionEyebrow { text: "TERMINAL STREAM" }
                                         CardTitle { text: "Operations Feed" }
                                         Label { text: "Cleaned live terminal output from the current session."; color: root.textDim; font.pixelSize: 13 }
                                         ListView {
@@ -1464,7 +1511,13 @@ ApplicationWindow {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: Math.min(parent.width, 1320)
                                 spacing: 12
-                                Label { visible: !history.length; text: "No match history available yet."; color: root.textDim; font.pixelSize: 14 }
+                                ColumnLayout {
+                                    visible: !history.length
+                                    width: parent.width
+                                    spacing: 8
+                                    SectionEyebrow { text: "SESSION ARCHIVE" }
+                                    Label { text: "No match history available yet."; color: root.textDim; font.pixelSize: 14 }
+                                }
                                 Repeater {
                                     model: history
                                     delegate: AppCard {
@@ -1516,6 +1569,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "IDENTITY AND ACCESS" }
                                         CardTitle { text: "Account & API" }
                                         GridLayout {
                                             width: parent.width
@@ -1539,6 +1593,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "RUNTIME CONFIG" }
                                         CardTitle { text: "General Runtime" }
                                         GridLayout {
                                             width: parent.width
@@ -1565,6 +1620,7 @@ ApplicationWindow {
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 16
+                                        SectionEyebrow { text: "TACTICAL TUNING" }
                                         CardTitle { text: "Combat & Detection" }
                                         GridLayout {
                                             width: parent.width
