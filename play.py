@@ -1027,6 +1027,15 @@ class Play(Movement):
         self.track_no_detections(data)
         if data:
             self.time_since_player_last_found = time.time()
+            runtime_state = str(getattr(self, '_stats_info', {}).get('state', '') or '')
+            if runtime_state != "match":
+                checked_state = get_state(frame)
+                if isinstance(getattr(self, '_stats_info', None), dict):
+                    self._stats_info['state'] = checked_state
+                if checked_state != "match":
+                    if debug:
+                        print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
+                    data = None
         if not data:
             if current_time - self.time_since_player_last_found > 1.0:
                 self.window_controller.keys_up(list("wasd"))
