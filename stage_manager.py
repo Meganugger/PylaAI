@@ -136,6 +136,9 @@ class StageManager:
             'popup': self.close_pop_up,
             'match': lambda: 0,
             'end': self.end_game,
+            'end_victory': self.end_game,
+            'end_defeat': self.end_game,
+            'end_draw': self.end_game,
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
             'reward_claim': self.claim_reward,
@@ -712,11 +715,21 @@ class StageManager:
         current_state = get_state(screenshot)
         max_end_attempts = 30
         end_attempts = 0
-        while current_state == "end" and end_attempts < max_end_attempts:
-            if not found_game_result and time.time() - self.time_since_last_stat_change > 10:
+        while str(current_state).startswith("end") and end_attempts < max_end_attempts:
+            state_result = None
+            if isinstance(current_state, str) and current_state.startswith("end_"):
+                state_result = current_state.split("_", 1)[1]
 
-                found_game_result = self.Trophy_observer.find_game_result(screenshot, current_brawler=self.brawlers_pick_data[0]['brawler'])
-
+            should_probe_result = (
+                not found_game_result
+                and (state_result is not None or time.time() - self.time_since_last_stat_change > 10)
+            )
+            if should_probe_result:
+                found_game_result = self.Trophy_observer.find_game_result(
+                    screenshot,
+                    current_brawler=self.brawlers_pick_data[0]['brawler'],
+                    game_result=state_result,
+                )
                 self.time_since_last_stat_change = time.time()
                 if found_game_result:
                     # Track quest matches played
@@ -955,6 +968,8 @@ class StageManager:
         print("[STAGE] Trophy reward dismiss attempts completed")
 
     def do_state(self, state, data=None):
+        if isinstance(state, str) and state.startswith("end_"):
+            state = "end"
         if state not in self.states:
             print(f"[STAGE] Unknown state '{state}', pressing back arrow as fallback.")
             wr = self.window_controller.width_ratio or 1.0

@@ -296,7 +296,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self._match_watchdog_start = time.time()  # reset to avoid rapid re-triggers
                         self.restart_brawl_stars()
                         return
-                frame_data = frame if state in self.states_requiring_data else None
+                frame_data = frame if (state in self.states_requiring_data or str(state).startswith("end_")) else None
                 self.Stage_manager.do_state(state, frame_data)
 
             if self.state == "match" and self.Time_management.no_detections_check():
@@ -436,13 +436,14 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     # Includes stable "end" (new round / end screen), but uses
                     # latching + cooldown to prevent duplicate resets from flicker.
                     stable_out_states = {"lobby", "brawler_selection", "shop", "trophy_reward", "popup", "end"}
+                    is_end_state = str(self.state).startswith("end")
                     if self.state == "match":
                         self._out_of_match_since = 0.0
                         self._out_of_match_latched = False
-                    elif self.Play._match_phase_set and self.state in stable_out_states:
+                    elif self.Play._match_phase_set and (self.state in stable_out_states or is_end_state):
                         if self._out_of_match_since <= 0:
                             self._out_of_match_since = time.time()
-                        stable_needed = 0.5 if self.state == "end" else 1.0
+                        stable_needed = 0.5 if is_end_state else 1.0
                         cooldown_ok = (time.time() - self._last_match_phase_reset_time) >= 4.0
                         if (not self._out_of_match_latched
                                 and cooldown_ok
