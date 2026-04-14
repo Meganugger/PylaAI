@@ -17,10 +17,12 @@ ApplicationWindow {
     property var brawlers: []
     property var history: []
     property var live: ({})
+    property var logs: []
     property int pageIndex: 0
     property string selectedBrawler: ""
     property string toastText: ""
     property string toastLevel: "info"
+    property real brawlerListSavedContentY: 0
 
     readonly property color bg: "#090A0E"
     readonly property color sidebar: "#07080C"
@@ -97,6 +99,24 @@ ApplicationWindow {
     function hasCapability(name) {
         return !!(state.capabilities && state.capabilities[name])
     }
+    function stabilizeScroll(view) {
+        if (!view || !view.contentItem)
+            return
+        if (view.contentItem.boundsBehavior !== undefined)
+            view.contentItem.boundsBehavior = Flickable.StopAtBounds
+        if (view.contentItem.boundsMovement !== undefined)
+            view.contentItem.boundsMovement = Flickable.StopAtBounds
+    }
+    function preserveBrawlerScroll() {
+        if (brawlerList)
+            brawlerListSavedContentY = brawlerList.contentY
+    }
+    function restoreBrawlerScroll() {
+        if (!brawlerList)
+            return
+        const target = Math.max(0, Math.min(brawlerListSavedContentY, Math.max(0, brawlerList.contentHeight - brawlerList.height)))
+        brawlerList.contentY = target
+    }
     function rebuildComboModels() {
         gamemodeModel.clear()
         emulatorModel.clear()
@@ -118,6 +138,7 @@ ApplicationWindow {
         brawlers = (state.brawlers || []).slice()
         history = (state.history || []).slice()
         live = state.live || {}
+        logs = (state.logs || []).slice()
         rebuildComboModels()
         if (!selectedBrawler && brawlers.length) selectedBrawler = brawlers[0].name
         hydrateEditors()
@@ -141,6 +162,7 @@ ApplicationWindow {
         backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue})
     }
     function saveBrawler() {
+        preserveBrawlerScroll()
         backend.addOrUpdateRosterEntry({"brawler": selectedBrawler, "trophies": trophiesField.text, "wins": winsField.text, "push_until": targetField.text, "type": typeBox.currentText.toLowerCase(), "automatically_pick": autoPick.checked, "win_streak": streakField.text, "manual_trophies": manualTrophies.checked})
     }
     function saveFarm() {
@@ -217,8 +239,8 @@ ApplicationWindow {
         excludeModel.clear()
         questExcludeModel.clear()
         for (let i = 0; i < brawlers.length; ++i) {
-            excludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "checked": (state.bot.trophy_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
-            questExcludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "checked": (state.bot.quest_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
+            excludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": (state.bot.trophy_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
+            questExcludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": (state.bot.quest_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
         }
     }
 
@@ -316,7 +338,7 @@ ApplicationWindow {
             color: control.checked ? root.textMain : root.textDim
             font.pixelSize: 15
             font.bold: control.checked
-            leftPadding: 18
+            horizontalAlignment: Text.AlignHCenter
             verticalAlignment: Text.AlignVCenter
         }
     }
@@ -455,9 +477,10 @@ ApplicationWindow {
     Connections {
         target: backend
         function onStateChanged(s) { hydrate(s); applyStateToForms(); rebuildExcludeModels() }
-        function onRosterChanged(data) { roster = data; brawlers = backend.getBrawlers(); rebuildExcludeModels() }
+        function onRosterChanged(data) { roster = data; brawlers = backend.getBrawlers(); rebuildExcludeModels(); restoreBrawlerScroll() }
         function onHistoryChanged(data) { history = data }
         function onLiveDataChanged(data) { live = data || {} }
+        function onLogsChanged(data) { logs = data || [] }
         function onNotificationRaised(level, message) { notify(level, message) }
         function onSessionSummaryReady(summary) { summaryView.text = JSON.stringify(summary, null, 2); summaryPopup.open() }
     }
@@ -511,7 +534,7 @@ ApplicationWindow {
                     Column {
                         id: brandColumn
                         spacing: 8
-                        Label { text: "PYLA AI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 3 }
+                        Label { text: "PYLA AI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 1.5 }
                         Rectangle { x: 2; width: 84; height: 5; radius: 3; color: root.accent }
                     }
                 }
@@ -573,7 +596,7 @@ ApplicationWindow {
                         id: controlCenterScroll
                         clip: true
                         contentWidth: availableWidth
-                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+                        Component.onCompleted: stabilizeScroll(controlCenterScroll)
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: controlCenterScroll.availableWidth
@@ -678,6 +701,7 @@ ApplicationWindow {
                                     spacing: 14
                                     AppTextField { id: brawlerSearch; placeholderText: "Search brawlers"; Layout.fillWidth: true }
                                     ListView {
+                                        id: brawlerList
                                         Layout.fillWidth: true
                                         Layout.fillHeight: true
                                         clip: true
@@ -757,12 +781,12 @@ ApplicationWindow {
                                             columnSpacing: 12
                                             rowSpacing: 12
                                             AppButton { text: "Add / Update"; Layout.fillWidth: true; highlighted: true; onClicked: saveBrawler() }
-                                            DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: backend.removeRosterEntry(selectedBrawler) }
+                                            DestructiveButton { text: "Remove"; Layout.fillWidth: true; onClicked: { preserveBrawlerScroll(); backend.removeRosterEntry(selectedBrawler) } }
                                             AppButton { text: "Load Config"; Layout.fillWidth: true; onClicked: backend.loadRosterFile() }
                                             AppButton { text: "Export"; Layout.fillWidth: true; onClicked: backend.exportRosterFile() }
                                             AppButton { text: "Import All from Tag"; Layout.fillWidth: true; Layout.columnSpan: 2; onClicked: backend.importAllBrawlersFromBrawlStarsApi() }
                                         }
-                                    DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: backend.clearRoster() }
+                                    DestructiveButton { text: "Clear Queue"; Layout.fillWidth: true; onClicked: { preserveBrawlerScroll(); backend.clearRoster() } }
                                     CardTitle { text: "Current Queue" }
                                     ListView {
                                         Layout.fillWidth: true
@@ -814,7 +838,7 @@ ApplicationWindow {
                         id: farmScroll
                         clip: true
                         contentWidth: availableWidth
-                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+                        Component.onCompleted: stabilizeScroll(farmScroll)
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: farmScroll.availableWidth
@@ -833,6 +857,13 @@ ApplicationWindow {
                                         anchors.margins: 22
                                         spacing: 16
                                         CardTitle { text: "Trophy Farm" }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Trophy Farm lets Pyla rotate through lower-priority brawlers until they reach your target. Use exclusions to keep mains, ranked picks, or special cases out of the automatic farm pool."
+                                            color: root.textDim
+                                            font.pixelSize: 14
+                                            wrapMode: Text.WordWrap
+                                        }
                                         RowLayout {
                                             spacing: 12
                                             AppCheckBox { id: farmEnabled; text: "Enable" }
@@ -840,17 +871,38 @@ ApplicationWindow {
                                             AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
                                             AppButton { text: "Save Farm"; onClicked: saveFarm() }
                                         }
-                                        AppTextField {
-                                            id: farmSearch
+                                        RowLayout {
                                             Layout.fillWidth: true
-                                            placeholderText: "Search excluded brawlers"
+                                            spacing: 12
+                                            AppTextField {
+                                                id: farmSearch
+                                                Layout.fillWidth: true
+                                                placeholderText: "Search brawlers to exclude from trophy farming"
+                                            }
+                                            AppButton {
+                                                text: "Clear Exclusions"
+                                                implicitWidth: 170
+                                                onClicked: {
+                                                    for (let i = 0; i < excludeModel.count; ++i)
+                                                        excludeModel.setProperty(i, "checked", false)
+                                                }
+                                            }
                                         }
-                                        Label {
-                                            text: checkedCount(excludeModel) + " excluded"
-                                            color: root.textDim
-                                            font.pixelSize: 13
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            Label {
+                                                text: checkedCount(excludeModel) + " excluded"
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Label {
+                                                text: "Checked brawlers stay out of the trophy farm pool"
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
                                         }
-                                        Label { text: "Exclude brawlers from trophy farm"; color: root.textDim; font.pixelSize: 14 }
                                         ListView {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
@@ -864,8 +916,8 @@ ApplicationWindow {
                                             delegate: Rectangle {
                                                 visible: !farmSearch.text || model.displayName.toLowerCase().indexOf(farmSearch.text.toLowerCase()) !== -1
                                                 width: ListView.view.width
-                                                height: visible ? 50 : 0
-                                                radius: 12
+                                                height: visible ? 58 : 0
+                                                radius: 14
                                                 color: root.panelAlt
                                                 border.color: root.border
                                                 border.width: 1
@@ -874,7 +926,28 @@ ApplicationWindow {
                                                     anchors.margins: 12
                                                     spacing: 12
                                                     AppCheckBox { checked: model.checked; onToggled: excludeModel.setProperty(index, "checked", checked) }
-                                                    Label { Layout.fillWidth: true; text: model.displayName; color: root.textMain; font.pixelSize: 14; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 34
+                                                        Layout.preferredHeight: 34
+                                                        radius: 10
+                                                        color: "#0C0F14"
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                        clip: true
+                                                        Image { anchors.fill: parent; source: model.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Label { text: model.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true }
+                                                        Label { text: "Current trophies: " + model.trophies; color: root.textDim; font.pixelSize: 12 }
+                                                    }
+                                                    Label {
+                                                        text: model.checked ? "Excluded" : "Included"
+                                                        color: model.checked ? root.warning : root.textDim
+                                                        font.pixelSize: 12
+                                                        font.bold: model.checked
+                                                    }
                                                 }
                                             }
                                         }
@@ -889,7 +962,7 @@ ApplicationWindow {
                                         anchors.margins: 22
                                         spacing: 16
                                         CardTitle { text: "Quest Farm" }
-                                        Label { text: hasCapability("quest_farm") ? "Quest routing is available on this branch." : "Quest routing is not exposed on this branch."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        Label { text: hasCapability("quest_farm") ? "Quest Farm lets the bot bias toward quest progress while still respecting your excluded list." : "Quest routing is not exposed on this branch, so this area is informational only."; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         RowLayout {
                                             visible: hasCapability("quest_farm")
                                             Layout.preferredHeight: visible ? implicitHeight : 0
@@ -933,7 +1006,7 @@ ApplicationWindow {
                         id: liveScroll
                         clip: true
                         contentWidth: availableWidth
-                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+                        Component.onCompleted: stabilizeScroll(liveScroll)
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: liveScroll.availableWidth
@@ -945,7 +1018,7 @@ ApplicationWindow {
                                 spacing: root.cardGap
                                 GridLayout {
                                     width: parent.width
-                                    columns: 3
+                                    columns: 4
                                     rowSpacing: root.cardGap
                                     columnSpacing: root.cardGap
                                     Repeater {
@@ -953,9 +1026,9 @@ ApplicationWindow {
                                             {"title":"Session","value": formatDuration(secondsSinceStart()), "color": root.info},
                                             {"title":"State","value": String(live.state || "READY").toUpperCase(), "color": (live.state || "").toLowerCase() === "match" ? root.success : root.textMain},
                                             {"title":"Brawler","value": live.brawler || "-", "color": root.textMain},
+                                            {"title":"IPS","value": Number(liveMetricNumber(live.ips, 0)).toFixed(1), "color": root.success},
                                             {"title":"Trophies","value": liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0), "color": root.gold},
                                             {"title":"To Target","value": String(Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0))), "color": root.warning},
-                                            {"title":"IPS","value": Number(liveMetricNumber(live.ips, 0)).toFixed(1), "color": root.success},
                                             {"title":"KDA","value": live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)), "color": root.textMain},
                                             {"title":"DMG / MIN","value": String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0), "color": root.textMain},
                                             {"title":"WINS / H","value": secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0", "color": root.textMain}
@@ -974,18 +1047,72 @@ ApplicationWindow {
                                         }
                                     }
                                 }
-                                AppCard {
+                                GridLayout {
                                     width: parent.width
-                                    implicitHeight: 210
-                                    ColumnLayout {
-                                        anchors.fill: parent
-                                        anchors.margins: 22
-                                        spacing: 14
-                                        CardTitle { text: "Performance" }
-                                        Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
-                                        Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                        Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                        Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                    columns: 2
+                                    columnSpacing: root.cardGap
+                                    rowSpacing: root.cardGap
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 220
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 22
+                                            spacing: 14
+                                            CardTitle { text: "Performance Snapshot" }
+                                            Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
+                                            Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                            Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                            Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                        }
+                                    }
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 220
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 22
+                                            spacing: 12
+                                            CardTitle { text: "Operations Feed" }
+                                            Label { text: "Cleaned live terminal output from the current session."; color: root.textDim; font.pixelSize: 13 }
+                                            ListView {
+                                                Layout.fillWidth: true
+                                                Layout.fillHeight: true
+                                                clip: true
+                                                spacing: 8
+                                                boundsBehavior: Flickable.StopAtBounds
+                                                model: logs
+                                                ScrollBar.vertical: ScrollBar { }
+                                                delegate: Rectangle {
+                                                    width: ListView.view.width
+                                                    height: logRow.implicitHeight + 12
+                                                    radius: 12
+                                                    color: root.panelAlt
+                                                    border.color: root.border
+                                                    border.width: 1
+                                                    RowLayout {
+                                                        id: logRow
+                                                        anchors.fill: parent
+                                                        anchors.margins: 12
+                                                        spacing: 10
+                                                        Label { text: modelData.time || "--:--:--"; color: root.textDim; font.pixelSize: 12 }
+                                                        Rectangle {
+                                                            Layout.preferredWidth: 8
+                                                            Layout.preferredHeight: 8
+                                                            radius: 4
+                                                            color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
+                                                        }
+                                                        Label {
+                                                            Layout.fillWidth: true
+                                                            text: modelData.message || ""
+                                                            color: root.textMain
+                                                            font.pixelSize: 13
+                                                            wrapMode: Text.WordWrap
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -996,7 +1123,7 @@ ApplicationWindow {
                         id: historyScroll
                         clip: true
                         contentWidth: availableWidth
-                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+                        Component.onCompleted: stabilizeScroll(historyScroll)
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: historyScroll.availableWidth
@@ -1040,7 +1167,7 @@ ApplicationWindow {
                         id: settingsScroll
                         clip: true
                         contentWidth: availableWidth
-                        Component.onCompleted: if (contentItem && contentItem.boundsBehavior !== undefined) contentItem.boundsBehavior = Flickable.StopAtBounds
+                        Component.onCompleted: stabilizeScroll(settingsScroll)
                         ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
                         Item {
                             width: settingsScroll.availableWidth

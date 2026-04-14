@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+from datetime import datetime
 
 import requests
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -38,6 +39,7 @@ class QtBridge(QObject):
     rosterChanged = Signal("QVariantList")
     liveDataChanged = Signal("QVariantMap")
     historyChanged = Signal("QVariantList")
+    logsChanged = Signal("QVariantList")
     notificationRaised = Signal(str, str)
     sessionSummaryReady = Signal("QVariantMap")
 
@@ -53,6 +55,7 @@ class QtBridge(QObject):
         self._bot_stop_requested = False
         self._live_data = {}
         self._session_summary = None
+        self._event_log = []
         self._logged_in = False
         self._live_lock = threading.Lock()
 
@@ -168,6 +171,21 @@ class QtBridge(QObject):
 
     def _emit_history(self):
         self.historyChanged.emit(self.getHistory())
+
+    def _emit_logs(self):
+        self.logsChanged.emit(self.getLogs())
+
+    def _push_log(self, level, message):
+        text = str(message or "").strip()
+        if not text:
+            return
+        self._event_log.append({
+            "level": str(level or "info"),
+            "time": datetime.now().strftime("%H:%M:%S"),
+            "message": text,
+        })
+        self._event_log = self._event_log[-120:]
+        self._emit_logs()
 
     def sync_runtime_roster(self, roster, emit_history=False):
         normalized = self._normalize_roster(roster)
@@ -289,6 +307,7 @@ class QtBridge(QObject):
         return rows
 
     def _notification(self, level, message):
+        self._push_log(level, message)
         self.notificationRaised.emit(level, message)
 
     def _prepare_bot_control_events(self):
@@ -296,7 +315,9 @@ class QtBridge(QObject):
         self._bot_stop_event = threading.Event()
         self._bot_pause_event = threading.Event()
         self._live_data = {}
+        self._event_log = []
         self.liveDataChanged.emit(self._live_data.copy())
+        self._emit_logs()
 
     def _run_bot(self):
         try:
@@ -331,9 +352,17 @@ class QtBridge(QObject):
         QTimer.singleShot(int(ms), callback)
 
     def update_live(self, **kw):
+        previous_state = str(self._live_data.get("state", "") or "").lower()
+        previous_brawler = str(self._live_data.get("brawler", "") or "")
         with self._live_lock:
             self._live_data.update(kw)
             payload = dict(self._live_data)
+        current_state = str(payload.get("state", "") or "").lower()
+        current_brawler = str(payload.get("brawler", "") or "")
+        if current_state and current_state != previous_state:
+            self._push_log("info", f"State -> {current_state}")
+        if current_brawler and current_brawler != previous_brawler:
+            self._push_log("info", f"Brawler -> {current_brawler}")
         self.liveDataChanged.emit(payload)
 
     def _show_session_summary(self):
@@ -359,6 +388,7 @@ class QtBridge(QObject):
             "roster": self.getRoster(),
             "brawlers": self._build_brawler_payload(),
             "history": self.getHistory(),
+            "logs": self.getLogs(),
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
             "live": dict(self._live_data),
@@ -377,6 +407,10 @@ class QtBridge(QObject):
     @Slot(result="QVariantList")
     def getHistory(self):
         return self._history_rows()
+
+    @Slot(result="QVariantList")
+    def getLogs(self):
+        return list(self._event_log)
 
     @Slot(result="QVariantList")
     def getBrawlers(self):
