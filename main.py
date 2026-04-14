@@ -13,7 +13,7 @@ from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
 from stage_manager import StageManager
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from time_management import TimeManagement
 from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, ensure_state_icons_present
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
@@ -67,6 +67,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._last_roster_signature = None
             self._last_roster_push_time = 0.0
             self._last_live_exception_time = 0.0
+            self._last_result_probe_time = 0.0
 
         def initialize_stage_manager(self):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
@@ -191,6 +192,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.manage_time_tasks(frame)
                 record_timing("time_tasks", time.perf_counter() - tasks_started_at, print_every=120)
 
+                if self.current_state == "match" and (time.perf_counter() - self._last_result_probe_time) >= 0.45:
+                    self._last_result_probe_time = time.perf_counter()
+                    result = find_game_result(frame)
+                    if result:
+                        end_state = f"end_{result}"
+                        self.current_state = end_state
+                        self.Play._runtime_state = end_state
+                        self.Stage_manager.do_state(end_state, frame)
+                        continue
+
 
                 brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                 if self.Play.current_brawler != brawler:
@@ -269,17 +280,22 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     if (now - self._last_live_push) >= 0.2:
                         self._last_live_push = now
                         try:
+                            live_trophies = tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0)
+                            live_streak = tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0)
+                            session_matches = int(session_stats.get("total_matches", 0) or 0)
+                            if session_matches <= 0:
+                                session_matches = current_match_counter
                             _active_dashboard.update_live(
                                 start_time=self.start_time,
                                 ips=self.current_ips,
                                 state=self.current_state,
                                 brawler=brawler,
-                                trophies=active_entry.get("trophies", tobs.current_trophies or 0),
+                                trophies=live_trophies,
                                 target=active_entry.get("push_until", 0),
                                 victories=hist.get("victory", 0),
                                 defeats=hist.get("defeat", 0),
                                 draws=hist.get("draw", 0),
-                                streak=active_entry.get("win_streak", tobs.win_streak),
+                                streak=live_streak,
                                 game_mode=getattr(self.Play, "game_mode_name", ""),
                                 gadget_ready=getattr(self.Play, "is_gadget_ready", False),
                                 super_ready=getattr(self.Play, "is_super_ready", False),
@@ -296,8 +312,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 total_kills=session_stats.get("total_kills", 0),
                                 total_assists=session_stats.get("total_assists", 0),
                                 total_damage=session_stats.get("total_damage", 0),
-                                total_matches=session_stats.get("total_matches", 0),
-                                session_matches=session_stats.get("total_matches", 0),
+                                total_matches=session_matches,
+                                session_matches=session_matches,
                                 session_victories=session_stats.get("victories", 0),
                                 session_defeats=session_stats.get("defeats", 0),
                                 session_draws=session_stats.get("draws", 0),

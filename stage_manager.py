@@ -64,6 +64,29 @@ class StageManager:
         active['wins'] = self.Trophy_observer.current_wins
         active['win_streak'] = self.Trophy_observer.win_streak
 
+    def _apply_match_result(self, game_result):
+        if not self.brawlers_pick_data or not game_result:
+            return False
+
+        current_brawler = self.brawlers_pick_data[0]['brawler']
+        applied = self.Trophy_observer.add_trophies(game_result, current_brawler)
+        self.Trophy_observer.add_win(game_result)
+        self.time_since_last_stat_change = time.time()
+
+        values = {
+            "trophies": self.Trophy_observer.current_trophies,
+            "wins": self.Trophy_observer.current_wins
+        }
+        type_to_push = self.brawlers_pick_data[0]['type']
+        if type_to_push not in values:
+            type_to_push = "trophies"
+        value = values[type_to_push]
+
+        self._sync_active_brawler_progress()
+        self.brawlers_pick_data[0][type_to_push] = value
+        save_brawler_data(self.brawlers_pick_data)
+        return applied
+
     def set_lobby_start_enabled(self, enabled):
         self.lobby_start_enabled = enabled
 
@@ -191,12 +214,19 @@ class StageManager:
                 and (state_result is not None or time.time() - self.time_since_last_stat_change > 10)
             )
             if should_probe_result:
-                found_game_result = self.Trophy_observer.find_game_result(
-                    screenshot,
-                    current_brawler=self.brawlers_pick_data[0]['brawler'],
-                    game_result=state_result,
-                )
-                self.time_since_last_stat_change = time.time()
+                if state_result is not None:
+                    found_game_result = self._apply_match_result(state_result)
+                else:
+                    found_game_result = self.Trophy_observer.find_game_result(
+                        screenshot,
+                        current_brawler=self.brawlers_pick_data[0]['brawler'],
+                        game_result=state_result,
+                    )
+                    if found_game_result:
+                        self.time_since_last_stat_change = time.time()
+                        self._sync_active_brawler_progress()
+                        save_brawler_data(self.brawlers_pick_data)
+                push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
                 values = {
                     "trophies": self.Trophy_observer.current_trophies,
                     "wins": self.Trophy_observer.current_wins
@@ -205,10 +235,6 @@ class StageManager:
                 if type_to_push not in values:
                     type_to_push = "trophies"
                 value = values[type_to_push]
-                self._sync_active_brawler_progress()
-                self.brawlers_pick_data[0][type_to_push] = value
-                save_brawler_data(self.brawlers_pick_data)
-                push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
 
                 if value == "" and type_to_push == "wins":
                     value = 0
