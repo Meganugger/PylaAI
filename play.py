@@ -14,6 +14,7 @@ from hp_estimator import HPEstimator
 from pathfinder import PathPlanner
 
 brawl_stars_width, brawl_stars_height = 1920, 1080
+debug = load_toml_as_dict("cfg/general_config.toml").get("super_debug", "no") == "yes"
 
 # === BRAWLER ARCHETYPE SYSTEM ===
 # Each playstyle defines how the bot moves, attacks, and retreats.
