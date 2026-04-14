@@ -22,6 +22,9 @@ for file in os.listdir("./state_finder/images_to_detect"):
 
 region_data = load_toml_as_dict("./cfg/lobby_config.toml")['template_matching']
 region_data.setdefault("reward_claim_corner", [0, 0, 190, 120])
+debug = load_toml_as_dict("./cfg/general_config.toml").get("super_debug", "no") == "yes"
+_last_state_debug_value = None
+_last_state_debug_time = 0.0
 crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
 
 
@@ -131,9 +134,14 @@ def is_in_star_drop(image):
 
 
 def get_state(screenshot):
+    global _last_state_debug_value, _last_state_debug_time
     started_at = time.perf_counter()
     screenshot_bgr = to_bgr_array(screenshot)
     state = get_in_game_state(screenshot_bgr)
     record_timing("state_detection", time.perf_counter() - started_at, print_every=60)
-    print(f"State: {state}")
+    now = time.time()
+    if debug and (state != _last_state_debug_value or now - _last_state_debug_time >= 3.0):
+        print(f"State: {state}")
+        _last_state_debug_value = state
+        _last_state_debug_time = now
     return state
