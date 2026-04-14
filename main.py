@@ -163,7 +163,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     elapsed = time.time() - s_time
                     if elapsed > 0:
                         self.current_ips = c / elapsed
-                        print(f"{self.current_ips:.2f} IPS")
+                        if debug:
+                            print(f"{self.current_ips:.2f} IPS")
                     s_time = time.time()
                     c = 0
 
