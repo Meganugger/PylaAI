@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 sys.path.append(os.path.abspath('../'))
-from utils import count_hsv_pixels, load_toml_as_dict, to_bgr_array, record_timing
+from utils import load_toml_as_dict, to_bgr_array, record_timing
 
 orig_screen_width, orig_screen_height = 1920, 1080
 
@@ -80,8 +80,6 @@ def get_in_game_state(image):
         return "brawler_selection"
     if is_in_end_of_a_match(image):
         return "end"
-    if count_hsv_pixels(image, (0, 0, 240), (180, 20, 255)) > 300000:
-        return "play_store"
     if is_in_brawl_pass(image) or is_in_star_road(image):
         return "shop"
     if is_in_star_drop(image):

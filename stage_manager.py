@@ -39,7 +39,6 @@ class StageManager:
             'match': lambda: 0,
             'end': self.end_game,
             'lobby': self.start_game,
-            'play_store': self.click_brawl_stars,
             'star_drop': self.click_star_drop
         }
         self.Lobby_automation = lobby_automator
