@@ -10,7 +10,7 @@ import numpy as np
 from state_finder.main import get_state
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
-    save_brawler_data, reader
+    save_brawler_data, reader, to_bgr_array
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
 
@@ -91,6 +91,10 @@ class StageManager:
     def _read_lobby_trophies(self, frame):
         region = (self.lobby_config.get("lobby") or {}).get("trophy_observer")
         if frame is None or not region or len(region) != 4:
+            return None
+        try:
+            frame = to_bgr_array(frame)
+        except Exception:
             return None
 
         wr = self.window_controller.width_ratio or 1.0
