@@ -1119,9 +1119,11 @@ ApplicationWindow {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: Math.min(parent.width, 1320)
                                 spacing: root.cardGap
-                                RowLayout {
+                                GridLayout {
                                     width: parent.width
-                                    spacing: root.cardGap
+                                    columns: width >= 1180 ? 4 : 2
+                                    columnSpacing: root.cardGap
+                                    rowSpacing: root.cardGap
                                     AppCard {
                                         Layout.fillWidth: true
                                         implicitHeight: 132
@@ -1130,8 +1132,8 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Session" }
-                                            Label { text: formatDuration(secondsSinceStart()); color: root.info; font.pixelSize: 32; font.bold: true }
-                                            Label { text: "Tracking current run duration and live pace."; color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: formatDuration(secondsSinceStart()); color: root.info; font.pixelSize: 32; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: "Tracking current run duration and live pace."; color: root.textDim; font.pixelSize: 13; wrapMode: Text.WordWrap }
                                         }
                                     }
                                     AppCard {
@@ -1142,8 +1144,8 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Match State" }
-                                            Label { text: String(live.state || "READY").toUpperCase(); color: (live.state || "").toLowerCase() === "match" ? root.success : root.textMain; font.pixelSize: 30; font.bold: true }
-                                            Label { text: "Current brawler: " + (live.brawler || "-"); color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: String(live.state || "READY").toUpperCase(); color: (live.state || "").toLowerCase() === "match" ? root.success : root.textMain; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: "Current brawler: " + (live.brawler || "-"); color: root.textDim; font.pixelSize: 13; wrapMode: Text.WordWrap }
                                         }
                                     }
                                     AppCard {
@@ -1154,7 +1156,7 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Progress" }
-                                            Label { text: liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0); color: root.gold; font.pixelSize: 30; font.bold: true }
+                                            Label { text: liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0); color: root.gold; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
                                             Label { text: "To target: " + Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0)); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
@@ -1166,42 +1168,58 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Tempo" }
-                                            Label { text: Number(liveMetricNumber(live.ips, 0)).toFixed(1) + " IPS"; color: root.success; font.pixelSize: 30; font.bold: true }
+                                            Label { text: Number(liveMetricNumber(live.ips, 0)).toFixed(1) + " IPS"; color: root.success; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
                                             Label { text: "Wins / h: " + (secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 218
-                                    ColumnLayout {
+                                    implicitHeight: 238
+                                    RowLayout {
                                         anchors.fill: parent
                                         anchors.margins: 22
-                                        spacing: 16
-                                        CardTitle { text: "Match Breakdown" }
-                                        Rectangle {
+                                        spacing: 22
+                                        ColumnLayout {
                                             Layout.fillWidth: true
-                                            height: 1
+                                            Layout.fillHeight: true
+                                            spacing: 16
+                                            CardTitle { text: "Match Breakdown" }
+                                            Rectangle {
+                                                Layout.fillWidth: true
+                                                height: 1
+                                                color: root.border
+                                            }
+                                            GridLayout {
+                                                width: parent.width
+                                                columns: 2
+                                                columnSpacing: 20
+                                                rowSpacing: 14
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: (live.current_kills || 0) + "K / " + (live.current_deaths || 0) + "D"; color: root.textMain; font.pixelSize: 20; font.bold: true } }
+                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(live.current_damage || 0); color: root.textMain; font.pixelSize: 20; font.bold: true } }
+                                            }
+                                        }
+                                        Rectangle {
+                                            Layout.preferredWidth: 1
+                                            Layout.fillHeight: true
                                             color: root.border
                                         }
-                                        GridLayout {
-                                            width: parent.width
-                                            columns: 3
-                                            columnSpacing: 18
-                                            rowSpacing: 12
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: (live.current_kills || 0) + "K / " + (live.current_deaths || 0) + "D"; color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Session W / L / D" } Label { text: (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 18; font.bold: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(live.current_damage || 0); color: root.textMain; font.pixelSize: 18; font.bold: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Last Match" } Label { text: (live.last_kills || 0) + "K / " + (live.last_damage || 0) + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true } }
+                                        ColumnLayout {
+                                            Layout.preferredWidth: 280
+                                            Layout.fillHeight: true
+                                            spacing: 14
+                                            CardTitle { text: "Session Totals" }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "W / L / D" } Label { text: (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 22; font.bold: true } }
+                                            ColumnLayout { spacing: 4; AppLabel { text: "Last Match" } Label { text: (live.last_kills || 0) + "K / " + (live.last_damage || 0) + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap } }
+                                            Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14; wrapMode: Text.WordWrap }
                                         }
-                                        Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
                                     }
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 260
+                                    implicitHeight: 280
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 22
@@ -1228,7 +1246,7 @@ ApplicationWindow {
                                             }
                                             delegate: Rectangle {
                                                 width: ListView.view.width
-                                                height: logRow.implicitHeight + 12
+                                                height: logRow.implicitHeight + 14
                                                 radius: 12
                                                 color: root.panelAlt
                                                 border.color: root.border
@@ -1237,8 +1255,14 @@ ApplicationWindow {
                                                     id: logRow
                                                     anchors.fill: parent
                                                     anchors.margins: 12
-                                                    spacing: 10
-                                                    Label { text: modelData.time || "--:--:--"; color: root.textDim; font.pixelSize: 12 }
+                                                    spacing: 12
+                                                    Label {
+                                                        Layout.preferredWidth: 64
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        text: modelData.time || "--:--:--"
+                                                        color: root.textDim
+                                                        font.pixelSize: 12
+                                                    }
                                                     Rectangle {
                                                         Layout.preferredWidth: 8
                                                         Layout.preferredHeight: 8
@@ -1251,6 +1275,22 @@ ApplicationWindow {
                                                         color: root.textMain
                                                         font.pixelSize: 13
                                                         wrapMode: Text.WordWrap
+                                                        verticalAlignment: Text.AlignVCenter
+                                                    }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 86
+                                                        implicitHeight: 28
+                                                        radius: 999
+                                                        color: modelData.level === "error" ? "#35161A" : modelData.level === "warning" ? "#352B14" : modelData.level === "success" ? "#153225" : "#172536"
+                                                        border.color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
+                                                        border.width: 1
+                                                        Label {
+                                                            anchors.centerIn: parent
+                                                            text: String(modelData.level || "info").toUpperCase()
+                                                            color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
+                                                            font.pixelSize: 11
+                                                            font.bold: true
+                                                        }
                                                     }
                                                 }
                                             }
