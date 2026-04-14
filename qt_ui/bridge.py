@@ -321,14 +321,29 @@ class QtBridge(QObject):
         self.liveDataChanged.emit(self._live_data.copy())
         self._emit_logs()
 
+    def _set_runtime_binding(self, name, value):
+        import sys
+
+        target_modules = []
+        main_module = sys.modules.get("__main__")
+        if main_module is not None:
+            target_modules.append(main_module)
+
+        pyla_module = inspect.getmodule(self._pyla_main)
+        if pyla_module is not None and pyla_module not in target_modules:
+            target_modules.append(pyla_module)
+
+        for module in target_modules:
+            try:
+                setattr(module, name, value)
+            except Exception:
+                pass
+
     def _run_bot(self):
         try:
             if self._bot_stop_requested:
                 return
-            import sys
-            main_module = sys.modules.get("__main__")
-            if main_module:
-                setattr(main_module, "_active_dashboard", self)
+            self._set_runtime_binding("_active_dashboard", self)
             try:
                 sig = inspect.signature(self._pyla_main)
                 if "external_stop_event" in sig.parameters:
@@ -344,11 +359,8 @@ class QtBridge(QObject):
         except Exception as exc:
             self._notification("error", f"Bot thread error: {exc}")
         finally:
-            import sys
-            main_module = sys.modules.get("__main__")
-            if main_module:
-                setattr(main_module, "_active_dashboard", None)
-                setattr(main_module, "_active_stage_manager", None)
+            self._set_runtime_binding("_active_dashboard", None)
+            self._set_runtime_binding("_active_stage_manager", None)
 
     def after(self, ms, callback):
         QTimer.singleShot(int(ms), callback)

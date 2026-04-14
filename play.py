@@ -1027,6 +1027,7 @@ class Play(Movement):
             self._last_end_result_probe_time = current_time
             game_result = find_game_result(frame)
             if game_result:
+                print(f"[RESULT] play fast probe detected {game_result}")
                 self._pending_end_result = game_result
                 self._runtime_state = f"end_{game_result}"
                 self.window_controller.keys_up(list("wasd"))
@@ -1086,6 +1087,7 @@ class Play(Movement):
                 self._last_end_result_probe_time = current_time
                 game_result = find_game_result(frame)
                 if game_result:
+                    print(f"[RESULT] play missing-player probe detected {game_result}")
                     self._pending_end_result = game_result
                     self._runtime_state = f"end_{game_result}"
                     self.window_controller.keys_up(list("wasd"))
@@ -1097,6 +1099,7 @@ class Play(Movement):
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
                 current_state = get_state(frame)
                 if isinstance(current_state, str) and current_state.startswith("end_"):
+                    print(f"[RESULT] play state probe detected {current_state}")
                     self._pending_end_result = current_state.split("_", 1)[1]
                     self._runtime_state = current_state
                     self.window_controller.keys_up(list("wasd"))
