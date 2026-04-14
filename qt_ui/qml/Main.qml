@@ -326,6 +326,10 @@ ApplicationWindow {
     component NavButton: Button {
         id: control
         implicitHeight: 56
+        leftPadding: 0
+        rightPadding: 0
+        topPadding: 0
+        bottomPadding: 0
         font.pixelSize: 15
         background: Rectangle {
             radius: 16
@@ -334,6 +338,7 @@ ApplicationWindow {
             border.width: 1
         }
         contentItem: Text {
+            anchors.fill: parent
             text: control.text
             color: control.checked ? root.textMain : root.textDim
             font.pixelSize: 15
@@ -910,9 +915,18 @@ ApplicationWindow {
                                             clip: true
                                             spacing: 8
                                             boundsBehavior: Flickable.StopAtBounds
+                                            boundsMovement: Flickable.StopAtBounds
                                             ScrollBar.vertical: ScrollBar { }
                                             id: trophyList
                                             model: excludeModel
+                                            WheelHandler {
+                                                target: trophyList
+                                                onWheel: function(event) {
+                                                    const nextY = trophyList.contentY - (event.angleDelta.y / 120) * 52
+                                                    trophyList.contentY = Math.max(0, Math.min(nextY, Math.max(0, trophyList.contentHeight - trophyList.height)))
+                                                    event.accepted = true
+                                                }
+                                            }
                                             delegate: Rectangle {
                                                 visible: !farmSearch.text || model.displayName.toLowerCase().indexOf(farmSearch.text.toLowerCase()) !== -1
                                                 width: ListView.view.width
@@ -940,9 +954,19 @@ ApplicationWindow {
                                                         Layout.fillWidth: true
                                                         spacing: 2
                                                         Label { text: model.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true }
-                                                        Label { text: "Current trophies: " + model.trophies; color: root.textDim; font.pixelSize: 12 }
+                                                        Label { text: "Available for trophy farming"; color: root.textDim; font.pixelSize: 12 }
                                                     }
                                                     Label {
+                                                        Layout.preferredWidth: 132
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: model.trophies + " trophies"
+                                                        color: root.textMain
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                    }
+                                                    Label {
+                                                        Layout.preferredWidth: 72
+                                                        horizontalAlignment: Text.AlignRight
                                                         text: model.checked ? "Excluded" : "Included"
                                                         color: model.checked ? root.warning : root.textDim
                                                         font.pixelSize: 12
@@ -966,24 +990,72 @@ ApplicationWindow {
                                         RowLayout {
                                             visible: hasCapability("quest_farm")
                                             Layout.preferredHeight: visible ? implicitHeight : 0
+                                            Layout.fillWidth: true
                                             spacing: 12
                                             Layout.alignment: Qt.AlignVCenter
                                             AppCheckBox { id: questEnabled; text: "Enable" }
                                             AppComboBox { id: questMode; implicitWidth: 170; model: ["games","wins"] }
                                         }
+                                        RowLayout {
+                                            visible: hasCapability("quest_farm")
+                                            Layout.preferredHeight: visible ? implicitHeight : 0
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            AppTextField {
+                                                id: questSearch
+                                                Layout.fillWidth: true
+                                                placeholderText: "Search brawlers to exclude from quest farming"
+                                            }
+                                            AppButton {
+                                                text: "Clear Exclusions"
+                                                implicitWidth: 170
+                                                onClicked: {
+                                                    for (let i = 0; i < questExcludeModel.count; ++i)
+                                                        questExcludeModel.setProperty(i, "checked", false)
+                                                }
+                                            }
+                                        }
+                                        RowLayout {
+                                            visible: hasCapability("quest_farm")
+                                            Layout.preferredHeight: visible ? implicitHeight : 0
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            Label {
+                                                text: checkedCount(questExcludeModel) + " excluded"
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Label {
+                                                text: "Checked brawlers stay out of the quest farm pool"
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
+                                        }
                                         ListView {
+                                            id: questList
                                             visible: hasCapability("quest_farm")
                                             Layout.fillWidth: true
-                                            Layout.preferredHeight: visible ? 180 : 0
+                                            Layout.preferredHeight: visible ? 220 : 0
                                             clip: true
                                             spacing: 8
                                             boundsBehavior: Flickable.StopAtBounds
+                                            boundsMovement: Flickable.StopAtBounds
                                             ScrollBar.vertical: ScrollBar { }
                                             model: questExcludeModel
+                                            WheelHandler {
+                                                target: questList
+                                                onWheel: function(event) {
+                                                    const nextY = questList.contentY - (event.angleDelta.y / 120) * 52
+                                                    questList.contentY = Math.max(0, Math.min(nextY, Math.max(0, questList.contentHeight - questList.height)))
+                                                    event.accepted = true
+                                                }
+                                            }
                                             delegate: Rectangle {
+                                                visible: !questSearch.text || model.displayName.toLowerCase().indexOf(questSearch.text.toLowerCase()) !== -1
                                                 width: ListView.view.width
-                                                height: 50
-                                                radius: 12
+                                                height: visible ? 58 : 0
+                                                radius: 14
                                                 color: root.panelAlt
                                                 border.color: root.border
                                                 border.width: 1
@@ -992,7 +1064,38 @@ ApplicationWindow {
                                                     anchors.margins: 12
                                                     spacing: 12
                                                     AppCheckBox { checked: model.checked; onToggled: questExcludeModel.setProperty(index, "checked", checked) }
-                                                    Label { Layout.fillWidth: true; text: model.displayName; color: root.textMain; font.pixelSize: 14; horizontalAlignment: Text.AlignLeft; verticalAlignment: Text.AlignVCenter }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 34
+                                                        Layout.preferredHeight: 34
+                                                        radius: 10
+                                                        color: "#0C0F14"
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                        clip: true
+                                                        Image { anchors.fill: parent; source: model.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Label { text: model.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true }
+                                                        Label { text: "Available for quest routing"; color: root.textDim; font.pixelSize: 12 }
+                                                    }
+                                                    Label {
+                                                        Layout.preferredWidth: 132
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: model.trophies + " trophies"
+                                                        color: root.textMain
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                    }
+                                                    Label {
+                                                        Layout.preferredWidth: 72
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: model.checked ? "Excluded" : "Included"
+                                                        color: model.checked ? root.warning : root.textDim
+                                                        font.pixelSize: 12
+                                                        font.bold: model.checked
+                                                    }
                                                 }
                                             }
                                         }
@@ -1016,99 +1119,138 @@ ApplicationWindow {
                                 anchors.horizontalCenter: parent.horizontalCenter
                                 width: Math.min(parent.width, 1320)
                                 spacing: root.cardGap
-                                GridLayout {
+                                RowLayout {
                                     width: parent.width
-                                    columns: 4
-                                    rowSpacing: root.cardGap
-                                    columnSpacing: root.cardGap
-                                    Repeater {
-                                        model: [
-                                            {"title":"Session","value": formatDuration(secondsSinceStart()), "color": root.info},
-                                            {"title":"State","value": String(live.state || "READY").toUpperCase(), "color": (live.state || "").toLowerCase() === "match" ? root.success : root.textMain},
-                                            {"title":"Brawler","value": live.brawler || "-", "color": root.textMain},
-                                            {"title":"IPS","value": Number(liveMetricNumber(live.ips, 0)).toFixed(1), "color": root.success},
-                                            {"title":"Trophies","value": liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0), "color": root.gold},
-                                            {"title":"To Target","value": String(Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0))), "color": root.warning},
-                                            {"title":"KDA","value": live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)), "color": root.textMain},
-                                            {"title":"DMG / MIN","value": String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0), "color": root.textMain},
-                                            {"title":"WINS / H","value": secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0", "color": root.textMain}
-                                        ]
-                                        delegate: AppCard {
-                                            Layout.fillWidth: true
-                                            implicitHeight: 118
-                                            ColumnLayout {
-                                                anchors.fill: parent
-                                                anchors.margins: 18
-                                                spacing: 10
-                                                AppLabel { text: modelData.title.toUpperCase(); font.bold: true }
-                                                Item { Layout.fillHeight: true }
-                                                Label { text: String(modelData.value); color: modelData.color; font.pixelSize: 28; font.bold: true; wrapMode: Text.WordWrap; Layout.fillWidth: true }
-                                            }
+                                    spacing: root.cardGap
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 132
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 20
+                                            spacing: 8
+                                            CardTitle { text: "Session" }
+                                            Label { text: formatDuration(secondsSinceStart()); color: root.info; font.pixelSize: 32; font.bold: true }
+                                            Label { text: "Tracking current run duration and live pace."; color: root.textDim; font.pixelSize: 13 }
+                                        }
+                                    }
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 132
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 20
+                                            spacing: 8
+                                            CardTitle { text: "Match State" }
+                                            Label { text: String(live.state || "READY").toUpperCase(); color: (live.state || "").toLowerCase() === "match" ? root.success : root.textMain; font.pixelSize: 30; font.bold: true }
+                                            Label { text: "Current brawler: " + (live.brawler || "-"); color: root.textDim; font.pixelSize: 13 }
+                                        }
+                                    }
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 132
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 20
+                                            spacing: 8
+                                            CardTitle { text: "Progress" }
+                                            Label { text: liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0); color: root.gold; font.pixelSize: 30; font.bold: true }
+                                            Label { text: "To target: " + Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0)); color: root.textDim; font.pixelSize: 13 }
+                                        }
+                                    }
+                                    AppCard {
+                                        Layout.fillWidth: true
+                                        implicitHeight: 132
+                                        ColumnLayout {
+                                            anchors.fill: parent
+                                            anchors.margins: 20
+                                            spacing: 8
+                                            CardTitle { text: "Tempo" }
+                                            Label { text: Number(liveMetricNumber(live.ips, 0)).toFixed(1) + " IPS"; color: root.success; font.pixelSize: 30; font.bold: true }
+                                            Label { text: "Wins / h: " + (secondsSinceStart() > 0 ? ((liveMetricNumber(live.session_victories, 0) * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
                                 }
-                                GridLayout {
+                                AppCard {
                                     width: parent.width
-                                    columns: 2
-                                    columnSpacing: root.cardGap
-                                    rowSpacing: root.cardGap
-                                    AppCard {
-                                        Layout.fillWidth: true
-                                        implicitHeight: 220
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 22
-                                            spacing: 14
-                                            CardTitle { text: "Performance Snapshot" }
-                                            Label { text: "Session W / L / D: " + (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 15 }
-                                            Label { text: "Current Match: " + (live.current_kills || 0) + " kills, " + (live.current_damage || 0) + " damage, " + (live.current_deaths || 0) + " deaths"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                            Label { text: "Last Match: " + (live.last_kills || 0) + " kills, " + (live.last_damage || 0) + " damage"; color: root.textDim; font.pixelSize: 14; wrapMode: Text.WordWrap }
-                                            Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
+                                    implicitHeight: 218
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        CardTitle { text: "Match Breakdown" }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            height: 1
+                                            color: root.border
                                         }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 3
+                                            columnSpacing: 18
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: live.current_deaths > 0 ? (liveMetricNumber(live.current_kills, 0) / Math.max(1, liveMetricNumber(live.current_deaths, 0))).toFixed(2) : String(liveMetricNumber(live.current_kills, 0)); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveMetricNumber(live.current_damage, 0) / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: (live.current_kills || 0) + "K / " + (live.current_deaths || 0) + "D"; color: root.textMain; font.pixelSize: 24; font.bold: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Session W / L / D" } Label { text: (live.session_victories || 0) + " / " + (live.session_defeats || 0) + " / " + (live.session_draws || 0); color: root.textMain; font.pixelSize: 18; font.bold: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(live.current_damage || 0); color: root.textMain; font.pixelSize: 18; font.bold: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Last Match" } Label { text: (live.last_kills || 0) + "K / " + (live.last_damage || 0) + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true } }
+                                        }
+                                        Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14 }
                                     }
-                                    AppCard {
-                                        Layout.fillWidth: true
-                                        implicitHeight: 220
-                                        ColumnLayout {
-                                            anchors.fill: parent
-                                            anchors.margins: 22
-                                            spacing: 12
-                                            CardTitle { text: "Operations Feed" }
-                                            Label { text: "Cleaned live terminal output from the current session."; color: root.textDim; font.pixelSize: 13 }
-                                            ListView {
-                                                Layout.fillWidth: true
-                                                Layout.fillHeight: true
-                                                clip: true
-                                                spacing: 8
-                                                boundsBehavior: Flickable.StopAtBounds
-                                                model: logs
-                                                ScrollBar.vertical: ScrollBar { }
-                                                delegate: Rectangle {
-                                                    width: ListView.view.width
-                                                    height: logRow.implicitHeight + 12
-                                                    radius: 12
-                                                    color: root.panelAlt
-                                                    border.color: root.border
-                                                    border.width: 1
-                                                    RowLayout {
-                                                        id: logRow
-                                                        anchors.fill: parent
-                                                        anchors.margins: 12
-                                                        spacing: 10
-                                                        Label { text: modelData.time || "--:--:--"; color: root.textDim; font.pixelSize: 12 }
-                                                        Rectangle {
-                                                            Layout.preferredWidth: 8
-                                                            Layout.preferredHeight: 8
-                                                            radius: 4
-                                                            color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
-                                                        }
-                                                        Label {
-                                                            Layout.fillWidth: true
-                                                            text: modelData.message || ""
-                                                            color: root.textMain
-                                                            font.pixelSize: 13
-                                                            wrapMode: Text.WordWrap
-                                                        }
+                                }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: 260
+                                    ColumnLayout {
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 12
+                                        CardTitle { text: "Operations Feed" }
+                                        Label { text: "Cleaned live terminal output from the current session."; color: root.textDim; font.pixelSize: 13 }
+                                        ListView {
+                                            id: liveLogList
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            boundsMovement: Flickable.StopAtBounds
+                                            model: logs
+                                            ScrollBar.vertical: ScrollBar { }
+                                            WheelHandler {
+                                                target: liveLogList
+                                                onWheel: function(event) {
+                                                    const nextY = liveLogList.contentY - (event.angleDelta.y / 120) * 48
+                                                    liveLogList.contentY = Math.max(0, Math.min(nextY, Math.max(0, liveLogList.contentHeight - liveLogList.height)))
+                                                    event.accepted = true
+                                                }
+                                            }
+                                            delegate: Rectangle {
+                                                width: ListView.view.width
+                                                height: logRow.implicitHeight + 12
+                                                radius: 12
+                                                color: root.panelAlt
+                                                border.color: root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    id: logRow
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 10
+                                                    Label { text: modelData.time || "--:--:--"; color: root.textDim; font.pixelSize: 12 }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 8
+                                                        Layout.preferredHeight: 8
+                                                        radius: 4
+                                                        color: modelData.level === "error" ? root.danger : modelData.level === "warning" ? root.warning : modelData.level === "success" ? root.success : root.info
+                                                    }
+                                                    Label {
+                                                        Layout.fillWidth: true
+                                                        text: modelData.message || ""
+                                                        color: root.textMain
+                                                        font.pixelSize: 13
+                                                        wrapMode: Text.WordWrap
                                                     }
                                                 }
                                             }
