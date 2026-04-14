@@ -10,7 +10,7 @@ import numpy as np
 from state_finder.main import get_state
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
-    save_brawler_data
+    save_brawler_data, reader
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
 
@@ -55,6 +55,7 @@ class StageManager:
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
         self.window_controller = window_controller
         self.lobby_start_enabled = True
+        self._awaiting_lobby_result_sync = False
 
     def _sync_active_brawler_progress(self):
         if not self.brawlers_pick_data:
@@ -63,6 +64,105 @@ class StageManager:
         active['trophies'] = self.Trophy_observer.current_trophies
         active['wins'] = self.Trophy_observer.current_wins
         active['win_streak'] = self.Trophy_observer.win_streak
+
+    @staticmethod
+    def validate_trophies(trophies_string):
+        trophies_string = str(trophies_string or "").lower()
+        replacements = {
+            "s": "5",
+            "o": "0",
+            "i": "1",
+            "l": "1",
+            "|": "1",
+            "b": "8",
+        }
+        for source, target in replacements.items():
+            trophies_string = trophies_string.replace(source, target)
+        numbers = ''.join(filter(str.isdigit, trophies_string))
+        if not numbers:
+            return False
+        return int(numbers)
+
+    def mark_match_started(self):
+        self._awaiting_lobby_result_sync = True
+
+    def _read_lobby_trophies(self, frame):
+        region = (self.lobby_config.get("lobby") or {}).get("trophy_observer")
+        if frame is None or not region or len(region) != 4:
+            return None
+
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        x, y, width, height = region
+        x1 = max(0, int(x * wr))
+        y1 = max(0, int(y * hr))
+        x2 = min(frame.shape[1], int((x + width) * wr))
+        y2 = min(frame.shape[0], int((y + height) * hr))
+        cropped = frame[y1:y2, x1:x2]
+        if cropped.size == 0:
+            return None
+
+        try:
+            ocr_result = reader.readtext(cropped)
+        except Exception as exc:
+            if debug:
+                print(f"Lobby trophy OCR failed: {exc}")
+            return None
+
+        baseline = int(self.Trophy_observer.current_trophies or self.brawlers_pick_data[0].get("trophies", 0) or 0)
+        candidates = []
+        for _bbox, text, _prob in ocr_result:
+            value = self.validate_trophies(text)
+            if value is not False:
+                candidates.append(int(value))
+
+        if not candidates:
+            return None
+
+        expected_values = {baseline}
+        try:
+            expected_values.add(max(0, baseline - int(self.Trophy_observer.calc_lost_decrement() or 0)))
+        except Exception:
+            pass
+        try:
+            expected_values.add(baseline + int(self.Trophy_observer.calc_win_increment() or 0))
+        except Exception:
+            pass
+
+        best = min(candidates, key=lambda value: min(abs(value - expected) for expected in expected_values))
+        best_delta = min(abs(best - expected) for expected in expected_values)
+        if best_delta > 35:
+            return None
+        return best
+
+    def _sync_lobby_result(self, frame):
+        if not self._awaiting_lobby_result_sync or not self.brawlers_pick_data:
+            return False
+
+        verified_trophies = self._read_lobby_trophies(frame)
+        if verified_trophies is None:
+            return False
+
+        current_trophies = int(self.Trophy_observer.current_trophies or self.brawlers_pick_data[0].get("trophies", 0) or 0)
+        if verified_trophies > current_trophies:
+            inferred_result = "victory"
+        elif verified_trophies < current_trophies:
+            inferred_result = "defeat"
+        else:
+            inferred_result = "draw"
+
+        applied = self._apply_match_result(inferred_result)
+        if not applied:
+            return False
+
+        if self.Trophy_observer.current_trophies != verified_trophies:
+            self.Trophy_observer.change_trophies(verified_trophies)
+        self._sync_active_brawler_progress()
+        save_brawler_data(self.brawlers_pick_data)
+        self._awaiting_lobby_result_sync = False
+        if debug:
+            print(f"Lobby result sync applied as '{inferred_result}' ({current_trophies} -> {verified_trophies})")
+        return True
 
     def _apply_match_result(self, game_result):
         if not self.brawlers_pick_data or not game_result:
@@ -85,6 +185,7 @@ class StageManager:
         self._sync_active_brawler_progress()
         self.brawlers_pick_data[0][type_to_push] = value
         save_brawler_data(self.brawlers_pick_data)
+        self._awaiting_lobby_result_sync = False
         return applied
 
     def set_lobby_start_enabled(self, enabled):
@@ -92,6 +193,7 @@ class StageManager:
 
     def start_game(self, data):
         print("state is lobby, starting game")
+        self._sync_lobby_result(data)
         values = {
             "trophies": self.Trophy_observer.current_trophies,
             "wins": self.Trophy_observer.current_wins

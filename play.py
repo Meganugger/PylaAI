@@ -1038,9 +1038,9 @@ class Play(Movement):
 
         data = self.validate_game_data(data)
         self.track_no_detections(data)
+        runtime_state = str(getattr(self, "_runtime_state", "") or "")
         if data:
             self.time_since_player_last_found = time.time()
-            runtime_state = str(getattr(self, "_runtime_state", "") or "")
             if runtime_state != "match":
                 should_recheck_state = (
                     current_time >= self._match_state_grace_until
@@ -1068,7 +1068,6 @@ class Play(Movement):
                 else:
                     self._runtime_state = "match"
         if not data:
-            runtime_state = str(getattr(self, "_runtime_state", "") or "")
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
@@ -1076,7 +1075,7 @@ class Play(Movement):
                 and (current_time - self._last_end_result_probe_time) >= 0.5
             ):
                 self._last_end_result_probe_time = current_time
-                game_result = find_game_result(self.window_controller.screenshot())
+                game_result = find_game_result(frame)
                 if game_result:
                     self._pending_end_result = game_result
                     self._runtime_state = f"end_{game_result}"
@@ -1087,7 +1086,7 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                current_state = get_state(self.window_controller.screenshot())
+                current_state = get_state(frame)
                 if isinstance(current_state, str) and current_state.startswith("end_"):
                     self._pending_end_result = current_state.split("_", 1)[1]
                     self._runtime_state = current_state

@@ -115,6 +115,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 state = get_state(frame)
                 self.current_state = state
                 self.Play._runtime_state = state
+                if state == "match":
+                    self.Stage_manager.mark_match_started()
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                 frame_data = frame if (state in self.states_requiring_frame_data or str(state).startswith("end_")) else None
@@ -201,6 +203,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 play_started_at = time.perf_counter()
                 self.Play.main(frame, brawler)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
+                if getattr(self.Play, "_runtime_state", "") == "match":
+                    self.Stage_manager.mark_match_started()
                 pending_result = getattr(self.Play, "_pending_end_result", None)
                 if pending_result:
                     end_state = f"end_{pending_result}"
