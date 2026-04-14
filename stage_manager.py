@@ -603,14 +603,14 @@ class StageManager:
             hr = self.window_controller.height_ratio or 1.0
             self.Trophy_observer.verify_lobby_trophies(lobby_screenshot, wr=wr, hr=hr)
             # Save if corrected
-                if self.Trophy_observer._corrections_log:
-                    if self._is_manual_trophy_locked():
-                        self._reset_to_manual_trophies()
-                        print("[VERIFY] Manual trophy lock active - skipped pre-match correction persistence")
-                    else:
-                        self._sync_active_brawler_progress()
-                        save_brawler_data(self.brawlers_pick_data)
-                        print(f"[VERIFY] Pre-match trophy correction saved")
+            if self.Trophy_observer._corrections_log:
+                if self._is_manual_trophy_locked():
+                    self._reset_to_manual_trophies()
+                    print("[VERIFY] Manual trophy lock active - skipped pre-match correction persistence")
+                else:
+                    self._sync_active_brawler_progress()
+                    save_brawler_data(self.brawlers_pick_data)
+                    print(f"[VERIFY] Pre-match trophy correction saved")
                 self.Trophy_observer._corrections_log.clear()  # Reset for this match
         except Exception as e:
             print(f"[VERIFY] Pre-match trophy check error: {e}")
