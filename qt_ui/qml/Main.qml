@@ -96,6 +96,15 @@ ApplicationWindow {
     function liveTotalKills() { return liveMetricNumber(liveValue("total_kills"), 0) }
     function liveTotalAssists() { return liveMetricNumber(liveValue("total_assists"), 0) }
     function liveTotalDamage() { return liveMetricNumber(liveValue("total_damage"), 0) }
+    function displayState(value) { return String(value || "ready").replace(/_/g, " ").toUpperCase() }
+    function liveWinRate() {
+        const matches = liveSessionMatches()
+        return matches > 0 ? Math.round((liveSessionVictories() * 100) / matches) + "%" : "0%"
+    }
+    function lineValue(value, suffix) {
+        const text = value === undefined || value === null || value === "" ? "0" : String(value)
+        return suffix ? text + suffix : text
+    }
     function comboItemText(model, index, role) {
         if (!model)
             return ""
@@ -287,6 +296,31 @@ ApplicationWindow {
         color: root.textMain
         font.pixelSize: 20
         font.bold: true
+    }
+
+    component SummaryTile: Rectangle {
+        property string label: ""
+        property string value: ""
+        property color valueColor: root.textMain
+        radius: 14
+        color: root.panelAlt
+        border.color: root.border
+        border.width: 1
+        implicitHeight: 84
+        Layout.fillWidth: true
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 14
+            spacing: 6
+            AppLabel { text: parent.parent.label; font.pixelSize: 12 }
+            Label {
+                text: parent.parent.value
+                color: parent.parent.valueColor
+                font.pixelSize: 24
+                font.bold: true
+                elide: Text.ElideRight
+            }
+        }
     }
 
     component AppButton: Button {
@@ -1171,7 +1205,7 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Match State" }
-                                            Label { text: String(live.state || "READY").toUpperCase(); color: (live.state || "").toLowerCase() === "match" ? root.success : root.textMain; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: displayState(live.state); color: (live.state || "").toLowerCase() === "match" ? root.success : root.textMain; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
                                             Label { text: "Current brawler: " + (live.brawler || "-"); color: root.textDim; font.pixelSize: 13; wrapMode: Text.WordWrap }
                                         }
                                     }
@@ -1202,47 +1236,63 @@ ApplicationWindow {
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 238
-                                    RowLayout {
+                                    implicitHeight: liveSummaryColumn.implicitHeight + 44
+                                    ColumnLayout {
+                                        id: liveSummaryColumn
                                         anchors.fill: parent
                                         anchors.margins: 22
-                                        spacing: 22
-                                        ColumnLayout {
-                                            Layout.fillWidth: true
-                                            Layout.fillHeight: true
-                                            spacing: 16
-                                            CardTitle { text: "Match Breakdown" }
-                                            Rectangle {
-                                                Layout.fillWidth: true
-                                                height: 1
-                                                color: root.border
-                                            }
-                                            GridLayout {
-                                                width: parent.width
-                                                columns: 2
-                                                columnSpacing: 20
-                                                rowSpacing: 14
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "KDA" } Label { text: liveCurrentDeaths() > 0 ? (liveCurrentKills() / Math.max(1, liveCurrentDeaths())).toFixed(2) : String(liveCurrentKills()); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "DMG / MIN" } Label { text: String(secondsSinceStart() > 0 ? Math.round(liveCurrentDamage() / Math.max(1, secondsSinceStart() / 60)) : 0); color: root.textMain; font.pixelSize: 24; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Match" } Label { text: liveCurrentKills() + "K / " + liveCurrentDeaths() + "D / " + liveCurrentAssists() + "A"; color: root.textMain; font.pixelSize: 20; font.bold: true } }
-                                                ColumnLayout { Layout.fillWidth: true; spacing: 4; AppLabel { text: "Current Damage" } Label { text: String(liveCurrentDamage()); color: root.textMain; font.pixelSize: 20; font.bold: true } }
-                                            }
-                                        }
+                                        spacing: 16
+                                        CardTitle { text: "Run Summary" }
                                         Rectangle {
-                                            Layout.preferredWidth: 1
-                                            Layout.fillHeight: true
+                                            Layout.fillWidth: true
+                                            height: 1
                                             color: root.border
                                         }
-                                        ColumnLayout {
-                                            Layout.preferredWidth: 280
-                                            Layout.fillHeight: true
-                                            spacing: 14
-                                            CardTitle { text: "Session Totals" }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "W / L / D" } Label { text: liveSessionVictories() + " / " + liveSessionDefeats() + " / " + liveSessionDraws(); color: root.textMain; font.pixelSize: 22; font.bold: true } }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "Session Matches" } Label { text: String(liveSessionMatches()); color: root.textMain; font.pixelSize: 18; font.bold: true } }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "Last Match" } Label { text: liveLastKills() + "K / " + liveLastAssists() + "A / " + liveLastDamage() + " DMG"; color: root.textMain; font.pixelSize: 18; font.bold: true; wrapMode: Text.WordWrap } }
-                                            ColumnLayout { spacing: 4; AppLabel { text: "Session Output" } Label { text: liveTotalKills() + "K / " + liveTotalAssists() + "A / " + liveTotalDamage() + " DMG"; color: root.textDim; font.pixelSize: 16; font.bold: true; wrapMode: Text.WordWrap } }
-                                            Label { visible: hasCapability("advanced_live"); text: "RL Episodes " + (live.rl_total_episodes || 0) + " | Buffer " + (live.rl_buffer_size || 0) + "/" + (live.rl_buffer_capacity || 0); color: root.gold; font.pixelSize: 14; wrapMode: Text.WordWrap }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: width >= 1080 ? 3 : 2
+                                            columnSpacing: 14
+                                            rowSpacing: 14
+                                            SummaryTile {
+                                                label: "Current Match"
+                                                value: liveCurrentKills() + "K / " + liveCurrentDeaths() + "D / " + liveCurrentAssists() + "A"
+                                            }
+                                            SummaryTile {
+                                                label: "Current Damage"
+                                                value: lineValue(liveCurrentDamage(), " DMG")
+                                            }
+                                            SummaryTile {
+                                                label: "Current Brawler"
+                                                value: String(live.brawler || "-").toUpperCase()
+                                            }
+                                            SummaryTile {
+                                                label: "Session Record"
+                                                value: liveSessionVictories() + " / " + liveSessionDefeats() + " / " + liveSessionDraws()
+                                            }
+                                            SummaryTile {
+                                                label: "Session Matches"
+                                                value: String(liveSessionMatches())
+                                            }
+                                            SummaryTile {
+                                                label: "Win Rate"
+                                                value: liveWinRate()
+                                                valueColor: root.gold
+                                            }
+                                            SummaryTile {
+                                                label: "Last Match"
+                                                value: liveLastKills() + "K / " + liveLastAssists() + "A / " + liveLastDamage() + " DMG"
+                                            }
+                                            SummaryTile {
+                                                label: "Session Output"
+                                                value: liveTotalKills() + "K / " + liveTotalAssists() + "A / " + liveTotalDamage() + " DMG"
+                                            }
+                                            SummaryTile {
+                                                label: hasCapability("advanced_live") ? "RL Buffer" : "Playstyle"
+                                                value: hasCapability("advanced_live")
+                                                    ? (live.rl_buffer_size || 0) + " / " + (live.rl_buffer_capacity || 0)
+                                                    : String(live.playstyle || "standard").toUpperCase()
+                                                valueColor: hasCapability("advanced_live") ? root.gold : root.textMain
+                                            }
                                         }
                                     }
                                 }
@@ -1275,7 +1325,7 @@ ApplicationWindow {
                                             }
                                             delegate: Rectangle {
                                                 width: ListView.view.width
-                                                implicitHeight: Math.max(42, logRow.implicitHeight + 16)
+                                                implicitHeight: 46
                                                 radius: 12
                                                 color: root.panelAlt
                                                 border.color: root.border
@@ -1283,10 +1333,10 @@ ApplicationWindow {
                                                 RowLayout {
                                                     id: logRow
                                                     anchors.fill: parent
-                                                    anchors.margins: 12
+                                                    anchors.margins: 0
                                                     spacing: 14
                                                     Text {
-                                                        Layout.preferredWidth: 64
+                                                        Layout.preferredWidth: 82
                                                         Layout.alignment: Qt.AlignVCenter
                                                         horizontalAlignment: Text.AlignHCenter
                                                         verticalAlignment: Text.AlignVCenter
@@ -1309,9 +1359,9 @@ ApplicationWindow {
                                                         text: modelData.message || ""
                                                         color: root.textMain
                                                         font.pixelSize: 13
-                                                        wrapMode: Text.NoWrap
+                                                        wrapMode: Text.WordWrap
                                                         elide: Text.ElideRight
-                                                        height: 18
+                                                        height: 20
                                                         verticalAlignment: Text.AlignVCenter
                                                     }
                                                     Rectangle {
