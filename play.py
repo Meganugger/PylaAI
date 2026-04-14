@@ -5531,6 +5531,8 @@ class Play(Movement):
 
     def _show_debug_overlay(self, frame, data, movement, brawler, stats_info=None):
         """Show a live debug window with bounding boxes, target info, and stats."""
+        if not debug:
+            return
         try:
             now = time.time()
             if now - self._last_debug_time < 0.5:

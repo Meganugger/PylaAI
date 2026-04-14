@@ -134,6 +134,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.current_ips = 0.0
             self.last_console_stats_time = 0
             self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
+            self._last_roster_signature = None
+            self._last_roster_push_time = 0.0
+            self._last_live_exception_time = 0.0
             self._out_of_match_since = 0.0
             self._out_of_match_latched = False
             self._last_match_phase_reset_time = 0.0
@@ -462,157 +465,182 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     self.Play.main(frame, brawler)
                     c += 1
 
-                    # push live data to the dashboard (throttled to ~5 Hz)
-                    _now = time.time()
-                    if _now - getattr(self, '_last_live_push', 0) < 0.2:
-                        continue  # skip this frame's push
-                    self._last_live_push = _now
-
                     tobs = self.Stage_manager.Trophy_observer
                     bname = brawler
                     hist = tobs.match_history.get(bname, {})
-                    all_brawler_stats = getattr(tobs, 'brawler_stats', {}) or {}
-                    brawler_perf = (
-                        all_brawler_stats.get(bname, {})
-                        or all_brawler_stats.get(str(bname).lower(), {})
-                        or all_brawler_stats.get(str(bname).upper(), {})
-                    )
-                    bt = getattr(self.Play, '_bt_combat', None)
-                    rc = getattr(bt, '_reward_calculator', None) if bt else None
-                    trainer = getattr(bt, '_rl_trainer', None) if bt else None
-                    rl_summary = {}
-                    if rc and hasattr(rc, 'episode_summary'):
-                        try:
-                            rl_summary = rc.episode_summary() or {}
-                        except Exception:
-                            rl_summary = {}
-                    rl_buffer_size = 0
-                    rl_buffer_capacity = 0
-                    if trainer and getattr(trainer, 'buffer', None) is not None:
-                        try:
-                            rl_buffer_size = len(trainer.buffer)
-                            rl_buffer_capacity = int(getattr(trainer.buffer, 'max_size', 0) or 0)
-                        except Exception:
-                            rl_buffer_size = 0
-                            rl_buffer_capacity = 0
+                    # push live data to the dashboard (throttled to ~5 Hz)
+                    _now = time.time()
+                    should_push_live = (_now - getattr(self, '_last_live_push', 0)) >= 0.2
+                    if should_push_live:
+                        self._last_live_push = _now
 
-                    play_kills = int(getattr(self.Play, '_enemies_killed_this_match', 0) or 0)
-                    play_deaths = int(getattr(self.Play, '_death_count', 0) or 0)
-                    bt_damage = float(getattr(bt, '_session_damage_dealt', 0.0) if bt else 0.0)
-                    rl_kills_live = int(rl_summary.get('kills', 0) or 0)
-                    rl_deaths_live = int(rl_summary.get('deaths', 0) or 0)
-                    rl_damage_live = float(rl_summary.get('damage_dealt', 0.0) or 0.0)
+                        all_brawler_stats = getattr(tobs, 'brawler_stats', {}) or {}
+                        brawler_perf = (
+                            all_brawler_stats.get(bname, {})
+                            or all_brawler_stats.get(str(bname).lower(), {})
+                            or all_brawler_stats.get(str(bname).upper(), {})
+                        )
+                        bt = getattr(self.Play, '_bt_combat', None)
+                        rc = getattr(bt, '_reward_calculator', None) if bt else None
+                        trainer = getattr(bt, '_rl_trainer', None) if bt else None
+                        rl_summary = {}
+                        if rc and hasattr(rc, 'episode_summary'):
+                            try:
+                                rl_summary = rc.episode_summary() or {}
+                            except Exception:
+                                rl_summary = {}
+                        rl_buffer_size = 0
+                        rl_buffer_capacity = 0
+                        if trainer and getattr(trainer, 'buffer', None) is not None:
+                            try:
+                                rl_buffer_size = len(trainer.buffer)
+                                rl_buffer_capacity = int(getattr(trainer.buffer, 'max_size', 0) or 0)
+                            except Exception:
+                                rl_buffer_size = 0
+                                rl_buffer_capacity = 0
 
-                    current_kills_live = max(play_kills, rl_kills_live)
-                    current_deaths_live = max(play_deaths, rl_deaths_live)
-                    current_damage_live = int(max(bt_damage, rl_damage_live))
-                    if hasattr(tobs, 'update_live_match_stats'):
-                        try:
-                            tobs.update_live_match_stats(
-                                bname,
-                                kills=current_kills_live,
-                                assists=0,
-                                damage=current_damage_live,
-                                deaths=current_deaths_live,
-                            )
-                        except Exception:
-                            pass
-                    session_stats = getattr(tobs, 'session_stats', {}) or {}
+                        play_kills = int(getattr(self.Play, '_enemies_killed_this_match', 0) or 0)
+                        play_deaths = int(getattr(self.Play, '_death_count', 0) or 0)
+                        bt_damage = float(getattr(bt, '_session_damage_dealt', 0.0) if bt else 0.0)
+                        rl_kills_live = int(rl_summary.get('kills', 0) or 0)
+                        rl_deaths_live = int(rl_summary.get('deaths', 0) or 0)
+                        rl_damage_live = float(rl_summary.get('damage_dealt', 0.0) or 0.0)
 
-                    perf_source_parts = []
-                    if bt and bt_damage > 0:
-                        perf_source_parts.append("BT")
-                    if rl_damage_live > 0 or rl_kills_live > 0 or rl_deaths_live > 0:
-                        perf_source_parts.append("RL")
-                    if play_kills > 0 or play_deaths > 0:
-                        perf_source_parts.append("PLAY")
-                    perf_source = "+".join(perf_source_parts) if perf_source_parts else "INIT"
+                        current_kills_live = max(play_kills, rl_kills_live)
+                        current_deaths_live = max(play_deaths, rl_deaths_live)
+                        current_damage_live = int(max(bt_damage, rl_damage_live))
+                        if hasattr(tobs, 'update_live_match_stats'):
+                            try:
+                                tobs.update_live_match_stats(
+                                    bname,
+                                    kills=current_kills_live,
+                                    assists=0,
+                                    damage=current_damage_live,
+                                    deaths=current_deaths_live,
+                                )
+                            except Exception:
+                                pass
+                        session_stats = getattr(tobs, 'session_stats', {}) or {}
 
-                    global _active_dashboard
-                    if _active_dashboard is not None:
-                        try:
+                        perf_source_parts = []
+                        if bt and bt_damage > 0:
+                            perf_source_parts.append("BT")
+                        if rl_damage_live > 0 or rl_kills_live > 0 or rl_deaths_live > 0:
+                            perf_source_parts.append("RL")
+                        if play_kills > 0 or play_deaths > 0:
+                            perf_source_parts.append("PLAY")
+                        perf_source = "+".join(perf_source_parts) if perf_source_parts else "INIT"
+
+                        global _active_dashboard
+                        if _active_dashboard is not None:
                             current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
-                            _active_dashboard.sync_runtime_roster(
-                                self.Stage_manager.brawlers_pick_data,
-                                emit_history=current_match_counter != self._last_dashboard_match_counter,
+                            roster_signature = tuple(
+                                (
+                                    str(entry.get('brawler', '')),
+                                    int(entry.get('trophies', 0) or 0),
+                                    int(entry.get('wins', 0) or 0),
+                                    int(entry.get('win_streak', 0) or 0),
+                                    int(entry.get('push_until', 0) or 0),
+                                    str(entry.get('type', 'trophies') or 'trophies'),
+                                    bool(entry.get('automatically_pick', True)),
+                                    bool(entry.get('manual_trophies', False)),
+                                )
+                                for entry in (self.Stage_manager.brawlers_pick_data or [])
+                                if isinstance(entry, dict)
                             )
-                            self._last_dashboard_match_counter = current_match_counter
-                            _active_dashboard.update_live(
-                                start_time=self.start_time,
-                                ips=self.current_ips,
-                                state=self.state or 'starting',
-                                brawler=bname,
-                                trophies=tobs.current_trophies,
-                                target=target_val,
-                                victories=hist.get('victory', 0),
-                                defeats=hist.get('defeat', 0),
-                                draws=hist.get('draw', 0),
-                                streak=tobs.win_streak,
-                                game_mode=self.Play.game_mode_name if self.Play.game_mode_name != 'unknown' else (self.Stage_manager.detected_game_mode or ''),
-                                playstyle='hold' if self.Play.must_brawler_hold_attack(bname, self.Play.brawlers_info) else 'tap',
-                                player_hp=self.Play.player_hp_percent,
-                                enemy_hp=self.Play.enemy_hp_percent,
-                                hp_confidence_player=getattr(self.Play, '_hp_confidence_player', 1.0),
-                                hp_confidence_enemy=getattr(self.Play, '_hp_confidence_enemy', 1.0),
-                                is_dead=self.Play._is_dead,
-                                target_name=self.Play.target_info.get('name'),
-                                target_hp=self.Play.target_info.get('hp', -1),
-                                n_enemies=self.Play.target_info.get('n_enemies', 0),
-                                enemies=1 if (time.time() - self.Play.time_since_detections.get('enemy', 0)) < 0.5 else 0,
-                                movement=self.Play.last_movement,
-                                walls=len(self.Play.last_walls_data),
-                                gadget_ready=self.Play.is_gadget_ready,
-                                super_ready=self.Play.is_super_ready,
-                                hypercharge_ready=self.Play.is_hypercharge_ready,
-                                decision=self.Play.last_decision_reason,
-                                ammo=self.Play._ammo,
-                                our_score=self.Play._our_score,
-                                their_score=self.Play._their_score,
-                                score_diff=self.Play._score_diff,
-                                deaths=self.Play._death_count,
-                                # Current match stats (live during match)
-                                current_kills=current_kills_live,
-                                current_deaths=current_deaths_live,
-                                current_assists=0,
-                                current_damage=current_damage_live,
-                                kills=current_kills_live,
-                                assists=0,
-                                damage=current_damage_live,
-                                match_active=(self.state == 'match'),
-                                perf_source=perf_source,
-                                # Session totals (updated at end of each match)
-                                total_kills=session_stats.get('total_kills', 0),
-                                total_assists=session_stats.get('total_assists', 0),
-                                total_damage=session_stats.get('total_damage', 0),
-                                total_matches=session_stats.get('total_matches', 0),
-                                session_matches=session_stats.get('total_matches', 0),
-                                session_victories=session_stats.get('victories', 0),
-                                session_defeats=session_stats.get('defeats', 0),
-                                session_draws=session_stats.get('draws', 0),
-                                last_kills=session_stats.get('last_match_kills', 0),
-                                last_assists=session_stats.get('last_match_assists', 0),
-                                last_damage=session_stats.get('last_match_damage', 0),
-                                avg_kills=brawler_perf.get('avg_kills', 0),
-                                avg_assists=brawler_perf.get('avg_assists', 0),
-                                avg_damage=brawler_perf.get('avg_damage', 0),
-                                # Trophy farm info
-                                farm_mode=self.Stage_manager.smart_trophy_farm,
-                                farm_remaining=len(self.Stage_manager.brawlers_pick_data),
-                                # Live RL info
-                                rl_training_enabled=trainer is not None,
-                                rl_total_episodes=int(getattr(trainer, 'total_episodes', 0) if trainer else 0),
-                                rl_total_updates=int(getattr(trainer, 'total_updates', 0) if trainer else 0),
-                                rl_buffer_size=int(rl_buffer_size),
-                                rl_buffer_capacity=int(rl_buffer_capacity),
-                                rl_episode_reward=float(rl_summary.get('total_reward', 0.0) or 0.0),
-                                rl_kills=int(rl_summary.get('kills', 0) or 0),
-                                rl_deaths=int(rl_summary.get('deaths', 0) or 0),
-                                rl_damage_dealt=int(rl_summary.get('damage_dealt', 0) or 0),
-                                rl_damage_taken=int(rl_summary.get('damage_taken', 0) or 0),
-                                rl_hit_rate=float(rl_summary.get('hit_rate', -1) or -1),
+                            should_sync_roster = (
+                                roster_signature != self._last_roster_signature
+                                or current_match_counter != self._last_dashboard_match_counter
+                                or (_now - self._last_roster_push_time) >= 2.0
                             )
-                        except Exception:
-                            pass
+                            if should_sync_roster:
+                                try:
+                                    _active_dashboard.sync_runtime_roster(
+                                        self.Stage_manager.brawlers_pick_data,
+                                        emit_history=current_match_counter != self._last_dashboard_match_counter,
+                                    )
+                                    self._last_roster_signature = roster_signature
+                                    self._last_roster_push_time = _now
+                                    self._last_dashboard_match_counter = current_match_counter
+                                except Exception as _roster_exc:
+                                    if _now - self._last_live_exception_time >= 5.0:
+                                        print(f"[LIVE] Roster sync error: {_roster_exc}")
+                                        self._last_live_exception_time = _now
+                            try:
+                                _active_dashboard.update_live(
+                                    start_time=self.start_time,
+                                    ips=self.current_ips,
+                                    state=self.state or 'starting',
+                                    brawler=bname,
+                                    trophies=tobs.current_trophies,
+                                    target=target_val,
+                                    victories=hist.get('victory', 0),
+                                    defeats=hist.get('defeat', 0),
+                                    draws=hist.get('draw', 0),
+                                    streak=tobs.win_streak,
+                                    game_mode=self.Play.game_mode_name if self.Play.game_mode_name != 'unknown' else (self.Stage_manager.detected_game_mode or ''),
+                                    playstyle='hold' if self.Play.must_brawler_hold_attack(bname, self.Play.brawlers_info) else 'tap',
+                                    player_hp=self.Play.player_hp_percent,
+                                    enemy_hp=self.Play.enemy_hp_percent,
+                                    hp_confidence_player=getattr(self.Play, '_hp_confidence_player', 1.0),
+                                    hp_confidence_enemy=getattr(self.Play, '_hp_confidence_enemy', 1.0),
+                                    is_dead=self.Play._is_dead,
+                                    target_name=self.Play.target_info.get('name'),
+                                    target_hp=self.Play.target_info.get('hp', -1),
+                                    n_enemies=self.Play.target_info.get('n_enemies', 0),
+                                    enemies=1 if (time.time() - self.Play.time_since_detections.get('enemy', 0)) < 0.5 else 0,
+                                    movement=self.Play.last_movement,
+                                    walls=len(self.Play.last_walls_data),
+                                    gadget_ready=self.Play.is_gadget_ready,
+                                    super_ready=self.Play.is_super_ready,
+                                    hypercharge_ready=self.Play.is_hypercharge_ready,
+                                    decision=self.Play.last_decision_reason,
+                                    ammo=self.Play._ammo,
+                                    our_score=self.Play._our_score,
+                                    their_score=self.Play._their_score,
+                                    score_diff=self.Play._score_diff,
+                                    deaths=self.Play._death_count,
+                                    current_kills=current_kills_live,
+                                    current_deaths=current_deaths_live,
+                                    current_assists=0,
+                                    current_damage=current_damage_live,
+                                    kills=current_kills_live,
+                                    assists=0,
+                                    damage=current_damage_live,
+                                    match_active=(self.state == 'match'),
+                                    perf_source=perf_source,
+                                    total_kills=session_stats.get('total_kills', 0),
+                                    total_assists=session_stats.get('total_assists', 0),
+                                    total_damage=session_stats.get('total_damage', 0),
+                                    total_matches=session_stats.get('total_matches', 0),
+                                    session_matches=session_stats.get('total_matches', 0),
+                                    session_victories=session_stats.get('victories', 0),
+                                    session_defeats=session_stats.get('defeats', 0),
+                                    session_draws=session_stats.get('draws', 0),
+                                    last_kills=session_stats.get('last_match_kills', 0),
+                                    last_assists=session_stats.get('last_match_assists', 0),
+                                    last_damage=session_stats.get('last_match_damage', 0),
+                                    avg_kills=brawler_perf.get('avg_kills', 0),
+                                    avg_assists=brawler_perf.get('avg_assists', 0),
+                                    avg_damage=brawler_perf.get('avg_damage', 0),
+                                    farm_mode=self.Stage_manager.smart_trophy_farm,
+                                    farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                                    rl_training_enabled=trainer is not None,
+                                    rl_total_episodes=int(getattr(trainer, 'total_episodes', 0) if trainer else 0),
+                                    rl_total_updates=int(getattr(trainer, 'total_updates', 0) if trainer else 0),
+                                    rl_buffer_size=int(rl_buffer_size),
+                                    rl_buffer_capacity=int(rl_buffer_capacity),
+                                    rl_episode_reward=float(rl_summary.get('total_reward', 0.0) or 0.0),
+                                    rl_kills=int(rl_summary.get('kills', 0) or 0),
+                                    rl_deaths=int(rl_summary.get('deaths', 0) or 0),
+                                    rl_damage_dealt=int(rl_summary.get('damage_dealt', 0) or 0),
+                                    rl_damage_taken=int(rl_summary.get('damage_taken', 0) or 0),
+                                    rl_hit_rate=float(rl_summary.get('hit_rate', -1) or -1),
+                                )
+                            except Exception as _live_exc:
+                                if _now - self._last_live_exception_time >= 5.0:
+                                    print(f"[LIVE] Dashboard update error: {_live_exc}")
+                                    self._last_live_exception_time = _now
 
                     # --- ADAPTIVE AGGRESSION based on win rate ---
                     total_games = hist.get('victory', 0) + hist.get('defeat', 0) + hist.get('draw', 0)
