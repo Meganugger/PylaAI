@@ -111,7 +111,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.current_state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
-                frame_data = frame if state in self.states_requiring_frame_data else None
+                frame_data = frame if (state in self.states_requiring_frame_data or str(state).startswith("end_")) else None
                 self.Stage_manager.do_state(state, frame_data)
 
             if self.Time_management.no_detections_check():
