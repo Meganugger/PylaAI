@@ -8,10 +8,10 @@ import cv2
 import numpy as np
 import requests
 
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from trophy_observer import TrophyObserver
 from utils import find_template_center, extract_text_and_positions, load_toml_as_dict, async_notify_user, \
-    save_brawler_data
+    save_brawler_data, reader, to_bgr_array
 
 from difflib import SequenceMatcher
 
@@ -172,6 +172,13 @@ class StageManager:
         self.dynamic_rotation_every = int(_bot_cfg.get("dynamic_rotation_every", 20))
         # Flag set by end_game when a brawler switch is queued for the next lobby visit
         self._pending_brawler_switch = False
+        self._awaiting_lobby_result_sync = False
+        self._result_applied_for_active_match = False
+        self._match_in_progress = False
+        self._lobby_sync_started_at = 0.0
+        self._pending_verified_result = None
+        self._api_lobby_sync_attempts = 0
+        self._last_api_lobby_sync_attempt_at = 0.0
 
     def start_brawl_stars(self, frame):
         data = extract_text_and_positions(np.asarray(frame))
@@ -187,16 +194,21 @@ class StageManager:
 
     @staticmethod
     def validate_trophies(trophies_string):
-        trophies_string = trophies_string.lower()
-        while "s" in trophies_string:
-            trophies_string = trophies_string.replace("s", "5")
+        trophies_string = str(trophies_string or "").lower()
+        replacements = {
+            "s": "5",
+            "o": "0",
+            "i": "1",
+            "l": "1",
+            "|": "1",
+            "b": "8",
+        }
+        for source, target in replacements.items():
+            trophies_string = trophies_string.replace(source, target)
         numbers = ''.join(filter(str.isdigit, trophies_string))
-
         if not numbers:
             return False
-
-        trophy_value = int(numbers)
-        return trophy_value
+        return int(numbers)
 
     def _pick_next_farm_brawler(self):
         """Smart Trophy Farm: re-sort remaining brawlers and pick the best next one."""
@@ -352,20 +364,96 @@ class StageManager:
             attempts += 1
 
     def _read_lobby_trophies(self, screenshot):
-        """Read trophy text from the lobby screen."""
+        region = (self.lobby_config.get("lobby") or {}).get("trophy_observer")
+        if screenshot is None:
+            return None
+        if not region or len(region) != 4:
+            try:
+                wr = self.window_controller.width_ratio or 1.0
+                hr = self.window_controller.height_ratio or 1.0
+                region = (
+                    int(140 * wr),
+                    int(10 * hr),
+                    int(380 * wr),
+                    int(60 * hr),
+                )
+                frame = to_bgr_array(screenshot)
+                cropped = frame[region[1]:region[3], region[0]:region[2]]
+            except Exception:
+                return None
+        else:
+            try:
+                frame = to_bgr_array(screenshot)
+            except Exception:
+                return None
+            wr = self.window_controller.width_ratio or 1.0
+            hr = self.window_controller.height_ratio or 1.0
+            x, y, width, height = region
+            pad_x = max(8, int(width * wr * 0.16))
+            pad_y = max(6, int(height * hr * 0.20))
+            x1 = max(0, int(x * wr) - pad_x)
+            y1 = max(0, int(y * hr) - pad_y)
+            x2 = min(frame.shape[1], int((x + width) * wr) + pad_x)
+            y2 = min(frame.shape[0], int((y + height) * hr) + pad_y)
+            cropped = frame[y1:y2, x1:x2]
+
+        if cropped.size == 0:
+            return None
+
+        baseline = int(self.Trophy_observer.current_trophies or self.brawlers_pick_data[0].get("trophies", 0) or 0)
+        candidates = []
+        variants = [cropped]
         try:
-            wr = self.window_controller.width_ratio
-            hr = self.window_controller.height_ratio
-            region = (int(140 * wr), int(10 * hr), int(380 * wr), int(60 * hr))
-            crop = np.asarray(screenshot.crop(region))
-            data = extract_text_and_positions(crop)
-            for key in data:
-                nums = ''.join(filter(str.isdigit, key))
-                if nums:
-                    return key
+            gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+            for scale in (2.0, 3.0):
+                resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                variants.append(resized)
+                _, thresh_dark = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                _, thresh_light = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                variants.extend([thresh_dark, thresh_light])
+                adaptive = cv2.adaptiveThreshold(
+                    resized,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    31,
+                    11,
+                )
+                variants.append(adaptive)
         except Exception:
             pass
-        return None
+
+        for variant in variants:
+            try:
+                ocr_result = reader.readtext(variant, allowlist="0123456789soibl|")
+            except TypeError:
+                ocr_result = reader.readtext(variant)
+            except Exception:
+                continue
+
+            for _bbox, text, _prob in ocr_result:
+                value = self.validate_trophies(text)
+                if value is not False:
+                    candidates.append(int(value))
+
+        if not candidates:
+            return None
+
+        expected_values = {baseline}
+        try:
+            expected_values.add(max(0, baseline - int(self.Trophy_observer.calc_lost_decrement() or 0)))
+        except Exception:
+            pass
+        try:
+            expected_values.add(baseline + int(self.Trophy_observer.calc_win_increment() or 0))
+        except Exception:
+            pass
+
+        best = min(candidates, key=lambda value: min(abs(value - expected) for expected in expected_values))
+        best_delta = min(abs(best - expected) for expected in expected_values)
+        if best_delta > 35:
+            return None
+        return best
 
     def _is_manual_trophy_locked(self):
         if not self.brawlers_pick_data:
@@ -388,8 +476,217 @@ class StageManager:
         active['wins'] = self.Trophy_observer.current_wins
         active['win_streak'] = self.Trophy_observer.win_streak
 
+    def mark_match_started(self):
+        if self._match_in_progress or self._awaiting_lobby_result_sync:
+            return False
+        if debug:
+            active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
+            print(f"[RESULT] mark_match_started for {active_name}")
+        self._match_in_progress = True
+        self._awaiting_lobby_result_sync = True
+        self._result_applied_for_active_match = False
+        self._lobby_sync_started_at = 0.0
+        self._pending_verified_result = None
+        self._api_lobby_sync_attempts = 0
+        self._last_api_lobby_sync_attempt_at = 0.0
+        if self.brawlers_pick_data:
+            self.Trophy_observer.begin_match(self.brawlers_pick_data[0]['brawler'])
+        return True
+
+    def _apply_or_defer_detected_result(self, game_result, source="detector"):
+        if not game_result:
+            return False
+        if game_result == "draw":
+            self._pending_verified_result = "draw"
+            print(f"[RESULT] deferring draw from {source} until lobby verification")
+            return True
+        self._pending_verified_result = None
+        return self._apply_match_result(game_result)
+
+    def _sync_lobby_result(self, frame):
+        if not self._awaiting_lobby_result_sync or not self.brawlers_pick_data:
+            return False
+
+        current_brawler = self.brawlers_pick_data[0]['brawler']
+        screenshot = frame
+        if screenshot is None:
+            try:
+                screenshot = self.window_controller.screenshot()
+            except Exception:
+                screenshot = None
+
+        verified_trophies = None
+        verification_source = None
+        elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else 0.0
+        has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
+        if has_api_settings and elapsed >= 1.0:
+            should_attempt_api = False
+            force_api = False
+            now = time.time()
+            if self._api_lobby_sync_attempts == 0:
+                should_attempt_api = True
+            elif (
+                self._api_lobby_sync_attempts == 1
+                and elapsed >= 2.5
+                and now - self._last_api_lobby_sync_attempt_at >= 1.25
+            ):
+                should_attempt_api = True
+                force_api = True
+            if should_attempt_api:
+                self._api_lobby_sync_attempts += 1
+                self._last_api_lobby_sync_attempt_at = now
+                verified_trophies = self.Trophy_observer.fetch_brawler_trophies_from_brawlstars_api(
+                    current_brawler,
+                    force=force_api,
+                    timeout=1.25,
+                )
+                if verified_trophies is not None:
+                    verification_source = "api"
+                    print(f"[RESULT] API fallback trophies for {current_brawler} -> {verified_trophies}")
+
+        if verified_trophies is None and (
+            not has_api_settings
+            or self._api_lobby_sync_attempts >= 2
+            or elapsed >= 3.5
+        ):
+            verified_trophies = self._read_lobby_trophies(screenshot)
+            verification_source = "ocr" if verified_trophies is not None else None
+            if verified_trophies is None:
+                if debug:
+                    print("[RESULT] lobby trophy OCR did not find a usable value")
+                return False
+
+        match_start_trophies = self.Trophy_observer.get_active_match_start_trophies(current_brawler)
+        if match_start_trophies is None:
+            match_start_trophies = int(self.brawlers_pick_data[0].get("trophies", 0) or 0)
+
+        if verification_source == "api" and verified_trophies == match_start_trophies:
+            elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else 0.0
+            if elapsed < 2.0:
+                if debug:
+                    print("[RESULT] API fallback still matches start trophies; waiting before resolving draw")
+                return False
+
+        if verified_trophies > match_start_trophies:
+            inferred_result = "victory"
+        elif verified_trophies < match_start_trophies:
+            inferred_result = "defeat"
+        else:
+            inferred_result = "draw"
+
+        if not self._result_applied_for_active_match:
+            applied = self._apply_match_result(inferred_result)
+            if not applied:
+                return False
+
+        self.Trophy_observer.reconcile_verified_trophies(current_brawler, verified_trophies)
+        self._sync_active_brawler_progress()
+        save_brawler_data(self.brawlers_pick_data)
+        self._awaiting_lobby_result_sync = False
+        self._match_in_progress = False
+        self._lobby_sync_started_at = 0.0
+        self._pending_verified_result = None
+        self._api_lobby_sync_attempts = 0
+        self._last_api_lobby_sync_attempt_at = 0.0
+        if debug:
+            print(
+                f"Lobby result sync applied as '{inferred_result}' via {verification_source} "
+                f"({match_start_trophies} -> {verified_trophies})"
+            )
+        return True
+
+    def _apply_match_result(self, game_result):
+        if not self.brawlers_pick_data or not game_result:
+            return False
+        if self._result_applied_for_active_match:
+            if debug:
+                print(f"[RESULT] skipping duplicate apply for {game_result}")
+            return False
+
+        current_brawler = self.brawlers_pick_data[0]['brawler']
+        print(f"[RESULT] applying {game_result} for {current_brawler}")
+        applied = self.Trophy_observer.add_trophies(game_result, current_brawler)
+        self.Trophy_observer.add_win(game_result)
+        self.time_since_last_stat_change = time.time()
+
+        values = {
+            "trophies": self.Trophy_observer.current_trophies,
+            "wins": self.Trophy_observer.current_wins,
+        }
+        type_to_push = self.brawlers_pick_data[0]['type']
+        if type_to_push not in values:
+            type_to_push = "trophies"
+        value = values[type_to_push]
+
+        self._sync_active_brawler_progress()
+        self.brawlers_pick_data[0][type_to_push] = value
+        save_brawler_data(self.brawlers_pick_data)
+        self._result_applied_for_active_match = True
+        self._match_in_progress = False
+        print(f"[RESULT] applied={applied} value={value} type={type_to_push}")
+        return applied
+
     def start_game(self, data):
         print("state is lobby, starting game")
+
+        if self._awaiting_lobby_result_sync and not self._result_applied_for_active_match:
+            print("[RESULT] entering lobby fallback sync because no result was committed yet")
+            synced = False
+            if not self._lobby_sync_started_at:
+                self._lobby_sync_started_at = time.time()
+            direct_result = False
+            try:
+                if data is not None:
+                    direct_result = find_game_result(data)
+            except Exception:
+                direct_result = False
+            if direct_result:
+                print(f"[RESULT] lobby entry direct probe recovered {direct_result}")
+                self._apply_or_defer_detected_result(direct_result, source="lobby-entry")
+                synced = self._result_applied_for_active_match
+            sync_deadline = self._lobby_sync_started_at + 6.0
+            probe_frame = data
+            while not synced and time.time() < sync_deadline:
+                synced = self._sync_lobby_result(probe_frame)
+                if synced:
+                    break
+                time.sleep(0.35)
+                try:
+                    probe_frame = self.window_controller.screenshot()
+                except Exception:
+                    probe_frame = data
+                try:
+                    current_state = get_state(probe_frame)
+                except Exception:
+                    current_state = "lobby"
+                if isinstance(current_state, str) and current_state.startswith("end_"):
+                    self.end_game(probe_frame, current_state.split("_", 1)[1])
+                    probe_frame = None
+                    continue
+                if current_state != "lobby":
+                    break
+            if debug and not synced:
+                print("Lobby result sync did not resolve before next match start.")
+            if synced and self._awaiting_lobby_result_sync:
+                print("[RESULT] lobby fallback resolved after direct result commit; skipping OCR verification")
+                self._awaiting_lobby_result_sync = False
+                self._match_in_progress = False
+                self._lobby_sync_started_at = 0.0
+                self._pending_verified_result = None
+            if not synced:
+                if self._pending_verified_result:
+                    print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
+                    self._apply_match_result(self._pending_verified_result)
+                    self._pending_verified_result = None
+                self._awaiting_lobby_result_sync = False
+                self._match_in_progress = False
+                self._lobby_sync_started_at = 0.0
+        elif self._awaiting_lobby_result_sync:
+            print("[RESULT] lobby reached after direct result commit; skipping OCR fallback")
+            self._awaiting_lobby_result_sync = False
+            self._match_in_progress = False
+            self._lobby_sync_started_at = 0.0
+            self._pending_verified_result = None
 
         # quest Farm Mode: check if current brawler's quest is done
         type_of_push = self.brawlers_pick_data[0]['type']
@@ -416,15 +713,13 @@ class StageManager:
             # Verify trophies before starting
             try:
                 lobby_screenshot = self.window_controller.screenshot()
-                trophy_text = self._read_lobby_trophies(lobby_screenshot)
-                if trophy_text:
-                    verified = self.validate_trophies(trophy_text)
-                    if verified and isinstance(verified, int):
-                        if self._is_manual_trophy_locked():
-                            self._reset_to_manual_trophies()
-                        else:
-                            self.Trophy_observer.change_trophies(verified)
-                            self.brawlers_pick_data[0]['trophies'] = verified
+                verified = self._read_lobby_trophies(lobby_screenshot)
+                if verified is not None:
+                    if self._is_manual_trophy_locked():
+                        self._reset_to_manual_trophies()
+                    else:
+                        self.Trophy_observer.change_trophies(verified)
+                        self.brawlers_pick_data[0]['trophies'] = verified
             except Exception:
                 pass
 
@@ -706,7 +1001,7 @@ class StageManager:
 
         self.window_controller.press_continue()
 
-    def end_game(self, frame=None):
+    def _legacy_end_game(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
@@ -931,6 +1226,203 @@ class StageManager:
         except Exception as e:
             print(f"[VERIFY] Lobby trophy verification error: {e}")
 
+    def end_game(self, frame=None, known_result=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
+
+        found_game_result = False
+        observed_result_processed = False
+        result_post_processed = False
+        read_match_stats = False
+        current_state = get_state(screenshot)
+        print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
+        if known_result in {"victory", "defeat", "draw"}:
+            found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
+            current_state = f"end_{known_result}"
+
+        max_end_attempts = 30
+        end_attempts = 0
+        while str(current_state).startswith("end") and end_attempts < max_end_attempts:
+            state_result = None
+            if isinstance(current_state, str) and current_state.startswith("end_"):
+                state_result = current_state.split("_", 1)[1]
+
+            should_probe_result = (
+                not found_game_result
+                and (state_result is not None or time.time() - self.time_since_last_stat_change > 10)
+            )
+            if should_probe_result:
+                if state_result is not None:
+                    print(f"[RESULT] end_game state result probe -> {state_result}")
+                    found_game_result = state_result if self._apply_or_defer_detected_result(state_result, source="state-probe") else False
+                else:
+                    detected_result = self.Trophy_observer.find_game_result(
+                        screenshot,
+                        current_brawler=self.brawlers_pick_data[0]['brawler'],
+                        game_result=state_result,
+                    )
+                    if detected_result:
+                        found_game_result = (
+                            detected_result
+                            if self._apply_or_defer_detected_result(detected_result, source="ocr-fallback")
+                            else False
+                        )
+                        if detected_result == "draw" and not self._result_applied_for_active_match:
+                            print("[RESULT] OCR fallback detected draw; awaiting lobby verification")
+                self.time_since_last_stat_change = time.time()
+
+            if found_game_result and not observed_result_processed:
+                observed_result_processed = True
+                if self.brawlers_pick_data[0].get('type') == 'quest':
+                    if not hasattr(self, '_quest_matches_played'):
+                        self._quest_matches_played = {}
+                    bn = self.brawlers_pick_data[0]['brawler']
+                    self._quest_matches_played[bn] = self._quest_matches_played.get(bn, 0) + 1
+                    print(f"[QUEST] {bn.title()} match #{self._quest_matches_played[bn]} completed")
+
+            if self._result_applied_for_active_match and not result_post_processed:
+                result_post_processed = True
+                values = {
+                    "trophies": self.Trophy_observer.current_trophies,
+                    "wins": self.Trophy_observer.current_wins,
+                }
+                type_to_push = self.brawlers_pick_data[0]['type']
+                if type_to_push not in values:
+                    type_to_push = "trophies"
+                value = values[type_to_push]
+                self._sync_active_brawler_progress()
+                self.brawlers_pick_data[0][type_to_push] = value
+                save_brawler_data(self.brawlers_pick_data)
+                push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
+
+                if value == "" and type_to_push == "wins":
+                    value = 0
+                if push_current_brawler_till == "" and type_to_push == "wins":
+                    push_current_brawler_till = 300
+                if push_current_brawler_till == "" and type_to_push == "trophies":
+                    push_current_brawler_till = 1000
+
+                if value >= push_current_brawler_till:
+                    if len(self.brawlers_pick_data) <= 1:
+                        print(
+                            "Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
+                            "Bot will now pause itself until closed.")
+                        loop = asyncio.new_event_loop()
+                        asyncio.set_event_loop(loop)
+                        try:
+                            screenshot = self.window_controller.screenshot()
+                            loop.run_until_complete(
+                                asyncio.wait_for(async_notify_user("completed", screenshot), timeout=15))
+                        except Exception:
+                            pass
+                        finally:
+                            loop.close()
+                        if os.path.exists("latest_brawler_data.json"):
+                            os.remove("latest_brawler_data.json")
+                        print("Bot stopping: all targets completed.")
+                        self.window_controller.keys_up(list("wasd"))
+                        self.window_controller.close()
+                        sys.exit(0)
+                    elif self.smart_trophy_farm:
+                        print("[FARM] Target reached in end_game - rotating brawler immediately.")
+                        has_next = self._pick_next_farm_brawler()
+                        if has_next:
+                            self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
+                            self.Trophy_observer.current_wins = (
+                                self.brawlers_pick_data[0]['wins']
+                                if self.brawlers_pick_data[0]['wins'] != "" else 0
+                            )
+                            self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+                            save_brawler_data(self.brawlers_pick_data)
+                            self._pending_brawler_switch = True
+                            print(f"[FARM] Queued switch to {self.brawlers_pick_data[0]['brawler'].title()} for next lobby.")
+                elif (self.smart_trophy_farm and self.dynamic_rotation_enabled
+                        and len(self.brawlers_pick_data) > 1):
+                    mc = self.Trophy_observer.match_counter
+                    if mc > 0 and mc % self.dynamic_rotation_every == 0:
+                        print(f"[FARM] Dynamic rotation triggered after {mc} total matches.")
+                        switched = self._dynamic_rotate_to_lowest()
+                        if switched:
+                            self._pending_brawler_switch = True
+
+            if found_game_result and not read_match_stats:
+                try:
+                    wr = self.window_controller.width_ratio or 1.0
+                    hr = self.window_controller.height_ratio or 1.0
+                    self.Trophy_observer.read_end_screen_stats(
+                        screenshot,
+                        self.brawlers_pick_data[0]['brawler'],
+                        wr=wr, hr=hr
+                    )
+                    read_match_stats = True
+                except Exception as e:
+                    print(f"[END] Error reading match stats: {e}")
+
+            _, frame_time = self.window_controller.get_latest_frame()
+            if frame_time > 0 and (time.time() - frame_time) > self.window_controller.FRAME_STALE_TIMEOUT:
+                print("[END] Frame is stale, waiting for fresh feed before pressing Q...")
+                stale_wait_start = time.time()
+                feed_recovered = False
+                while (time.time() - stale_wait_start) < 15:
+                    time.sleep(1)
+                    _, frame_time = self.window_controller.get_latest_frame()
+                    if frame_time > 0 and (time.time() - frame_time) < self.window_controller.FRAME_STALE_TIMEOUT:
+                        print("[END] Feed recovered, resuming")
+                        feed_recovered = True
+                        break
+                if not feed_recovered:
+                    print("[END] Feed still stale after 15s, breaking out of end_game")
+                    break
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
+                continue
+
+            if (
+                self.play_again_on_win
+                and self._result_applied_for_active_match
+                and self.Trophy_observer._last_game_result == "victory"
+            ):
+                self.window_controller.press_key("F")
+                if debug:
+                    print("Victory - pressing F (Play Again)")
+            else:
+                self.window_controller.press_continue()
+                if debug:
+                    print("Game has ended, pressing Q")
+            time.sleep(1)
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+            end_attempts += 1
+
+        if end_attempts >= max_end_attempts:
+            print("End game screen stuck for too long, forcing continue")
+        print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
+        if debug:
+            print("Game has ended", current_state)
+
+        if (
+            self.play_again_on_win
+            and self._result_applied_for_active_match
+            and self.Trophy_observer._last_game_result == "victory"
+        ):
+            print("[PLAY-AGAIN] Waiting for new match to start...")
+            start_wait_time = time.time()
+            while time.time() - start_wait_time < 25:
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
+                if current_state == "match":
+                    print("[PLAY-AGAIN] New match started successfully!")
+                    self._awaiting_lobby_result_sync = False
+                    self._result_applied_for_active_match = False
+                    self._match_in_progress = False
+                    self._lobby_sync_started_at = 0.0
+                    self._pending_verified_result = None
+                    return
+                time.sleep(0.5)
+            print("[PLAY-AGAIN] Match did not start within 25s, pressing Q to return to lobby.")
+            self.window_controller.press_continue()
+            time.sleep(2)
+            self.window_controller.press_continue()
+
     def quit_shop(self):
         self.window_controller.click(100*self.window_controller.width_ratio, 60*self.window_controller.height_ratio)
 
@@ -968,13 +1460,19 @@ class StageManager:
         print("[STAGE] Trophy reward dismiss attempts completed")
 
     def do_state(self, state, data=None):
+        known_result = None
         if isinstance(state, str) and state.startswith("end_"):
+            known_result = state.split("_", 1)[1]
             state = "end"
         if state not in self.states:
             print(f"[STAGE] Unknown state '{state}', pressing back arrow as fallback.")
             wr = self.window_controller.width_ratio or 1.0
             hr = self.window_controller.height_ratio or 1.0
             self.window_controller.click(int(100 * wr), int(60 * hr))
+            return
+        if state == "end":
+            print(f"[RESULT] do_state -> end (known_result={known_result})")
+            self.states[state](data, known_result)
             return
         if data is not None:
             self.states[state](data)

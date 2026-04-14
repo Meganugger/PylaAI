@@ -25,10 +25,12 @@ region_data.setdefault("reward_claim_corner", [0, 0, 190, 120])
 debug = load_toml_as_dict("./cfg/general_config.toml").get("super_debug", "no") == "yes"
 _last_state_debug_value = None
 _last_state_debug_time = 0.0
-crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
+crop_region = region_data.get("end_result")
+if not crop_region:
+    crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
 
 
-def is_template_in_region(image, template_path, region):
+def template_score_in_region(image, template_path, region):
     current_height, current_width = image.shape[:2]
     orig_x, orig_y, orig_width, orig_height = region
     width_ratio = current_width / orig_screen_width
@@ -39,10 +41,16 @@ def is_template_in_region(image, template_path, region):
     new_width = int(orig_width * width_ratio)
     new_height = int(orig_height * height_ratio)
     cropped_image = image[new_y:new_y + new_height, new_x:new_x + new_width]
+    if cropped_image.size == 0:
+        return 0.0
     loaded_template = load_template(template_path, current_width, current_height)
     result = cv2.matchTemplate(cropped_image, loaded_template, cv2.TM_CCOEFF_NORMED)
     _, max_val, _, _ = cv2.minMaxLoc(result)
-    return max_val > 0.7
+    return float(max_val)
+
+
+def is_template_in_region(image, template_path, region, threshold=0.7):
+    return template_score_in_region(image, template_path, region) > threshold
 
 
 @lru_cache(maxsize=256)
@@ -59,13 +67,25 @@ def load_template(image_path, width, height):
 
 
 def find_game_result(screenshot):
-    if not isinstance(screenshot, np.ndarray):
-        raise TypeError("Expected a numpy.ndarray, but got {}".format(type(screenshot)))
-
+    screenshot_bgr = to_bgr_array(screenshot)
+    scores = {}
     for result_name in end_result_names:
         template_path = os.path.join(end_results_path, f"{result_name}.png")
-        if is_template_in_region(screenshot, template_path, crop_region):
-            return result_name
+        scores[result_name] = template_score_in_region(screenshot_bgr, template_path, crop_region)
+
+    best_result = max(scores, key=scores.get)
+    best_score = scores[best_result]
+    sorted_scores = sorted(scores.values(), reverse=True)
+    second_best = sorted_scores[1] if len(sorted_scores) > 1 else 0.0
+    margin = best_score - second_best
+
+    if best_result == "draw":
+        if best_score >= 0.78 and margin >= 0.05:
+            return "draw"
+        return False
+
+    if best_score >= 0.70 and margin >= 0.02:
+        return best_result
 
     return False
 

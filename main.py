@@ -11,9 +11,9 @@ from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
 from stage_manager import StageManager
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from time_management import TimeManagement
-from utils import FrameData, load_toml_as_dict, current_wall_model_is_latest, api_base_url, update_icons
+from utils import FrameData, load_toml_as_dict, current_wall_model_is_latest, api_base_url, update_icons, reader
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
     update_wall_model_classes, get_latest_wall_model_file, get_latest_version, cprint
 from window_controller import WindowController
@@ -92,6 +92,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._pause_event = external_pause_event if external_pause_event is not None else threading.Event()
             self.window_controller = WindowController()
             self.Play = Play(*self.load_models(), self.window_controller)
+            self.Play._runtime_state = "starting"
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
@@ -113,6 +114,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             # Register first brawler for session summary
             self.Stage_manager.Trophy_observer.start_session_brawler(
                 data[0]['brawler'], data[0].get('trophies', 0))
+            self._start_easyocr_warmup()
             self.state = None
             try:
                 self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
@@ -137,6 +139,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._last_roster_signature = None
             self._last_roster_push_time = 0.0
             self._last_live_exception_time = 0.0
+            self._last_fast_result_probe = 0.0
+            self._last_dashboard_history_revision = int(
+                getattr(self.Stage_manager.Trophy_observer, "history_revision", 0) or 0
+            )
             self._out_of_match_since = 0.0
             self._out_of_match_latched = False
             self._last_match_phase_reset_time = 0.0
@@ -150,6 +156,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
             self.Stage_manager.Trophy_observer.current_trophies = data[0]['trophies']
             self.Stage_manager.Trophy_observer.current_wins = data[0]['wins'] if data[0]['wins'] != "" else 0
+
+        @staticmethod
+        def _start_easyocr_warmup():
+            def warm():
+                reader.warm_up()
+
+            threading.Thread(target=warm, name="easyocr-warmup", daemon=True).start()
 
         def _start_hotkey_listener(self):
             """Poll F9 (stop), F8 (pause/resume), F7 (toggle overlay) via Windows API.
@@ -279,13 +292,41 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             sys.exit(1)
 
         def manage_time_tasks(self, frame):
+            now = time.time()
+            if (
+                str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+                and now - self._last_fast_result_probe >= 0.6
+            ):
+                self._last_fast_result_probe = now
+                fast_result = find_game_result(frame)
+                if fast_result:
+                    print(f"[RESULT] fast probe detected {fast_result} in manage_time_tasks")
+                    end_state = f"end_{fast_result}"
+                    self.state = end_state
+                    self.Play._runtime_state = end_state
+                    self.Stage_manager.do_state(end_state, frame)
+                    return
+
             if self.Time_management.state_check():
                 state = get_state(frame)
+                if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
+                    try:
+                        screenshot = self.window_controller.screenshot()
+                        confirmed_state = get_state(screenshot)
+                        if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
+                            state = confirmed_state
+                            frame = screenshot
+                        elif confirmed_state == "lobby":
+                            frame = screenshot
+                    except Exception:
+                        pass
                 self.state = state
+                self.Play._runtime_state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                     self._match_watchdog_start = 0.0  # reset watchdog
                 else:
+                    self.Stage_manager.mark_match_started()
                     # Track how long we've been continuously in 'match'
                     if self._match_watchdog_start <= 0:
                         self._match_watchdog_start = time.time()
@@ -463,6 +504,18 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self._out_of_match_latched = False
 
                     self.Play.main(frame, brawler)
+                    if getattr(self.Play, "_runtime_state", "") == "match":
+                        self.Stage_manager.mark_match_started()
+                    pending_result = getattr(self.Play, "_pending_end_result", None)
+                    if pending_result:
+                        print(f"[RESULT] play.py queued pending result {pending_result}")
+                        end_state = f"end_{pending_result}"
+                        self.Play._pending_end_result = None
+                        self.state = end_state
+                        self.Play._runtime_state = end_state
+                        self.Stage_manager.do_state(end_state, frame)
+                        c += 1
+                        continue
                     c += 1
 
                     tobs = self.Stage_manager.Trophy_observer
@@ -534,6 +587,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         global _active_dashboard
                         if _active_dashboard is not None:
                             current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
+                            current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
                             roster_signature = tuple(
                                 (
                                     str(entry.get('brawler', '')),
@@ -551,22 +605,33 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             should_sync_roster = (
                                 roster_signature != self._last_roster_signature
                                 or current_match_counter != self._last_dashboard_match_counter
+                                or current_history_revision != self._last_dashboard_history_revision
                                 or (_now - self._last_roster_push_time) >= 2.0
                             )
                             if should_sync_roster:
                                 try:
                                     _active_dashboard.sync_runtime_roster(
                                         self.Stage_manager.brawlers_pick_data,
-                                        emit_history=current_match_counter != self._last_dashboard_match_counter,
+                                        emit_history=(
+                                            current_match_counter != self._last_dashboard_match_counter
+                                            or current_history_revision != self._last_dashboard_history_revision
+                                        ),
                                     )
                                     self._last_roster_signature = roster_signature
                                     self._last_roster_push_time = _now
                                     self._last_dashboard_match_counter = current_match_counter
+                                    self._last_dashboard_history_revision = current_history_revision
                                 except Exception as _roster_exc:
                                     if _now - self._last_live_exception_time >= 5.0:
                                         print(f"[LIVE] Roster sync error: {_roster_exc}")
                                         self._last_live_exception_time = _now
                             try:
+                                session_victories = int(session_stats.get('victories', 0) or 0)
+                                session_defeats = int(session_stats.get('defeats', 0) or 0)
+                                session_draws = int(session_stats.get('draws', 0) or 0)
+                                session_matches = int(session_stats.get('total_matches', 0) or 0)
+                                if session_matches <= 0:
+                                    session_matches = current_match_counter
                                 _active_dashboard.update_live(
                                     start_time=self.start_time,
                                     ips=self.current_ips,
@@ -574,9 +639,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     brawler=bname,
                                     trophies=tobs.current_trophies,
                                     target=target_val,
-                                    victories=hist.get('victory', 0),
-                                    defeats=hist.get('defeat', 0),
-                                    draws=hist.get('draw', 0),
+                                    victories=session_victories,
+                                    defeats=session_defeats,
+                                    draws=session_draws,
                                     streak=tobs.win_streak,
                                     game_mode=self.Play.game_mode_name if self.Play.game_mode_name != 'unknown' else (self.Stage_manager.detected_game_mode or ''),
                                     playstyle='hold' if self.Play.must_brawler_hold_attack(bname, self.Play.brawlers_info) else 'tap',
@@ -595,7 +660,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     super_ready=self.Play.is_super_ready,
                                     hypercharge_ready=self.Play.is_hypercharge_ready,
                                     decision=self.Play.last_decision_reason,
-                                    ammo=self.Play._ammo,
+                                    ammo=getattr(self.Play, "current_ammo", getattr(self.Play, "_ammo", 0)),
                                     our_score=self.Play._our_score,
                                     their_score=self.Play._their_score,
                                     score_diff=self.Play._score_diff,
@@ -612,14 +677,20 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     total_kills=session_stats.get('total_kills', 0),
                                     total_assists=session_stats.get('total_assists', 0),
                                     total_damage=session_stats.get('total_damage', 0),
-                                    total_matches=session_stats.get('total_matches', 0),
-                                    session_matches=session_stats.get('total_matches', 0),
-                                    session_victories=session_stats.get('victories', 0),
-                                    session_defeats=session_stats.get('defeats', 0),
-                                    session_draws=session_stats.get('draws', 0),
+                                    total_matches=session_matches,
+                                    session_matches=session_matches,
+                                    session_victories=session_victories,
+                                    session_defeats=session_defeats,
+                                    session_draws=session_draws,
                                     last_kills=session_stats.get('last_match_kills', 0),
                                     last_assists=session_stats.get('last_match_assists', 0),
                                     last_damage=session_stats.get('last_match_damage', 0),
+                                    last_result=getattr(tobs, "last_match_result", None),
+                                    last_trophy_delta=getattr(tobs, "last_match_trophy_delta", 0),
+                                    last_trophy_delta_verified=getattr(tobs, "last_match_trophies_verified", False),
+                                    last_streak_bonus=getattr(tobs, "last_match_streak_bonus", 0),
+                                    last_underdog_bonus=getattr(tobs, "last_match_underdog_bonus", 0),
+                                    last_trophy_adjustment=getattr(tobs, "last_match_trophy_adjustment", 0),
                                     avg_kills=brawler_perf.get('avg_kills', 0),
                                     avg_assists=brawler_perf.get('avg_assists', 0),
                                     avg_damage=brawler_perf.get('avg_damage', 0),

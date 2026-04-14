@@ -5,6 +5,7 @@ import sys
 from io import BytesIO
 import ctypes
 import json
+import threading
 
 from runtime_threads import apply_process_thread_limits, configure_torch_threads
 
@@ -103,19 +104,32 @@ class DefaultEasyOCR:
     """Lazy-loading EasyOCR -- delays ~3-5s model load until first OCR call."""
     def __init__(self):
         self._reader = None
+        self._reader_lock = threading.Lock()
 
     def _ensure_loaded(self):
-        if self._reader is None:
+        if self._reader is not None:
+            return self._reader
+
+        with self._reader_lock:
+            if self._reader is not None:
+                return self._reader
             try:
                 import torch
                 configure_torch_threads(torch)
             except Exception:
                 pass
             self._reader = easyocr.Reader(['en'], gpu=False, verbose=False)
+        return self._reader
 
-    def readtext(self, image_input):
-        self._ensure_loaded()
-        return self._reader.readtext(image_input)
+    def readtext(self, image_input, *args, **kwargs):
+        return self._ensure_loaded().readtext(image_input, *args, **kwargs)
+
+    def warm_up(self):
+        try:
+            self._ensure_loaded()
+            return True
+        except Exception:
+            return False
 
 _CONFIG_DEFAULTS = {
     "cfg/general_config.toml": {
