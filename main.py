@@ -207,7 +207,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     self.Play._pending_end_result = None
                     self.current_state = end_state
                     self.Play._runtime_state = end_state
-                    self.Stage_manager.do_state(end_state, frame)
+                    self.Stage_manager.do_state(end_state)
                     c += 1
                     continue
                 c += 1

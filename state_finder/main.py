@@ -59,12 +59,11 @@ def load_template(image_path, width, height):
 
 
 def find_game_result(screenshot):
-    if not isinstance(screenshot, np.ndarray):
-        raise TypeError("Expected a numpy.ndarray, but got {}".format(type(screenshot)))
+    screenshot_bgr = to_bgr_array(screenshot)
 
     for result_name in end_result_names:
         template_path = os.path.join(end_results_path, f"{result_name}.png")
-        if is_template_in_region(screenshot, template_path, crop_region):
+        if is_template_in_region(screenshot_bgr, template_path, crop_region):
             return result_name
 
     return False

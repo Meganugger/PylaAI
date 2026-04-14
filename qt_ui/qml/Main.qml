@@ -262,53 +262,57 @@ ApplicationWindow {
         })
     }
     function applyStateToForms() {
+        const general = (state && state.general) ? state.general : ({})
+        const bot = (state && state.bot) ? state.bot : ({})
+        const timeCfg = (state && state.time) ? state.time : ({})
+        const loginState = (state && state.login) ? state.login : ({})
         if (!state.general) return
-        orientationBox.currentIndex = Math.max(0, ["vertical","horizontal"].indexOf(String(state.general.map_orientation || "vertical").toLowerCase()))
+        orientationBox.currentIndex = Math.max(0, ["vertical","horizontal"].indexOf(String(general.map_orientation || "vertical").toLowerCase()))
         settingsOrientation.currentIndex = orientationBox.currentIndex
-        timerField.text = String(state.general.run_for_minutes || 600)
+        timerField.text = String(general.run_for_minutes || 600)
         settingsTimer.text = timerField.text
         let emuIndex = 0
-        for (let emu = 0; emu < emulatorModel.count; ++emu) if (emulatorModel.get(emu).label === (state.general.current_emulator || "LDPlayer")) emuIndex = emu
+        for (let emu = 0; emu < emulatorModel.count; ++emu) if (emulatorModel.get(emu).label === (general.current_emulator || "LDPlayer")) emuIndex = emu
         emulatorBox.currentIndex = Math.max(0, emuIndex)
         settingsEmulator.currentIndex = Math.max(0, emuIndex)
-        let gm = String(state.bot.gamemode || "knockout")
+        let gm = String(bot.gamemode || "knockout")
         let idx = 0
         for (let i = 0; i < gamemodeModel.count; ++i) if (gamemodeModel.get(i).value === gm) idx = i
         modeBox.currentIndex = idx
-        maxIps.text = String(state.general.max_ips || "auto")
-        backendBox.currentIndex = Math.max(0, ["auto","cpu","gpu"].indexOf(String(state.general.cpu_or_gpu || "auto").toLowerCase()))
-        debugBox.checked = boolFrom(state.general.super_debug)
-        webhookField.text = String(state.general.personal_webhook || "")
-        discordField.text = String(state.general.discord_id || "")
-        bsApiField.text = String(state.general.brawlstars_api_key || "")
-        playerTagField.text = String(state.general.brawlstars_player_tag || "")
-        apiBaseField.text = String(state.general.api_base_url || "localhost")
-        packageField.text = String(state.general.brawlstars_package || "com.supercell.brawlstars")
-        portField.text = String(state.general.emulator_port || 5037)
-        autoPushField.text = String(state.general.auto_push_target_trophies || 1000)
-        pylaKey.text = String((state.login || {}).key || "")
-        minMove.text = String(state.bot.minimum_movement_delay || 0.08)
-        unstuckDelay.text = String(state.bot.unstuck_movement_delay || 1.5)
-        unstuckHold.text = String(state.bot.unstuck_movement_hold_time || 0.8)
-        wallConf.text = String(state.bot.wall_detection_confidence || 0.9)
-        entityConf.text = String(state.bot.entity_detection_confidence || 0.6)
-        holdAttack.text = String(state.bot.seconds_to_hold_attack_after_reaching_max || 1.5)
-        playAgain.checked = boolFrom(state.bot.play_again_on_win)
-        useGadgets.checked = boolFrom(state.bot.bot_uses_gadgets)
-        stateCheck.text = String(state.time.state_check || 5)
-        noDetect.text = String(state.time.no_detections || 10)
-        idleField.text = String(state.time.idle || 5)
-        gadgetField.text = String(state.time.gadget || 0.5)
-        hyperField.text = String(state.time.hypercharge || 1.0)
-        superField.text = String(state.time.super || 0.1)
-        wallField.text = String(state.time.wall_detection || 0.2)
-        noProceed.text = String(state.time.no_detection_proceed || 6.5)
-        crashCheck.text = String(state.time.check_if_brawl_stars_crashed || 10)
-        farmEnabled.checked = boolFrom(state.bot.smart_trophy_farm)
-        farmTarget.text = String(state.bot.trophy_farm_target || 500)
-        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(String(state.bot.trophy_farm_strategy || "lowest_first")))
-        questEnabled.checked = boolFrom(state.bot.quest_farm_enabled)
-        questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(state.bot.quest_farm_mode || "games")))
+        maxIps.text = String(general.max_ips || "auto")
+        backendBox.currentIndex = Math.max(0, ["auto","cpu","gpu"].indexOf(String(general.cpu_or_gpu || "auto").toLowerCase()))
+        debugBox.checked = boolFrom(general.super_debug)
+        webhookField.text = String(general.personal_webhook || "")
+        discordField.text = String(general.discord_id || "")
+        bsApiField.text = String(general.brawlstars_api_key || "")
+        playerTagField.text = String(general.brawlstars_player_tag || "")
+        apiBaseField.text = String(general.api_base_url || "localhost")
+        packageField.text = String(general.brawlstars_package || "com.supercell.brawlstars")
+        portField.text = String(general.emulator_port || 5037)
+        autoPushField.text = String(general.auto_push_target_trophies || 1000)
+        pylaKey.text = String(loginState.key || "")
+        minMove.text = String(bot.minimum_movement_delay || 0.08)
+        unstuckDelay.text = String(bot.unstuck_movement_delay || 1.5)
+        unstuckHold.text = String(bot.unstuck_movement_hold_time || 0.8)
+        wallConf.text = String(bot.wall_detection_confidence || 0.9)
+        entityConf.text = String(bot.entity_detection_confidence || 0.6)
+        holdAttack.text = String(bot.seconds_to_hold_attack_after_reaching_max || 1.5)
+        playAgain.checked = boolFrom(bot.play_again_on_win)
+        useGadgets.checked = boolFrom(bot.bot_uses_gadgets)
+        stateCheck.text = String(timeCfg.state_check || 5)
+        noDetect.text = String(timeCfg.no_detections || 10)
+        idleField.text = String(timeCfg.idle || 5)
+        gadgetField.text = String(timeCfg.gadget || 0.5)
+        hyperField.text = String(timeCfg.hypercharge || 1.0)
+        superField.text = String(timeCfg.super || 0.1)
+        wallField.text = String(timeCfg.wall_detection || 0.2)
+        noProceed.text = String(timeCfg.no_detection_proceed || 6.5)
+        crashCheck.text = String(timeCfg.check_if_brawl_stars_crashed || 10)
+        farmEnabled.checked = boolFrom(bot.smart_trophy_farm)
+        farmTarget.text = String(bot.trophy_farm_target || 500)
+        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(String(bot.trophy_farm_strategy || "lowest_first")))
+        questEnabled.checked = boolFrom(bot.quest_farm_enabled)
+        questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(bot.quest_farm_mode || "games")))
     }
 
     ListModel { id: excludeModel }
@@ -317,11 +321,14 @@ ApplicationWindow {
     ListModel { id: emulatorModel }
 
     function rebuildExcludeModels() {
+        const bot = (state && state.bot) ? state.bot : ({})
+        const trophyExcluded = bot.trophy_farm_excluded || []
+        const questExcluded = bot.quest_farm_excluded || []
         excludeModel.clear()
         questExcludeModel.clear()
         for (let i = 0; i < brawlers.length; ++i) {
-            excludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": (state.bot.trophy_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
-            questExcludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": (state.bot.quest_farm_excluded || []).indexOf(brawlers[i].name) !== -1})
+            excludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": trophyExcluded.indexOf(brawlers[i].name) !== -1})
+            questExcludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": questExcluded.indexOf(brawlers[i].name) !== -1})
         }
     }
 
