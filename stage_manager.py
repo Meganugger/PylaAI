@@ -96,10 +96,12 @@ class StageManager:
         wr = self.window_controller.width_ratio or 1.0
         hr = self.window_controller.height_ratio or 1.0
         x, y, width, height = region
-        x1 = max(0, int(x * wr))
-        y1 = max(0, int(y * hr))
-        x2 = min(frame.shape[1], int((x + width) * wr))
-        y2 = min(frame.shape[0], int((y + height) * hr))
+        pad_x = max(8, int(width * wr * 0.16))
+        pad_y = max(6, int(height * hr * 0.20))
+        x1 = max(0, int(x * wr) - pad_x)
+        y1 = max(0, int(y * hr) - pad_y)
+        x2 = min(frame.shape[1], int((x + width) * wr) + pad_x)
+        y2 = min(frame.shape[0], int((y + height) * hr) + pad_y)
         cropped = frame[y1:y2, x1:x2]
         if cropped.size == 0:
             return None
@@ -110,11 +112,21 @@ class StageManager:
         variants = [cropped]
         try:
             gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
-            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
-            variants.append(gray)
-            _, thresh_dark = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-            _, thresh_light = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
-            variants.extend([thresh_dark, thresh_light])
+            for scale in (2.0, 3.0):
+                resized = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+                variants.append(resized)
+                _, thresh_dark = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                _, thresh_light = cv2.threshold(resized, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+                variants.extend([thresh_dark, thresh_light])
+                adaptive = cv2.adaptiveThreshold(
+                    resized,
+                    255,
+                    cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+                    cv2.THRESH_BINARY,
+                    31,
+                    11,
+                )
+                variants.append(adaptive)
         except Exception:
             pass
 
@@ -157,10 +169,11 @@ class StageManager:
             return False
 
         screenshot = frame
-        try:
-            screenshot = self.window_controller.screenshot()
-        except Exception:
-            pass
+        if screenshot is None:
+            try:
+                screenshot = self.window_controller.screenshot()
+            except Exception:
+                screenshot = None
 
         verified_trophies = self._read_lobby_trophies(screenshot)
         if verified_trophies is None:
@@ -221,11 +234,27 @@ class StageManager:
         print("state is lobby, starting game")
         if self._awaiting_lobby_result_sync and not self._result_applied_for_active_match:
             synced = False
-            for _ in range(4):
-                synced = self._sync_lobby_result(data)
+            sync_deadline = time.time() + 4.0
+            probe_frame = data
+            while time.time() < sync_deadline:
+                synced = self._sync_lobby_result(probe_frame)
                 if synced:
                     break
-                time.sleep(0.25)
+                time.sleep(0.35)
+                try:
+                    probe_frame = self.window_controller.screenshot()
+                except Exception:
+                    probe_frame = data
+                try:
+                    current_state = get_state(probe_frame)
+                except Exception:
+                    current_state = "lobby"
+                if isinstance(current_state, str) and current_state.startswith("end_"):
+                    self.end_game(probe_frame, current_state.split("_", 1)[1])
+                    synced = self._result_applied_for_active_match
+                    break
+                if current_state != "lobby":
+                    break
             if debug and not synced:
                 print("Lobby result sync did not resolve before next match start.")
         values = {

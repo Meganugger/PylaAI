@@ -1481,10 +1481,13 @@ ApplicationWindow {
                                                 RowLayout {
                                                     id: logRow
                                                     anchors.fill: parent
-                                                    anchors.margins: 0
-                                                    spacing: 14
+                                                    anchors.leftMargin: 12
+                                                    anchors.rightMargin: 12
+                                                    anchors.topMargin: 6
+                                                    anchors.bottomMargin: 6
+                                                    spacing: 12
                                                     Text {
-                                                        Layout.preferredWidth: 82
+                                                        Layout.preferredWidth: 72
                                                         Layout.alignment: Qt.AlignVCenter
                                                         horizontalAlignment: Text.AlignHCenter
                                                         verticalAlignment: Text.AlignVCenter
@@ -1507,14 +1510,13 @@ ApplicationWindow {
                                                         text: modelData.message || ""
                                                         color: root.textMain
                                                         font.pixelSize: 13
-                                                        wrapMode: Text.WordWrap
+                                                        wrapMode: Text.NoWrap
                                                         elide: Text.ElideRight
-                                                        height: 20
                                                         verticalAlignment: Text.AlignVCenter
                                                     }
                                                     Rectangle {
-                                                        Layout.preferredWidth: 86
-                                                        implicitHeight: 28
+                                                        Layout.preferredWidth: 74
+                                                        implicitHeight: 26
                                                         Layout.alignment: Qt.AlignVCenter
                                                         radius: 999
                                                         color: modelData.level === "error" ? "#35161A" : modelData.level === "warning" ? "#352B14" : modelData.level === "success" ? "#153225" : "#172536"

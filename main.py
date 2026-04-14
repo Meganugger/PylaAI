@@ -13,7 +13,7 @@ from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
 from stage_manager import StageManager
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from time_management import TimeManagement
 from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, ensure_state_icons_present
 from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
@@ -62,6 +62,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.last_processed_frame_time = 0.0
             self.current_ips = 0.0
             self.current_state = "starting"
+            self._last_fast_result_probe = 0.0
             self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
             self._last_live_push = 0.0
             self._last_roster_signature = None
@@ -111,6 +112,20 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             sys.exit(1)
 
         def manage_time_tasks(self, frame):
+            now = time.time()
+            if (
+                str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+                and now - self._last_fast_result_probe >= 0.6
+            ):
+                self._last_fast_result_probe = now
+                fast_result = find_game_result(frame)
+                if fast_result:
+                    end_state = f"end_{fast_result}"
+                    self.current_state = end_state
+                    self.Play._runtime_state = end_state
+                    self.Stage_manager.do_state(end_state, frame)
+                    return
+
             if self.Time_management.state_check():
                 state = get_state(frame)
                 if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
