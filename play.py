@@ -138,15 +138,18 @@ class Movement:
         self.window_controller.press_key("M")
 
     def use_hypercharge(self):
-        print("Using hypercharge")
+        if debug:
+            print("Using hypercharge")
         self.window_controller.press_key("H")
 
     def use_gadget(self):
-        print("Using gadget")
+        if debug:
+            print("Using gadget")
         self.window_controller.press_key("G")
 
     def use_super(self):
-        print("Using super")
+        if debug:
+            print("Using super")
         self.window_controller.press_key("E")
 
     @staticmethod
@@ -302,6 +305,13 @@ class Play(Movement):
         self.super_pixels_minimum = bot_config["super_pixels_minimum"]
         self.wall_detection_confidence = bot_config["wall_detection_confidence"]
         self.entity_detection_confidence = bot_config["entity_detection_confidence"]
+        self._runtime_state = "starting"
+        self._last_state_probe_runtime = ""
+        self._last_state_probe_result = ""
+        self._last_state_probe_time = 0.0
+        self._match_state_grace_until = 0.0
+        self._last_state_guard_log_time = 0.0
+        self._last_no_player_log_time = 0.0
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -1028,15 +1038,33 @@ class Play(Movement):
         self.track_no_detections(data)
         if data:
             self.time_since_player_last_found = time.time()
-            runtime_state = str(getattr(self, '_stats_info', {}).get('state', '') or '')
+            runtime_state = str(getattr(self, "_runtime_state", "") or "")
             if runtime_state != "match":
-                checked_state = get_state(frame)
-                if isinstance(getattr(self, '_stats_info', None), dict):
-                    self._stats_info['state'] = checked_state
+                should_recheck_state = (
+                    current_time >= self._match_state_grace_until
+                    and (
+                        current_time - self._last_state_probe_time >= 0.35
+                        or runtime_state != self._last_state_probe_runtime
+                    )
+                )
+                if should_recheck_state:
+                    checked_state = get_state(frame)
+                    self._last_state_probe_time = current_time
+                    self._last_state_probe_runtime = runtime_state
+                    self._last_state_probe_result = checked_state
+                    if checked_state == "match":
+                        self._match_state_grace_until = current_time + 2.0
+                    else:
+                        self._match_state_grace_until = 0.0
+                else:
+                    checked_state = self._last_state_probe_result or runtime_state
                 if checked_state != "match":
-                    if debug:
+                    if debug and (current_time - self._last_state_guard_log_time >= 2.0):
                         print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
+                        self._last_state_guard_log_time = current_time
                     data = None
+                else:
+                    self._runtime_state = "match"
         if not data:
             if current_time - self.time_since_player_last_found > 1.0:
                 self.window_controller.keys_up(list("wasd"))
@@ -1046,7 +1074,9 @@ class Play(Movement):
                 if current_state != "match":
                     self.time_since_last_proceeding = current_time
                 else:
-                    print("haven't detected the player in a while proceeding")
+                    if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                        print("haven't detected the player in a while proceeding")
+                        self._last_no_player_log_time = current_time
                     self.window_controller.press_continue()
                     self.time_since_last_proceeding = time.time()
             return

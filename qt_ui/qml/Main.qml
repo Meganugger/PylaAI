@@ -104,6 +104,43 @@ ApplicationWindow {
     function liveTotalKills() { return liveMetricNumber(liveValue("total_kills"), 0) }
     function liveTotalAssists() { return liveMetricNumber(liveValue("total_assists"), 0) }
     function liveTotalDamage() { return liveMetricNumber(liveValue("total_damage"), 0) }
+    function botStateValue(key, fallback) {
+        if (state && state.bot && state.bot[key] !== undefined && state.bot[key] !== null && state.bot[key] !== "")
+            return state.bot[key]
+        return fallback
+    }
+    function activeRosterEntry() {
+        const activeName = String(live.brawler || "").toLowerCase()
+        if (!activeName)
+            return null
+        for (let i = 0; i < roster.length; ++i) {
+            const row = roster[i]
+            if (String(row.brawler || "").toLowerCase() === activeName)
+                return row
+        }
+        return null
+    }
+    function liveTrophies() {
+        const value = liveValue("trophies")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.trophies, 0) : 0
+    }
+    function liveTarget() {
+        const value = liveValue("target")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.push_until, 0) : 0
+    }
+    function liveStreak() {
+        const value = liveValue("streak")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.win_streak, 0) : 0
+    }
     function displayState(value) { return String(value || "ready").replace(/_/g, " ").toUpperCase() }
     function liveWinRate() {
         const matches = liveSessionMatches()
@@ -1326,8 +1363,8 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Progress" }
-                                            Label { text: liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0); color: root.gold; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
-                                            Label { text: "To target: " + Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0)); color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: liveTrophies() + " / " + liveTarget(); color: root.gold; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: "To target: " + Math.max(0, liveTarget() - liveTrophies()); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
                                     AppCard {
@@ -1360,28 +1397,20 @@ ApplicationWindow {
                                         }
                                         GridLayout {
                                             Layout.fillWidth: true
-                                            columns: width >= 1080 ? 3 : 2
+                                            columns: width >= 1080 ? 4 : 2
                                             columnSpacing: 14
                                             rowSpacing: 14
-                                            SummaryTile {
-                                                label: "Current Match"
-                                                value: liveCurrentKills() + "K / " + liveCurrentDeaths() + "D / " + liveCurrentAssists() + "A"
-                                            }
-                                            SummaryTile {
-                                                label: "Current Damage"
-                                                value: lineValue(liveCurrentDamage(), " DMG")
-                                            }
                                             SummaryTile {
                                                 label: "Current Brawler"
                                                 value: String(live.brawler || "-").toUpperCase()
                                             }
                                             SummaryTile {
-                                                label: "Session Record"
-                                                value: liveSessionVictories() + " / " + liveSessionDefeats() + " / " + liveSessionDraws()
-                                            }
-                                            SummaryTile {
                                                 label: "Session Matches"
                                                 value: String(liveSessionMatches())
+                                            }
+                                            SummaryTile {
+                                                label: "Session W / L / D"
+                                                value: liveSessionVictories() + " / " + liveSessionDefeats() + " / " + liveSessionDraws()
                                             }
                                             SummaryTile {
                                                 label: "Win Rate"
@@ -1389,19 +1418,20 @@ ApplicationWindow {
                                                 valueColor: root.gold
                                             }
                                             SummaryTile {
-                                                label: "Last Match"
-                                                value: liveLastKills() + "K / " + liveLastAssists() + "A / " + liveLastDamage() + " DMG"
+                                                label: "Win Streak"
+                                                value: String(liveStreak())
                                             }
                                             SummaryTile {
-                                                label: "Session Output"
-                                                value: liveTotalKills() + "K / " + liveTotalAssists() + "A / " + liveTotalDamage() + " DMG"
+                                                label: "Queue Remaining"
+                                                value: String(liveMetricNumber(live.farm_remaining, 0))
                                             }
                                             SummaryTile {
-                                                label: hasCapability("advanced_live") ? "RL Buffer" : "Playstyle"
-                                                value: hasCapability("advanced_live")
-                                                    ? (live.rl_buffer_size || 0) + " / " + (live.rl_buffer_capacity || 0)
-                                                    : String(live.playstyle || "standard").toUpperCase()
-                                                valueColor: hasCapability("advanced_live") ? root.gold : root.textMain
+                                                label: "Game Mode"
+                                                value: String(live.game_mode || botStateValue("gamemode", "-")).replace(/_/g, " ").toUpperCase()
+                                            }
+                                            SummaryTile {
+                                                label: "Farm Mode"
+                                                value: boolFrom(botStateValue("smart_trophy_farm", "no")) ? "TROPHY FARM" : "STANDARD"
                                             }
                                         }
                                     }

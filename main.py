@@ -35,6 +35,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._pause_event = external_pause_event if external_pause_event is not None else threading.Event()
             self.window_controller = WindowController()
             self.Play = Play(*self.load_models(), self.window_controller)
+            self.Play._runtime_state = "starting"
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
@@ -113,6 +114,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             if self.Time_management.state_check():
                 state = get_state(frame)
                 self.current_state = state
+                self.Play._runtime_state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                 frame_data = frame if (state in self.states_requiring_frame_data or str(state).startswith("end_")) else None
@@ -206,6 +208,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 if _active_dashboard is not None:
                     tobs = self.Stage_manager.Trophy_observer
                     hist = tobs.match_history.get(brawler, {})
+                    active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
                     session_stats = getattr(tobs, "session_stats", {}) or {}
                     current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
                     current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
@@ -271,12 +274,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 ips=self.current_ips,
                                 state=self.current_state,
                                 brawler=brawler,
-                                trophies=tobs.current_trophies,
-                                target=self.Stage_manager.brawlers_pick_data[0].get("push_until", 0),
+                                trophies=active_entry.get("trophies", tobs.current_trophies or 0),
+                                target=active_entry.get("push_until", 0),
                                 victories=hist.get("victory", 0),
                                 defeats=hist.get("defeat", 0),
                                 draws=hist.get("draw", 0),
-                                streak=tobs.win_streak,
+                                streak=active_entry.get("win_streak", tobs.win_streak),
                                 game_mode=getattr(self.Play, "game_mode_name", ""),
                                 gadget_ready=getattr(self.Play, "is_gadget_ready", False),
                                 super_ready=getattr(self.Play, "is_super_ready", False),
