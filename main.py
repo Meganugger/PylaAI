@@ -100,7 +100,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             main_module = sys.modules.get('__main__')
             if main_module:
                 main_module._active_stage_manager = self.Stage_manager
-            self.states_requiring_data = ["play_store", "lobby", "popup", "end", "reward_claim"]
+            self.states_requiring_data = ["lobby", "popup", "end", "reward_claim"]
             if data[0]['automatically_pick']:
                 if debug: print("Picking brawler automatically")
                 try:
@@ -434,7 +434,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     # Reset exactly once on stable out-of-match transitions.
                     # Includes stable "end" (new round / end screen), but uses
                     # latching + cooldown to prevent duplicate resets from flicker.
-                    stable_out_states = {"lobby", "brawler_selection", "play_store", "shop", "trophy_reward", "popup", "end"}
+                    stable_out_states = {"lobby", "brawler_selection", "shop", "trophy_reward", "popup", "end"}
                     if self.state == "match":
                         self._out_of_match_since = 0.0
                         self._out_of_match_latched = False
