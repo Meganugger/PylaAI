@@ -4,6 +4,7 @@ import os
 from io import BytesIO
 import ctypes
 import json
+import threading
 
 from runtime_threads import apply_process_thread_limits, configure_torch_threads, configure_opencv_threads
 
@@ -58,6 +59,7 @@ class DefaultEasyOCR:
     def __init__(self):
         self.reader = None
         self.easyocr_module = None
+        self._reader_lock = threading.Lock()
 
     @staticmethod
     def _should_use_gpu():
@@ -75,7 +77,12 @@ class DefaultEasyOCR:
         return "CUDAExecutionProvider" not in available_providers and "DmlExecutionProvider" not in available_providers
 
     def _get_reader(self):
-        if self.reader is None:
+        if self.reader is not None:
+            return self.reader
+
+        with self._reader_lock:
+            if self.reader is not None:
+                return self.reader
             if self.easyocr_module is None:
                 import easyocr
                 self.easyocr_module = easyocr
@@ -89,8 +96,15 @@ class DefaultEasyOCR:
             self.reader = self.easyocr_module.Reader(['en'], gpu=use_gpu)
         return self.reader
 
-    def readtext(self, image_input):
-        return self._get_reader().readtext(image_input)
+    def readtext(self, image_input, *args, **kwargs):
+        return self._get_reader().readtext(image_input, *args, **kwargs)
+
+    def warm_up(self):
+        try:
+            self._get_reader()
+            return True
+        except Exception:
+            return False
 
 _CONFIG_DEFAULTS = {
     "cfg/general_config.toml": {
@@ -100,7 +114,7 @@ _CONFIG_DEFAULTS = {
         "cpu_or_gpu": "auto",
         "preferred_backend": "auto",
         "max_ips": "auto",
-        "pyla_version": "1.0.0+main",
+        "pyla_version": "1.0.0+strongestbot",
         "long_press_star_drop": "yes",
         "trophies_multiplier": 1,
         "run_for_minutes": 600,
