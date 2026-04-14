@@ -84,8 +84,6 @@ def get_in_game_state(image):
         return "lobby"
     if is_in_brawler_selection(image):
         return "brawler_selection"
-    if is_in_end_of_a_match(image):
-        return "end"
     if is_in_brawl_pass(image) or is_in_star_road(image):
         return "shop"
     if is_in_star_drop(image):
