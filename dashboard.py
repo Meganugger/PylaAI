@@ -3295,6 +3295,17 @@ class Dashboard(ctk.CTk):
         self._live_trophy_bar.pack(fill="x", padx=S(10), pady=(S(2), S(6)))
         self._live_trophy_bar.set(0)
 
+        tr_meta = ctk.CTkFrame(troph_card, fg_color="transparent")
+        tr_meta.pack(fill="x", padx=S(10), pady=(0, S(6)))
+        self._live_trophy_delta = ctk.CTkLabel(
+            tr_meta, text="", font=("Segoe UI", S(10), "bold"),
+            text_color=DIM)
+        self._live_trophy_delta.pack(side="left")
+        self._live_trophy_detail = ctk.CTkLabel(
+            tr_meta, text="", font=("Segoe UI", S(9)),
+            text_color=DIM)
+        self._live_trophy_detail.pack(side="right")
+
         # quick KPI strip
         kpi_row = ctk.CTkFrame(page, fg_color="transparent")
         kpi_row.pack(fill="x", padx=S(12), pady=(S(1), S(4)))
@@ -3646,11 +3657,13 @@ class Dashboard(ctk.CTk):
         v = d.get("victories", 0)
         de = d.get("defeats", 0)
         dr = d.get("draws", 0)
-        total_games = v + de + dr
-        session_total_matches = d.get("total_matches", total_games)
         session_victories = d.get("session_victories", v)
         session_defeats = d.get("session_defeats", de)
         session_draws = d.get("session_draws", dr)
+        session_total_matches = d.get(
+            "total_matches",
+            d.get("session_matches", session_victories + session_defeats + session_draws)
+        )
         _s(self._live_matches, "mt", text=f"Matches: {session_total_matches}")
 
         # Farm mode badge
@@ -3681,9 +3694,13 @@ class Dashboard(ctk.CTk):
             _s(self._live_streak, "sk", text="")
 
         # Win / Loss / Draw
+        wl_v = session_victories if session_total_matches > 0 else v
+        wl_d = session_defeats if session_total_matches > 0 else de
+        wl_dr = session_draws if session_total_matches > 0 else dr
+        total_games = wl_v + wl_d + wl_dr
         if total_games > 0:
-            wr = v / total_games * 100
-            _s(self._live_wl, "wl", text=f"W:{v}  L:{de}  D:{dr}", text_color=TXT)
+            wr = wl_v / total_games * 100
+            _s(self._live_wl, "wl", text=f"W:{wl_v}  L:{wl_d}  D:{wl_dr}", text_color=TXT)
             wr_color = GREEN if wr >= 55 else GOLD if wr >= 45 else RED
             _s(self._live_wr_pct, "wp", text=f"{wr:.0f}% WR", text_color=wr_color)
         else:
@@ -3718,6 +3735,47 @@ class Dashboard(ctk.CTk):
             _s(self._live_trophy_pct, "tp", text="", text_color=DIM)
             _s(self._live_trophy_bar, "tb_pc", progress_color=GOLD)
             _s(self._live_kpi_target_gap, "kpi_gap", text="—", text_color=DIM)
+
+        last_result = str(d.get("last_result", "") or "").lower()
+        last_delta = d.get("last_trophy_delta")
+        last_verified = bool(d.get("last_trophy_delta_verified", False))
+        streak_bonus = int(d.get("last_streak_bonus", 0) or 0)
+        underdog_bonus = int(d.get("last_underdog_bonus", 0) or 0)
+        trophy_adjustment = int(d.get("last_trophy_adjustment", 0) or 0)
+        delta_text = ""
+        delta_detail = ""
+        delta_color = DIM
+
+        if last_result in {"victory", "defeat", "draw"}:
+            delta_value = int(last_delta or 0)
+            delta_sign = "+" if delta_value > 0 else ""
+            delta_text = f"{last_result.upper()} {delta_sign}{delta_value}"
+            if not last_verified and last_result != "draw":
+                delta_text += " est."
+            if last_result == "victory":
+                delta_color = GREEN
+            elif last_result == "defeat":
+                delta_color = RED
+            else:
+                delta_color = GOLD
+
+            detail_parts = []
+            if streak_bonus > 0:
+                detail_parts.append(f"streak +{streak_bonus}")
+            if underdog_bonus > 0:
+                detail_parts.append(f"underdog +{underdog_bonus}")
+            elif last_verified and trophy_adjustment != 0:
+                adjustment_sign = "+" if trophy_adjustment > 0 else ""
+                detail_parts.append(f"adj {adjustment_sign}{trophy_adjustment}")
+            delta_detail = " | ".join(detail_parts)
+
+        _s(self._live_trophy_delta, "td", text=delta_text, text_color=delta_color)
+        _s(
+            self._live_trophy_detail,
+            "td2",
+            text=delta_detail,
+            text_color=DIM if delta_detail else delta_color,
+        )
 
         # combat
         php = max(0, min(100, d.get("player_hp", 100)))

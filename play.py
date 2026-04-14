@@ -4,7 +4,7 @@ import time
 
 import cv2
 import numpy as np
-from state_finder.main import get_state
+from state_finder.main import get_state, find_game_result
 from detect import Detect
 from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
 
@@ -218,6 +218,15 @@ class Play(Movement):
         self.super_pixels_minimum = bot_config["super_pixels_minimum"]
         self.wall_detection_confidence = bot_config["wall_detection_confidence"]
         self.entity_detection_confidence = bot_config["entity_detection_confidence"]
+        self._runtime_state = "starting"
+        self._last_state_probe_runtime = ""
+        self._last_state_probe_result = ""
+        self._last_state_probe_time = 0.0
+        self._match_state_grace_until = 0.0
+        self._last_state_guard_log_time = 0.0
+        self._last_no_player_log_time = 0.0
+        self._last_end_result_probe_time = 0.0
+        self._pending_end_result = None
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -715,6 +724,17 @@ class Play(Movement):
             self.shot_timestamps = []
             self.current_ammo = self.max_ammo
         current_time = time.time()
+        runtime_state = str(getattr(self, "_runtime_state", "") or "")
+        if runtime_state == "match" and (current_time - self._last_end_result_probe_time) >= 0.8:
+            self._last_end_result_probe_time = current_time
+            game_result = find_game_result(frame)
+            if game_result:
+                print(f"[RESULT] play fast probe detected {game_result}")
+                self._pending_end_result = game_result
+                self._runtime_state = f"end_{game_result}"
+                self.window_controller.keys_up(list("wasd"))
+                self.time_since_last_proceeding = current_time
+                return
         data = self.get_main_data(frame)
         if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:
 
@@ -733,25 +753,66 @@ class Play(Movement):
         self.track_no_detections(data)
         if data:
             self.time_since_player_last_found = time.time()
-            runtime_state = str(getattr(self, '_stats_info', {}).get('state', '') or '')
             if runtime_state != "match":
-                checked_state = get_state(frame)
-                if isinstance(getattr(self, '_stats_info', None), dict):
-                    self._stats_info['state'] = checked_state
+                should_recheck_state = (
+                    current_time >= self._match_state_grace_until
+                    and (
+                        current_time - self._last_state_probe_time >= 0.35
+                        or runtime_state != self._last_state_probe_runtime
+                    )
+                )
+                if should_recheck_state:
+                    checked_state = get_state(frame)
+                    self._last_state_probe_time = current_time
+                    self._last_state_probe_runtime = runtime_state
+                    self._last_state_probe_result = checked_state
+                    if checked_state == "match":
+                        self._match_state_grace_until = current_time + 2.0
+                    else:
+                        self._match_state_grace_until = 0.0
+                else:
+                    checked_state = self._last_state_probe_result or runtime_state
                 if checked_state != "match":
-                    if debug:
+                    if debug and (current_time - self._last_state_guard_log_time >= 2.0):
                         print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
+                        self._last_state_guard_log_time = current_time
                     data = None
+                else:
+                    self._runtime_state = "match"
         if not data:
+            player_missing_for = current_time - self.time_since_player_last_found
+            if (
+                runtime_state == "match"
+                and player_missing_for >= 0.25
+                and (current_time - self._last_end_result_probe_time) >= 0.5
+            ):
+                self._last_end_result_probe_time = current_time
+                game_result = find_game_result(frame)
+                if game_result:
+                    print(f"[RESULT] play missing-player probe detected {game_result}")
+                    self._pending_end_result = game_result
+                    self._runtime_state = f"end_{game_result}"
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
             if current_time - self.time_since_player_last_found > 1.0:
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
                 current_state = get_state(frame)
+                if isinstance(current_state, str) and current_state.startswith("end_"):
+                    print(f"[RESULT] play state probe detected {current_state}")
+                    self._pending_end_result = current_state.split("_", 1)[1]
+                    self._runtime_state = current_state
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
                 if current_state != "match":
                     self.time_since_last_proceeding = current_time
                 else:
-                    print("haven't detected the player in a while proceeding")
+                    if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                        print("haven't detected the player in a while proceeding")
+                        self._last_no_player_log_time = current_time
                     self.window_controller.press_continue()
                     self.time_since_last_proceeding = time.time()
             return
