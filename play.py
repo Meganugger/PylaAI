@@ -4672,6 +4672,17 @@ class Play(Movement):
         current_time = time.time()
         self._current_frame = frame  # Store for BT subsystems
         data = self.get_main_data(frame)
+        if data:
+            self.time_since_player_last_found = time.time()
+            runtime_state = str(getattr(self, '_stats_info', {}).get('state', '') or '')
+            if runtime_state != "match":
+                checked_state = get_state(frame)
+                if isinstance(getattr(self, '_stats_info', None), dict):
+                    self._stats_info['state'] = checked_state
+                if checked_state != "match":
+                    if debug:
+                        print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
+                    data = None
 
         # --- IN-MATCH SHOWDOWN DETECTION ---
         # Check for "Teams left" text at top of screen (only once, throttled)
