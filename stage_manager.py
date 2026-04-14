@@ -56,6 +56,7 @@ class StageManager:
         self.window_controller = window_controller
         self.lobby_start_enabled = True
         self._awaiting_lobby_result_sync = False
+        self._result_applied_for_active_match = False
 
     def _sync_active_brawler_progress(self):
         if not self.brawlers_pick_data:
@@ -85,6 +86,7 @@ class StageManager:
 
     def mark_match_started(self):
         self._awaiting_lobby_result_sync = True
+        self._result_applied_for_active_match = False
 
     def _read_lobby_trophies(self, frame):
         region = (self.lobby_config.get("lobby") or {}).get("trophy_observer")
@@ -102,19 +104,34 @@ class StageManager:
         if cropped.size == 0:
             return None
 
-        try:
-            ocr_result = reader.readtext(cropped)
-        except Exception as exc:
-            if debug:
-                print(f"Lobby trophy OCR failed: {exc}")
-            return None
-
         baseline = int(self.Trophy_observer.current_trophies or self.brawlers_pick_data[0].get("trophies", 0) or 0)
         candidates = []
-        for _bbox, text, _prob in ocr_result:
-            value = self.validate_trophies(text)
-            if value is not False:
-                candidates.append(int(value))
+
+        variants = [cropped]
+        try:
+            gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+            gray = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+            variants.append(gray)
+            _, thresh_dark = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            _, thresh_light = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            variants.extend([thresh_dark, thresh_light])
+        except Exception:
+            pass
+
+        for variant in variants:
+            try:
+                ocr_result = reader.readtext(variant, allowlist="0123456789soibl|")
+            except TypeError:
+                ocr_result = reader.readtext(variant)
+            except Exception as exc:
+                if debug:
+                    print(f"Lobby trophy OCR failed: {exc}")
+                continue
+
+            for _bbox, text, _prob in ocr_result:
+                value = self.validate_trophies(text)
+                if value is not False:
+                    candidates.append(int(value))
 
         if not candidates:
             return None
@@ -173,7 +190,7 @@ class StageManager:
     def _apply_match_result(self, game_result):
         if not self.brawlers_pick_data or not game_result:
             return False
-        if not self._awaiting_lobby_result_sync:
+        if self._result_applied_for_active_match:
             return False
 
         current_brawler = self.brawlers_pick_data[0]['brawler']
@@ -193,6 +210,7 @@ class StageManager:
         self._sync_active_brawler_progress()
         self.brawlers_pick_data[0][type_to_push] = value
         save_brawler_data(self.brawlers_pick_data)
+        self._result_applied_for_active_match = True
         self._awaiting_lobby_result_sync = False
         return applied
 
@@ -201,7 +219,15 @@ class StageManager:
 
     def start_game(self, data):
         print("state is lobby, starting game")
-        self._sync_lobby_result(data)
+        if self._awaiting_lobby_result_sync and not self._result_applied_for_active_match:
+            synced = False
+            for _ in range(4):
+                synced = self._sync_lobby_result(data)
+                if synced:
+                    break
+                time.sleep(0.25)
+            if debug and not synced:
+                print("Lobby result sync did not resolve before next match start.")
         values = {
             "trophies": self.Trophy_observer.current_trophies,
             "wins": self.Trophy_observer.current_wins
