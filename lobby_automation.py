@@ -14,6 +14,7 @@ class LobbyAutomation:
         self.coords_cfg = load_toml_as_dict("./cfg/lobby_config.toml")
         self.window_controller = window_controller
         self.brawler_menu_template = None
+        self._last_idle_debug_time = 0.0
 
     def check_for_idle(self, frame):
         wr = self.window_controller.width_ratio
@@ -25,7 +26,9 @@ class LobbyAutomation:
         else:
             screenshot = frame.crop((x1, y1, x2, y2))
         gray_pixels = count_hsv_pixels(screenshot, (0, 0, 55), (10, 15, 77))
-        if debug: print("gray pixels (if > 1000 then bot will try to unidle) :", gray_pixels)
+        if debug and (gray_pixels > 1000 or time.time() - self._last_idle_debug_time >= 5.0):
+            print("gray pixels (if > 1000 then bot will try to unidle) :", gray_pixels)
+            self._last_idle_debug_time = time.time()
         if gray_pixels > 1000:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
