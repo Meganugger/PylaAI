@@ -44,6 +44,14 @@ ApplicationWindow {
     readonly property int cardGap: 16
     readonly property int cardRadius: 20
     readonly property int fieldHeight: 48
+    readonly property var navItems: [
+        { "label": "Control Center", "icon": "CC" },
+        { "label": "Brawlers", "icon": "BR" },
+        { "label": "Farm", "icon": "FM" },
+        { "label": "Live", "icon": "LV" },
+        { "label": "History", "icon": "HS" },
+        { "label": "Settings", "icon": "ST" }
+    ]
 
     function notify(level, message) { toastLevel = level; toastText = message; toast.open() }
     function colorForLevel(level) { return level === "success" ? success : level === "error" ? danger : level === "warning" ? warning : info }
@@ -384,8 +392,27 @@ ApplicationWindow {
         }
     }
 
+    component SidebarGlyph: Rectangle {
+        property string symbol: "CC"
+        property bool active: false
+        implicitWidth: 32
+        implicitHeight: 32
+        radius: 10
+        color: active ? "#141922" : "#0C1016"
+        border.color: active ? "#3C465A" : "#232B38"
+        border.width: 1
+        Label {
+            anchors.centerIn: parent
+            text: parent.symbol
+            color: parent.active ? root.textMain : root.textDim
+            font.pixelSize: 16
+            font.bold: parent.active
+        }
+    }
+
     component NavButton: Button {
         id: control
+        property string iconText: "CC"
         implicitHeight: 56
         leftPadding: 0
         rightPadding: 0
@@ -394,18 +421,39 @@ ApplicationWindow {
         font.pixelSize: 15
         background: Rectangle {
             radius: 16
-            color: control.checked ? root.accentSoft : "transparent"
-            border.color: control.checked ? root.accent : root.border
+            color: control.checked ? "#131821" : "transparent"
+            border.color: control.checked ? "#384354" : root.border
             border.width: 1
+            Rectangle {
+                anchors.left: parent.left
+                anchors.leftMargin: 0
+                anchors.verticalCenter: parent.verticalCenter
+                width: 4
+                height: 28
+                radius: 2
+                color: root.accent
+                visible: control.checked
+            }
         }
-        contentItem: Text {
+        contentItem: RowLayout {
             anchors.fill: parent
-            text: control.text
-            color: control.checked ? root.textMain : root.textDim
-            font.pixelSize: 15
-            font.bold: control.checked
-            horizontalAlignment: Text.AlignHCenter
-            verticalAlignment: Text.AlignVCenter
+            anchors.leftMargin: 18
+            anchors.rightMargin: 18
+            spacing: 12
+            SidebarGlyph {
+                symbol: control.iconText
+                active: control.checked || control.hovered
+                Layout.alignment: Qt.AlignVCenter
+            }
+            Label {
+                Layout.fillWidth: true
+                Layout.alignment: Qt.AlignVCenter
+                text: control.text
+                color: control.checked ? root.textMain : root.textDim
+                font.pixelSize: 15
+                font.bold: control.checked
+                verticalAlignment: Text.AlignVCenter
+            }
         }
     }
 
@@ -599,17 +647,30 @@ ApplicationWindow {
                     implicitHeight: brandColumn.implicitHeight
                     Column {
                         id: brandColumn
-                        spacing: 8
-                        Label { text: "PYLA AI"; color: root.textMain; font.pixelSize: 30; font.bold: true; font.letterSpacing: 1.5 }
-                        Rectangle { x: 2; width: 84; height: 5; radius: 3; color: root.accent }
+                        spacing: 6
+                        Label {
+                            text: "PYLA AI"
+                            color: root.textMain
+                            font.pixelSize: 29
+                            font.bold: true
+                            font.letterSpacing: 2.6
+                        }
+                        Rectangle { x: 2; width: 92; height: 4; radius: 2; color: root.accent }
+                        Label {
+                            text: "PYLA CONTROL CENTER"
+                            color: root.textDim
+                            font.pixelSize: 11
+                            font.letterSpacing: 2.4
+                        }
                     }
                 }
                 Label { text: state.branchLabel || ""; color: root.textDim; font.pixelSize: 13 }
                 Repeater {
-                    model: ["Control Center","Brawlers","Farm","Live","History","Settings"]
+                    model: root.navItems
                     delegate: NavButton {
                         Layout.fillWidth: true
-                        text: modelData
+                        text: modelData.label
+                        iconText: modelData.icon
                         checkable: true
                         checked: pageIndex === index
                         onClicked: pageIndex = index
