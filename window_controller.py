@@ -158,6 +158,10 @@ class WindowController:
         checked_app_state = False
 
         while True:
+            if waiting_for_first_frame and not did_log_wait:
+                print("Waiting for first frame...")
+                did_log_wait = True
+
             with self.frame_condition:
                 frame_time = self.last_frame_time
                 latest_frame_time = frame_time
@@ -165,10 +169,6 @@ class WindowController:
                     frame = self.last_frame.copy() if copy_frame else self.last_frame
                     self._ensure_frame_geometry(frame)
                     return frame, frame_time
-
-                if waiting_for_first_frame and not did_log_wait:
-                    print("Waiting for first frame...")
-                    did_log_wait = True
 
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
