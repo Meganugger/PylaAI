@@ -3,10 +3,16 @@ import time
 import numpy as np
 
 from stage_manager import load_image
-from typization import BrawlerName
 from utils import extract_text_and_positions, count_hsv_pixels, load_toml_as_dict, find_template_center
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
+
+OCR_BRAWLER_ALIASES = {
+    'shey': 'shelly',
+    'shlly': 'shelly',
+    'larryslawrie': 'larrylawrie',
+    '[eon': 'leon',
+}
 
 class LobbyAutomation:
 
@@ -110,12 +116,5 @@ class LobbyAutomation:
         Matches well known 'typos' from OCR to the correct brawler's name
         or returns the original string
         """
-
-        matched_typo: str | None = {
-            'shey': BrawlerName.Shelly.value,
-            'shlly': BrawlerName.Shelly.value,
-            'larryslawrie': BrawlerName.Larry.value,
-            '[eon': BrawlerName.Leon.value,
-        }.get(potential_brawler_name, None)
-
-        return matched_typo or potential_brawler_name
+        normalized_name = str(potential_brawler_name or "").lower()
+        return OCR_BRAWLER_ALIASES.get(normalized_name, normalized_name)
