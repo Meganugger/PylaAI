@@ -282,6 +282,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     tobs = self.Stage_manager.Trophy_observer
                     active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
                     session_stats = getattr(tobs, "session_stats", {}) or {}
+                    coerce_int = getattr(self.Stage_manager, "_coerce_int", None)
+                    if not callable(coerce_int):
+                        def coerce_int(value, default=0):
+                            try:
+                                return int(value)
+                            except (TypeError, ValueError):
+                                return default
                     current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
                     current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
                     current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
@@ -291,6 +298,25 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         or getattr(self.Play, "_damage_dealt", 0)
                         or 0
                     )
+                    live_trophies = coerce_int(
+                        tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
+                        0,
+                    )
+                    live_wins = coerce_int(
+                        getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
+                        0,
+                    )
+                    live_streak = coerce_int(
+                        tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
+                        0,
+                    )
+                    if active_entry:
+                        if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
+                            active_entry["trophies"] = live_trophies
+                        if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
+                            active_entry["wins"] = live_wins
+                        if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
+                            active_entry["win_streak"] = live_streak
                     if hasattr(tobs, "update_live_match_stats"):
                         try:
                             tobs.update_live_match_stats(
@@ -347,8 +373,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     if (now - self._last_live_push) >= 0.2:
                         self._last_live_push = now
                         try:
-                            live_trophies = tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0)
-                            live_streak = tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0)
                             session_victories = int(session_stats.get("victories", 0) or 0)
                             session_defeats = int(session_stats.get("defeats", 0) or 0)
                             session_draws = int(session_stats.get("draws", 0) or 0)

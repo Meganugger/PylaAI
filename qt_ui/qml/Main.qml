@@ -198,6 +198,14 @@ ApplicationWindow {
         const target = Math.max(0, Math.min(brawlerListSavedContentY, Math.max(0, brawlerList.contentHeight - brawlerList.height)))
         brawlerList.contentY = target
     }
+    function editorHasFocus() {
+        return !!(
+            (typeof trophiesField !== "undefined" && trophiesField.activeFocus) ||
+            (typeof winsField !== "undefined" && winsField.activeFocus) ||
+            (typeof targetField !== "undefined" && targetField.activeFocus) ||
+            (typeof streakField !== "undefined" && streakField.activeFocus)
+        )
+    }
     function rebuildComboModels() {
         gamemodeModel.clear()
         emulatorModel.clear()
@@ -647,7 +655,14 @@ ApplicationWindow {
     Connections {
         target: backend
         function onStateChanged(s) { hydrate(s); applyStateToForms(); rebuildExcludeModels() }
-        function onRosterChanged(data) { roster = data; brawlers = backend.getBrawlers(); rebuildExcludeModels(); restoreBrawlerScroll() }
+        function onRosterChanged(data) {
+            roster = data
+            brawlers = backend.getBrawlers()
+            rebuildExcludeModels()
+            restoreBrawlerScroll()
+            if (!editorHasFocus())
+                hydrateEditors()
+        }
         function onHistoryChanged(data) { history = data }
         function onLiveDataChanged(data) { live = data || {} }
         function onLogsChanged(data) { logs = data || [] }
