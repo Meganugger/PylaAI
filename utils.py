@@ -124,6 +124,9 @@ class DefaultEasyOCR:
     def readtext(self, image_input, *args, **kwargs):
         return self._ensure_loaded().readtext(image_input, *args, **kwargs)
 
+    def is_ready(self):
+        return self._reader is not None
+
     def warm_up(self):
         try:
             self._ensure_loaded()

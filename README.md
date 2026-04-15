@@ -168,10 +168,38 @@ You can also use `Build Auto Push` to automatically create a roster of supported
 
 This API integration is optional. If you leave the API fields empty, manual brawler configuration still works exactly as before.
 
+For best post-match reliability, the Brawl Stars API settings are strongly recommended. Without them, unresolved match recovery falls back to lobby OCR only, which is slower and can delay replaying the next game after some matches.
+
+### How To Get And Set Up The Brawl Stars API Key
+
+1. Go to `https://developer.brawlstars.com` and sign in with your Supercell ID.
+2. Create a new API key from the developer portal.
+3. Add your current public IP address to the key whitelist.
+4. Copy the generated API key.
+5. In PylaAI Settings, paste that value into `Brawl Stars API Key`.
+
+Important:
+
+- The official Brawl Stars API key is tied to your public IP address.
+- If your public IP changes later, you need to update the key on the developer portal or the API sync will stop working.
+
+### How To Find Your Player Tag
+
+1. Open Brawl Stars.
+2. Tap your profile/avatar in the top-left corner.
+3. Copy your player tag from the profile screen.
+4. Paste it into `Player Tag` in PylaAI Settings.
+
+Notes:
+
+- You can paste the tag with `#` or without it. PylaAI normalizes it automatically.
+- After filling both fields, save settings and restart the bot if it was already running.
+
 ## Runtime Sync Notes
 
 - Verified trophy refreshes now flow through the shared runtime roster, so the Live page, Control Center queue, Brawlers page, and Match History stay aligned after results are committed.
 - Match result recovery uses end-screen detection first, then lobby/API verification when needed, so showdown placements and delayed lobby returns can still resolve to the correct trophy change.
+- If the Brawl Stars API fields are empty, PylaAI will still run, but lobby result verification has to rely on OCR and may take longer when a result was not detected on the end screen.
 
 ## What This Fixes
 
