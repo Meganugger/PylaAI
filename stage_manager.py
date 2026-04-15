@@ -117,14 +117,23 @@ def notify_user(message_type):
 def load_image(image_path, scale_factor):
     # Load the image
     image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Template image could not be loaded: {image_path}")
     orig_height, orig_width = image.shape[:2]
 
+    try:
+        scale = float(scale_factor)
+    except (TypeError, ValueError):
+        scale = 1.0
+    if scale <= 0:
+        scale = 1.0
+
     # Calculate the new dimensions based on the scale factor
-    new_width = int(orig_width * scale_factor)
-    new_height = int(orig_height * scale_factor)
+    new_width = max(1, int(orig_width * scale))
+    new_height = max(1, int(orig_height * scale))
 
     # Resize the image
-    resized_image = cv2.resize(image, (new_width, new_height))
+    resized_image = cv2.resize(image, (new_width, new_height), interpolation=cv2.INTER_LINEAR)
     return resized_image
 
 class StageManager:
