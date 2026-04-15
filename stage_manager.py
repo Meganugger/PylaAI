@@ -3,6 +3,7 @@ import sys
 
 import asyncio
 import time
+import threading
 
 import cv2
 import numpy as np
@@ -71,6 +72,34 @@ class StageManager:
         self._pending_verified_result = None
         self._api_lobby_sync_attempts = 0
         self._last_api_lobby_sync_attempt_at = 0.0
+        self._lobby_ocr_warmup_started = False
+
+    def _is_easyocr_ready(self):
+        try:
+            return bool(reader.is_ready())
+        except Exception:
+            return bool(getattr(reader, "reader", None))
+
+    def _ensure_lobby_ocr_warmup(self, delay_seconds=0.0):
+        if self._lobby_ocr_warmup_started or self._is_easyocr_ready():
+            return
+        self._lobby_ocr_warmup_started = True
+
+        def warm():
+            try:
+                if delay_seconds > 0:
+                    time.sleep(delay_seconds)
+                warmed = reader.warm_up()
+                if not warmed and not self._is_easyocr_ready():
+                    self._lobby_ocr_warmup_started = False
+            except Exception:
+                self._lobby_ocr_warmup_started = False
+
+        threading.Thread(
+            target=warm,
+            name="easyocr-lobby-sync-warmup",
+            daemon=True,
+        ).start()
 
     @staticmethod
     def _coerce_int(value, default=0):
@@ -241,7 +270,7 @@ class StageManager:
             return None
         return best
 
-    def _sync_lobby_result(self, frame):
+    def _sync_lobby_result(self, frame, allow_ocr=True, api_timeout=1.25):
         if not self._awaiting_lobby_result_sync or not self.brawlers_pick_data:
             return False
 
@@ -257,7 +286,7 @@ class StageManager:
         verification_source = None
         elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else 0.0
         has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
-        if has_api_settings and elapsed >= 1.0:
+        if has_api_settings:
             should_attempt_api = False
             force_api = False
             now = time.time()
@@ -276,7 +305,7 @@ class StageManager:
                 verified_trophies = self.Trophy_observer.fetch_brawler_trophies_from_brawlstars_api(
                     current_brawler,
                     force=force_api,
-                    timeout=1.25,
+                    timeout=api_timeout,
                 )
                 if verified_trophies is not None:
                     verification_source = "api"
@@ -287,6 +316,8 @@ class StageManager:
             or self._api_lobby_sync_attempts >= 2
             or elapsed >= 3.5
         ):
+            if not allow_ocr:
+                return False
             verified_trophies = self._read_lobby_trophies(screenshot)
             verification_source = "ocr" if verified_trophies is not None else None
             if verified_trophies is None:
@@ -389,27 +420,18 @@ class StageManager:
                 print(f"[RESULT] lobby entry direct probe recovered {direct_result}")
                 self._apply_or_defer_detected_result(direct_result, source="lobby-entry")
                 synced = self._result_applied_for_active_match
-            sync_deadline = self._lobby_sync_started_at + 6.0
-            probe_frame = data
-            while not synced and time.time() < sync_deadline:
-                synced = self._sync_lobby_result(probe_frame)
-                if synced:
-                    break
-                time.sleep(0.35)
-                try:
-                    probe_frame = self.window_controller.screenshot()
-                except Exception:
-                    probe_frame = data
-                try:
-                    current_state = get_state(probe_frame)
-                except Exception:
-                    current_state = "lobby"
-                if isinstance(current_state, str) and current_state.startswith("end_"):
-                    self.end_game(probe_frame, current_state.split("_", 1)[1])
-                    probe_frame = None
-                    continue
-                if current_state != "lobby":
-                    break
+            if not synced:
+                ocr_ready = self._is_easyocr_ready()
+                has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
+                if not ocr_ready:
+                    self._ensure_lobby_ocr_warmup(delay_seconds=1.25)
+                synced = self._sync_lobby_result(
+                    data,
+                    allow_ocr=ocr_ready,
+                    api_timeout=0.35 if not ocr_ready else 0.75,
+                )
+                if not synced and not has_api_settings and not ocr_ready:
+                    print("[RESULT] Brawl Stars API settings are empty; skipping slow lobby OCR wait and starting the next match")
             if debug and not synced:
                 print("Lobby result sync did not resolve before next match start.")
             if synced and self._awaiting_lobby_result_sync:

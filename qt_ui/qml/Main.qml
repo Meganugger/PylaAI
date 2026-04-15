@@ -1637,8 +1637,15 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Discord ID" } AppTextField { id: discordField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Webhook" } AppTextField { id: webhookField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "API Base URL" } AppTextField { id: apiBaseField; Layout.fillWidth: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Brawl Stars API Key" } AppTextField { id: bsApiField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Player Tag" } AppTextField { id: playerTagField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Brawl Stars API Key" } AppTextField { id: bsApiField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "Paste key from developer.brawlstars.com" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Player Tag" } AppTextField { id: playerTagField; Layout.fillWidth: true; placeholderText: "Paste your in-game tag (# optional)" } }
+                                            Label {
+                                                Layout.columnSpan: 2
+                                                Layout.fillWidth: true
+                                                text: "Brawl Stars API Key + Player Tag are optional, but strongly recommended. Without them, post-match trophy sync falls back to slower OCR and replay can pause longer after unresolved matches.\n\nQuick setup:\n1. Open developer.brawlstars.com and sign in with your Supercell ID.\n2. Create a new API key and whitelist your current public IP address.\n3. Copy that key into the field above.\n4. In Brawl Stars, open your profile and copy your player tag.\n5. Paste the tag here. You can include # or leave it out.\n6. Save settings, then start or restart the bot.\n\nIf your internet provider changes your public IP later, update the allowed IP on the developer portal or the API sync will stop working."
+                                                color: root.textDim
+                                                wrapMode: Text.WordWrap
+                                            }
                                         }
                                     }
                                 }
