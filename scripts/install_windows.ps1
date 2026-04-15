@@ -14,8 +14,37 @@ $venvPath = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $startBatPath = Join-Path $repoRoot "start.bat"
 $generalConfigPath = Join-Path $repoRoot "cfg\general_config.toml"
+$pythonDownloadUrl = "https://www.python.org/ftp/python/3.10.0/python-3.10.0-amd64.exe"
+$gitDownloadUrl = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.exe"
 
 Set-Location $repoRoot
+
+function Get-PythonInstallHelp {
+    return @"
+Download Python 3.10.0 x64 here:
+$pythonDownloadUrl
+
+Python installer steps:
+  1. Run the installer.
+  2. Tick 'Add Python 3.10 to PATH'.
+  3. Click 'Install Now'.
+  4. Reopen PowerShell or Command Prompt after install.
+"@
+}
+
+function Get-GitInstallHelp {
+    return @"
+Download Git for Windows here:
+$gitDownloadUrl
+
+Git installer steps:
+  1. Run the installer.
+  2. Accept the agreement.
+  3. Keep clicking Continue with the default options.
+  4. On the last screen, uncheck 'View Release Notes'.
+  5. Click Finish or Close.
+"@
+}
 
 function Invoke-PythonCapture {
     param(
@@ -78,10 +107,10 @@ function Ensure-BasePython310 {
     if ($ConfiguredPython) {
         $version = Get-PythonVersion -Executable $ConfiguredPython
         if (-not $version) {
-            throw "Could not run the configured Python executable '$ConfiguredPython'."
+            throw "Could not run the configured Python executable '$ConfiguredPython'.`n`n$(Get-PythonInstallHelp)"
         }
         if ($version -ne "3.10.0") {
-            throw "Detected Python $version. PylaAI setup requires Python 3.10.0."
+            throw "Detected Python $version. PylaAI setup requires Python 3.10.0.`n`n$(Get-PythonInstallHelp)"
         }
         return [PSCustomObject]@{
             Executable = $ConfiguredPython
@@ -91,15 +120,22 @@ function Ensure-BasePython310 {
 
     $launcherVersion = Get-PythonVersion -Executable "py" -PrefixArguments @("-3.10")
     if (-not $launcherVersion) {
-        throw "Python 3.10.0 was not found through the Windows py launcher. Install Python 3.10.0 x64 first."
+        throw "Python 3.10.0 was not found through the Windows py launcher. Install Python 3.10.0 x64 first.`n`n$(Get-PythonInstallHelp)"
     }
     if ($launcherVersion -ne "3.10.0") {
-        throw "Detected Python $launcherVersion for py -3.10. PylaAI setup requires Python 3.10.0 exactly."
+        throw "Detected Python $launcherVersion for py -3.10. PylaAI setup requires Python 3.10.0 exactly.`n`n$(Get-PythonInstallHelp)"
     }
 
     return [PSCustomObject]@{
         Executable = "py"
         PrefixArgs = @("-3.10")
+    }
+}
+
+function Ensure-GitAvailable {
+    $gitCommand = Get-Command git -ErrorAction SilentlyContinue
+    if (-not $gitCommand) {
+        throw "Git was not found in PATH. PylaAI setup needs Git to install the pinned scrcpy dependency.`n`n$(Get-GitInstallHelp)"
     }
 }
 
@@ -256,6 +292,7 @@ try {
     }
 
     Ensure-Venv -BasePython $basePython
+    Ensure-GitAvailable
 
     Write-Host "Upgrading pip, wheel, and a setuptools version compatible with adbutils inside .venv..." -ForegroundColor Cyan
     & $venvPython -m pip install --upgrade pip wheel "setuptools<81"

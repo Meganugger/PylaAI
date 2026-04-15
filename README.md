@@ -20,6 +20,28 @@ If you want the most aggressive “best possible bot” behavior instead, use th
 - Python 3.10 x64 only
 - Recommended and tested setup: Python 3.10.0 in a virtual environment
 
+## Direct Downloads
+
+If you do not already have the required tools, download them here first:
+
+- Python 3.10.0 x64 installer: [python-3.10.0-amd64.exe](https://www.python.org/ftp/python/3.10.0/python-3.10.0-amd64.exe)
+- Git for Windows installer: [Git-2.53.0.3-64-bit.exe](https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.exe)
+
+### Python 3.10.0 installer checklist
+
+1. Run the Python installer.
+2. Tick `Add Python 3.10 to PATH`.
+3. Click `Install Now`.
+4. After it finishes, close the installer and reopen PowerShell or Command Prompt before running setup.
+
+### Git for Windows installer checklist
+
+1. Run the Git installer.
+2. Accept the agreement.
+3. Keep clicking `Continue` with the default options.
+4. On the last screen, uncheck `View Release Notes`.
+5. Click `Finish` or `Close`.
+
 ## Install
 
 Do not use `python setup.py install`.
@@ -60,6 +82,8 @@ or run:
 - `CPU`: a CPU-only preset that stays conservative on thread count
 
 It also remembers the selected backend in `cfg/general_config.toml` so runtime provider selection and default thread tuning can stay aligned with your install choice.
+
+If Python 3.10.0 or Git is missing, `setup.bat` / `scripts/install_windows.ps1` now prints the direct download links above plus a short Windows installer checklist.
 
 ### 3. Manual setup
 Create and activate a Python 3.10.0 virtual environment:
@@ -143,6 +167,11 @@ If you enter an official Brawl Stars API key and your player tag in the setup sc
 You can also use `Build Auto Push` to automatically create a roster of supported owned brawlers below a target trophy value. The generated roster keeps the existing saved data shape and orders brawlers from the lowest current trophies upward so the bot pushes the lowest ones first.
 
 This API integration is optional. If you leave the API fields empty, manual brawler configuration still works exactly as before.
+
+## Runtime Sync Notes
+
+- Verified trophy refreshes now flow through the shared runtime roster, so the Live page, Control Center queue, Brawlers page, and Match History stay aligned after results are committed.
+- Match result recovery uses end-screen detection first, then lobby/API verification when needed, so showdown placements and delayed lobby returns can still resolve to the correct trophy change.
 
 ## What This Fixes
 
