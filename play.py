@@ -88,7 +88,8 @@ class Movement:
         }
         self.game_mode = bot_config["gamemode_type"]
         self.selected_gamemode = self._normalize_gamemode_name(bot_config.get("gamemode", "knockout"))
-        self.is_showdown_mode = "showdown" in self.selected_gamemode
+        self.game_mode_name = self.selected_gamemode
+        self.is_showdown_mode = self._is_showdown_behavior_enabled(self.selected_gamemode, self.game_mode)
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
         self.super_treshold = time_config["super"]
@@ -106,15 +107,26 @@ class Movement:
         self.window_controller = window_controller
         self.TILE_SIZE = 60
         self._showdown_regroup_distance = float(bot_config.get("showdown_regroup_distance", 165))
+        self._showdown_team_pull_distance = float(bot_config.get("showdown_team_pull_distance", 130))
+        self._showdown_enemy_chase_timeout = float(bot_config.get("showdown_enemy_chase_timeout", 2.0))
 
     @staticmethod
     def _normalize_gamemode_name(gamemode):
         return str(gamemode or "").strip().lower().replace("_", " ")
 
     @classmethod
+    def _is_showdown_behavior_enabled(cls, gamemode, gamemode_type):
+        normalized = cls._normalize_gamemode_name(gamemode)
+        return "showdown" in normalized and int(gamemode_type or 0) == 3
+
+    @classmethod
     def _should_detect_walls_for_mode(cls, gamemode):
         normalized = cls._normalize_gamemode_name(gamemode)
         return "showdown" in normalized or normalized in {"brawlball", "brawl ball", "brawll ball"}
+
+    @staticmethod
+    def _opposite_key(key):
+        return {"W": "S", "S": "W", "A": "D", "D": "A"}.get(key, "")
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -309,7 +321,7 @@ class Play(Movement):
         }
         self._scaled_hud_cache = None
         self.scene_data = []
-        self.should_detect_walls = self._should_detect_walls_for_mode(self.selected_gamemode)
+        self.should_detect_walls = self.is_showdown_mode or self._should_detect_walls_for_mode(self.selected_gamemode)
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
         self.gadget_pixels_minimum = bot_config["gadget_pixels_minimum"]
@@ -328,6 +340,8 @@ class Play(Movement):
         self._last_no_player_log_time = 0.0
         self._last_end_result_probe_time = 0.0
         self._pending_end_result = None
+        self._last_confirmed_match_time = 0.0
+        self._last_match_evidence_time = 0.0
 
     @staticmethod
     def _entity_count(data, key):
@@ -345,9 +359,40 @@ class Play(Movement):
         self._state_guard_detected_frames = 0
         self._last_state_guard_detection_time = 0.0
 
+    def note_confirmed_match_state(self, current_time=None):
+        self._last_confirmed_match_time = current_time if current_time is not None else time.time()
+
+    def has_recent_match_context(self, current_time=None):
+        now = current_time if current_time is not None else time.time()
+        if now - self._last_confirmed_match_time > 1.0:
+            return False
+        if now - self._last_match_evidence_time > 0.45:
+            return False
+        return True
+
+    def _is_plausible_player_detection(self, data):
+        players = (data or {}).get("player") or []
+        if not players:
+            return False
+
+        try:
+            x1, y1, x2, y2 = [float(value) for value in players[0][:4]]
+        except Exception:
+            return False
+
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        area = width * height
+        scale = max(float(self.window_controller.scale_factor or 1.0), 0.5)
+        return (
+            width >= (55.0 * scale)
+            and height >= (78.0 * scale)
+            and area >= (6500.0 * scale)
+        )
+
     def _should_promote_detected_match(self, data, runtime_state, checked_state, current_time):
         player_count = self._entity_count(data, "player")
-        if player_count <= 0:
+        if player_count <= 0 or not self._is_plausible_player_detection(data):
             self._reset_match_state_guard()
             return False
 
@@ -377,7 +422,8 @@ class Play(Movement):
                 )
             return True
 
-        if checked_state in {"", "lobby", "starting"} and self._state_guard_detected_frames >= 3:
+        required_frames = 4 if checked_state == "lobby" else 3
+        if checked_state in {"", "lobby", "starting"} and self._state_guard_detected_frames >= required_frames:
             if debug:
                 print(
                     "[MATCH] promoting after repeated player detections "
@@ -485,15 +531,29 @@ class Play(Movement):
         if self.is_showdown_mode:
             teammate_target = self._get_teammate_centroid()
             if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
-                regroup_move = self._get_move_toward(player_position, teammate_target, wall_context)
+                regroup_move = self._get_move_toward(
+                    player_position,
+                    teammate_target,
+                    wall_context,
+                    allow_detour=True,
+                )
                 if regroup_move:
                     return regroup_move
 
             last_enemy_pos = self._get_last_known_enemy_pos()
-            if last_enemy_pos is not None:
-                chase_move = self._get_move_toward(player_position, last_enemy_pos, wall_context)
+            if last_enemy_pos is not None and (time.time() - self._last_enemy_seen_at) <= self._showdown_enemy_chase_timeout:
+                chase_move = self._get_move_toward(
+                    player_position,
+                    last_enemy_pos,
+                    wall_context,
+                    allow_detour=True,
+                )
                 if chase_move:
                     return chase_move
+
+            search_move = self._get_search_movement(player_position, wall_context)
+            if search_move:
+                return search_move
 
         preferred_movement = 'W' if self.game_mode == 3 else 'D'  # Adjust based on game mode
 
@@ -511,16 +571,57 @@ class Play(Movement):
             # If no movement is possible, return empty string
             return preferred_movement
 
-    def _get_move_toward(self, player_pos, target_pos, wall_context):
-        direction_x = target_pos[0] - player_pos[0]
-        direction_y = target_pos[1] - player_pos[1]
+    def _build_target_move_candidates(self, direction_x, direction_y, allow_detour=False):
         horizontal = "D" if direction_x > 20 else "A" if direction_x < -20 else ""
         vertical = "S" if direction_y > 20 else "W" if direction_y < -20 else ""
-        moves = [
+        candidates = [
             vertical + horizontal,
+            horizontal + vertical,
             vertical,
             horizontal,
         ]
+
+        if allow_detour:
+            opposite_horizontal = self._opposite_key(horizontal)
+            opposite_vertical = self._opposite_key(vertical)
+            dominant_horizontal = abs(direction_x) >= abs(direction_y)
+
+            if dominant_horizontal:
+                candidates.extend([
+                    horizontal + opposite_vertical,
+                    opposite_vertical + horizontal,
+                    opposite_horizontal,
+                ])
+            else:
+                candidates.extend([
+                    vertical + opposite_horizontal,
+                    opposite_horizontal + vertical,
+                    opposite_vertical,
+                ])
+
+            candidates.extend([
+                opposite_horizontal + opposite_vertical,
+                opposite_vertical + opposite_horizontal,
+                opposite_horizontal,
+                opposite_vertical,
+                "W",
+                "A",
+                "S",
+                "D",
+            ])
+
+        unique_candidates = []
+        for move in candidates:
+            normalized = "".join(ch for ch in str(move or "").upper() if ch in "WASD")
+            if not normalized or normalized in unique_candidates:
+                continue
+            unique_candidates.append(normalized)
+        return unique_candidates
+
+    def _get_move_toward(self, player_pos, target_pos, wall_context, allow_detour=False):
+        direction_x = target_pos[0] - player_pos[0]
+        direction_y = target_pos[1] - player_pos[1]
+        moves = self._build_target_move_candidates(direction_x, direction_y, allow_detour=allow_detour)
         for move in moves:
             if move and not self.is_path_blocked(player_pos, move, wall_context):
                 return move
@@ -666,6 +767,13 @@ class Play(Movement):
     def _get_search_targets(self):
         width = self.window_controller.width
         height = self.window_controller.height
+        if self.is_showdown_mode:
+            return [
+                (width * 0.5, height * 0.18),
+                (width * 0.32, height * 0.26),
+                (width * 0.68, height * 0.26),
+                (width * 0.5, height * 0.34),
+            ]
         if self.game_mode == 3:
             return [
                 (width * 0.5, height * 0.22),
@@ -696,7 +804,7 @@ class Play(Movement):
             self._search_target_switch_time = now
             target = targets[self._search_target_idx]
 
-        return self._get_move_toward(player_pos, target, wall_context)
+        return self._get_move_toward(player_pos, target, wall_context, allow_detour=self.is_showdown_mode)
 
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
@@ -941,15 +1049,30 @@ class Play(Movement):
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
             teammate_target = self._get_teammate_centroid()
-            if teammate_target and (style.get("prefer_teammates") or self._is_post_burst_defensive(current_time)):
-                if self.get_distance(teammate_target, player_pos) > 160:
-                    team_move = self._get_move_toward(player_pos, teammate_target, wall_context)
+            teammate_pull_distance = self._showdown_team_pull_distance if self.is_showdown_mode else 160
+            if teammate_target and (
+                style.get("prefer_teammates")
+                or self._is_post_burst_defensive(current_time)
+                or self.is_showdown_mode
+            ):
+                if self.get_distance(teammate_target, player_pos) > teammate_pull_distance:
+                    team_move = self._get_move_toward(
+                        player_pos,
+                        teammate_target,
+                        wall_context,
+                        allow_detour=self.is_showdown_mode,
+                    )
                     if team_move:
                         return team_move
 
             last_enemy_pos = self._get_last_known_enemy_pos()
             if last_enemy_pos is not None:
-                memory_move = self._get_move_toward(player_pos, last_enemy_pos, wall_context)
+                memory_move = self._get_move_toward(
+                    player_pos,
+                    last_enemy_pos,
+                    wall_context,
+                    allow_detour=self.is_showdown_mode,
+                )
                 if memory_move:
                     return memory_move
             if style.get("aggressive_no_enemy") and self._no_enemy_duration > 1.0:
@@ -975,6 +1098,8 @@ class Play(Movement):
             if teammate_distance > 100:
                 dist_factor = min(1.0, (teammate_distance - 100) / 300.0)
                 cohesion_strength = style.get("team_cohesion", 0.0) * dist_factor
+                if self.is_showdown_mode:
+                    cohesion_strength = max(cohesion_strength, min(0.45, 0.18 + (dist_factor * 0.22)))
                 direction_x = direction_x * (1.0 - cohesion_strength) + (teammate_target[0] - player_pos[0]) * cohesion_strength
                 direction_y = direction_y * (1.0 - cohesion_strength) + (teammate_target[1] - player_pos[1]) * cohesion_strength
 
@@ -1002,13 +1127,11 @@ class Play(Movement):
             move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
             move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
 
-        movement_options = [move_horizontal + move_vertical]
-        if self.game_mode == 3:
-            movement_options += [move_vertical, move_horizontal]
-        elif self.game_mode == 5:
-            movement_options += [move_horizontal, move_vertical]
-        else:
-            raise ValueError("Gamemode type is invalid")
+        movement_options = self._build_target_move_candidates(
+            direction_x,
+            direction_y,
+            allow_detour=self.should_detect_walls,
+        )
 
         # Check for walls and adjust movement
         for move in movement_options:
@@ -1137,6 +1260,18 @@ class Play(Movement):
         data = self.validate_game_data(data)
         self.track_no_detections(data)
         if data:
+            if (
+                self._is_plausible_player_detection(data)
+                and (
+                    self._entity_count(data, "enemy") > 0
+                    or self._entity_count(data, "teammate") > 0
+                    or (
+                        runtime_state == "match"
+                        and (current_time - self._last_confirmed_match_time) <= 1.0
+                    )
+                )
+            ):
+                self._last_match_evidence_time = current_time
             self.time_since_player_last_found = time.time()
             if runtime_state != "match":
                 should_recheck_state = (
@@ -1152,6 +1287,7 @@ class Play(Movement):
                     self._last_state_probe_runtime = runtime_state
                     self._last_state_probe_result = checked_state
                     if checked_state == "match":
+                        self.note_confirmed_match_state(current_time)
                         self._match_state_grace_until = current_time + 2.0
                     else:
                         self._match_state_grace_until = 0.0
@@ -1159,6 +1295,7 @@ class Play(Movement):
                     checked_state = self._last_state_probe_result or runtime_state
                 if self._should_promote_detected_match(data, runtime_state, checked_state, current_time):
                     self._runtime_state = "match"
+                    self.note_confirmed_match_state(current_time)
                     self._match_state_grace_until = current_time + 2.0
                 elif checked_state != "match":
                     if debug and (current_time - self._last_state_guard_log_time >= 2.0):
@@ -1168,6 +1305,7 @@ class Play(Movement):
                 else:
                     self._reset_match_state_guard()
                     self._runtime_state = "match"
+                    self.note_confirmed_match_state(current_time)
         if not data:
             self._reset_match_state_guard()
             player_missing_for = current_time - self.time_since_player_last_found
@@ -1326,4 +1464,3 @@ class Play(Movement):
         movement = movement.lower()
         movement = ''.join(sorted(movement))
         return mapping.get(movement, 'idle' if movement == '' else movement)
-

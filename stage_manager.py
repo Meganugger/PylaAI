@@ -531,7 +531,7 @@ class StageManager:
         screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
-        current_state = get_state(screenshot)
+        current_state = get_state(screenshot, allow_reward_ocr=True)
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
         if known_result in {"victory", "defeat", "draw"}:
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
@@ -594,7 +594,7 @@ class StageManager:
             if debug: print("Game has ended, pressing Q")
             time.sleep(1)
             screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot)
+            current_state = get_state(screenshot, allow_reward_ocr=True)
             end_attempts += 1
         if end_attempts >= max_end_attempts:
             print("End game screen stuck for too long, forcing continue")
@@ -628,4 +628,3 @@ class StageManager:
             self.state_handlers[state](data)
             return
         self.state_handlers[state]()
-

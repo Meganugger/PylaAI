@@ -29,7 +29,7 @@ _last_state_debug_value = None
 _last_state_debug_time = 0.0
 _reward_claim_cache = {
     "checked_at": 0.0,
-    "shape": None,
+    "signature": None,
     "detected": False,
     "button_center": None,
 }
@@ -98,6 +98,25 @@ def _region_center(image, region):
     return int((x1 + x2) / 2), int((y1 + y2) / 2)
 
 
+def _reward_claim_signature(image):
+    button_crop, _ = _crop_region(image, region_data["reward_claim_button"])
+    title_crop, _ = _crop_region(image, region_data["reward_claim_title"])
+    if button_crop.size == 0 or title_crop.size == 0:
+        return None
+
+    button_preview = cv2.resize(button_crop, (8, 4), interpolation=cv2.INTER_AREA)
+    title_preview = cv2.resize(title_crop, (8, 4), interpolation=cv2.INTER_AREA)
+    button_stats = tuple(int(value) for value in button_preview.mean(axis=(0, 1)))
+    title_stats = tuple(int(value) for value in title_preview.mean(axis=(0, 1)))
+    return (
+        tuple(image.shape[:2]),
+        button_stats,
+        title_stats,
+        int(float(button_preview.std())),
+        int(float(title_preview.std())),
+    )
+
+
 def _normalize_reward_text(text):
     normalized = str(text or "").strip().lower()
     replacements = {
@@ -146,11 +165,22 @@ def _ocr_text_tokens(image, region, allowlist=None):
     return tokens
 
 
-def _is_mastery_reward_screen(image):
+def _is_mastery_reward_screen(image, allow_ocr=False):
     now = time.time()
-    shape = tuple(image.shape[:2])
-    if _reward_claim_cache["shape"] == shape and (now - _reward_claim_cache["checked_at"]) < 0.6:
+    signature = _reward_claim_signature(image)
+    if (
+        signature is not None
+        and _reward_claim_cache["signature"] == signature
+        and (now - _reward_claim_cache["checked_at"]) < 0.6
+    ):
         return _reward_claim_cache["detected"], _reward_claim_cache["button_center"]
+
+    if not allow_ocr:
+        _reward_claim_cache["checked_at"] = now
+        _reward_claim_cache["signature"] = signature
+        _reward_claim_cache["detected"] = False
+        _reward_claim_cache["button_center"] = None
+        return False, None
 
     button_tokens = _ocr_text_tokens(
         image,
@@ -175,7 +205,7 @@ def _is_mastery_reward_screen(image):
     button_center = _region_center(image, region_data["reward_claim_button"]) if detected else None
 
     _reward_claim_cache["checked_at"] = now
-    _reward_claim_cache["shape"] = shape
+    _reward_claim_cache["signature"] = signature
     _reward_claim_cache["detected"] = detected
     _reward_claim_cache["button_center"] = button_center
     return detected, button_center
@@ -183,7 +213,7 @@ def _is_mastery_reward_screen(image):
 
 def find_reward_claim_action(screenshot):
     screenshot_bgr = to_bgr_array(screenshot)
-    _detected, button_center = _is_mastery_reward_screen(screenshot_bgr)
+    _detected, button_center = _is_mastery_reward_screen(screenshot_bgr, allow_ocr=True)
     return button_center
 
 
@@ -211,7 +241,7 @@ def find_game_result(screenshot):
     return False
 
 
-def get_in_game_state(image):
+def get_in_game_state(image, allow_reward_ocr=False):
     game_result = find_game_result(image)
     if game_result:
         return f"end_{game_result}"
@@ -219,8 +249,6 @@ def get_in_game_state(image):
         return "shop"
     if is_in_offer_popup(image):
         return "popup"
-    if is_in_reward_claim(image):
-        return "reward_claim"
     if is_in_lobby(image):
         return "lobby"
     if is_in_brawler_selection(image):
@@ -229,6 +257,8 @@ def get_in_game_state(image):
         return "shop"
     if is_in_star_drop(image):
         return "star_drop"
+    if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
+        return "reward_claim"
     return "match"
 
 
@@ -244,14 +274,14 @@ def is_in_offer_popup(image) -> bool:
     return is_template_in_region(image, path + 'close_popup.png', region_data["close_popup"])
 
 
-def is_in_reward_claim(image) -> bool:
+def is_in_reward_claim(image, allow_ocr=False) -> bool:
     if is_template_in_region(
         image,
         path + 'end_battle_top_left_continue_corner.png',
         region_data["reward_claim_corner"]
     ):
         return True
-    detected, _button_center = _is_mastery_reward_screen(image)
+    detected, _button_center = _is_mastery_reward_screen(image, allow_ocr=allow_ocr)
     return detected
 
 
@@ -278,11 +308,11 @@ def is_in_star_drop(image):
     return False
 
 
-def get_state(screenshot):
+def get_state(screenshot, allow_reward_ocr=False):
     global _last_state_debug_value, _last_state_debug_time
     started_at = time.perf_counter()
     screenshot_bgr = to_bgr_array(screenshot)
-    state = get_in_game_state(screenshot_bgr)
+    state = get_in_game_state(screenshot_bgr, allow_reward_ocr=allow_reward_ocr)
     record_timing("state_detection", time.perf_counter() - started_at, print_every=60)
     now = time.time()
     if debug and (state != _last_state_debug_value or now - _last_state_debug_time >= 3.0):

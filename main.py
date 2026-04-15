@@ -65,13 +65,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
             _set_active_stage_manager_instance(self.Stage_manager)
             self.states_requiring_frame_data = ["lobby", "popup", "end", "reward_claim"]
-            if data[0]['automatically_pick']:
-                if debug: print("Picking brawler automatically")
-                self.lobby_automator.select_brawler(data[0]['brawler'])
+            self._startup_brawler_target = data[0]['brawler']
+            self._pending_initial_brawler_select = False
             self.Play.current_brawler = data[0]['brawler']
             self.no_detections_action_threshold = 60 * 8
             self.initialize_stage_manager()
-            self._start_easyocr_warmup()
+            self._easyocr_warmup_started = False
+            try:
+                self.Time_management.states["state_check"] = 0.0
+            except Exception:
+                pass
             try:
                 self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
             except ValueError:
@@ -144,10 +147,46 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             import sys
             sys.exit(1)
 
+        def _run_initial_brawler_select(self):
+            if not self._pending_initial_brawler_select:
+                return False
+
+            self._pending_initial_brawler_select = False
+            if not self._easyocr_warmup_started:
+                self._start_easyocr_warmup()
+                self._easyocr_warmup_started = True
+            target_brawler = str(self._startup_brawler_target or "").strip().lower()
+            if not target_brawler:
+                return False
+
+            print(f"[STARTUP] Selecting brawler '{target_brawler}' before first match")
+            try:
+                selected = self.lobby_automator.select_brawler(target_brawler)
+                if selected is False:
+                    print(
+                        f"[STARTUP] Could not confirm selection for '{target_brawler}'. "
+                        "Continuing with the current lobby brawler."
+                    )
+                else:
+                    print(f"[STARTUP] Ready to play with '{target_brawler}'")
+            except Exception as exc:
+                print(
+                    f"[STARTUP] Brawler selection failed for '{target_brawler}': {exc}. "
+                    "Continuing with the current lobby brawler."
+                )
+
+            now = time.time()
+            self.Play.time_since_last_proceeding = now
+            self.Play.time_since_player_last_found = now
+            for key in self.Play.time_since_detections:
+                self.Play.time_since_detections[key] = now
+            return True
+
         def manage_time_tasks(self, frame):
             now = time.time()
+            runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
             if (
-                str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+                runtime_state == "match"
                 and now - self._last_fast_result_probe >= 0.6
             ):
                 self._last_fast_result_probe = now
@@ -161,11 +200,37 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     return
 
             if self.Time_management.state_check():
-                state = get_state(frame)
+                allow_reward_ocr = runtime_state.startswith("end_") or runtime_state == "reward_claim"
+                state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
+                if state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
+                    self.Play.note_confirmed_match_state(now)
+                if not self._easyocr_warmup_started and self._pending_initial_brawler_select:
+                    self._start_easyocr_warmup()
+                    self._easyocr_warmup_started = True
+                if state == "lobby" and self._pending_initial_brawler_select:
+                    self._run_initial_brawler_select()
+                    try:
+                        frame = self.window_controller.screenshot()
+                        state = get_state(frame)
+                    except Exception:
+                        state = "lobby"
+                if (
+                    state == "starting"
+                    and runtime_state == "match"
+                    and getattr(self.Play, "has_recent_match_context", lambda *_args, **_kwargs: False)(now)
+                ):
+                    if debug:
+                        print(f"[MATCH] keeping runtime state as match despite state probe '{state}'")
+                    state = "match"
                 if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
                     try:
                         screenshot = self.window_controller.screenshot()
-                        confirmed_state = get_state(screenshot)
+                        confirmed_state = get_state(
+                            screenshot,
+                            allow_reward_ocr=allow_reward_ocr,
+                        )
+                        if confirmed_state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
+                            self.Play.note_confirmed_match_state(time.time())
                         if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
                             state = confirmed_state
                             frame = screenshot
@@ -237,14 +302,22 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     c = 0
 
                 wait_started_at = time.perf_counter()
-                frame, frame_time = self.window_controller.wait_for_next_frame(
-                    self.last_processed_frame_time,
-                    copy_frame=True
+                frame_timeout = 15.0 if self.last_processed_frame_time <= 0 else 1.0
+                frame, frame_time = self.window_controller.get_current_frame(
+                    copy_frame=True,
+                    timeout=frame_timeout,
                 )
-                record_timing("frame_wait", time.perf_counter() - wait_started_at, print_every=120)
+                record_timing("frame_fetch", time.perf_counter() - wait_started_at, print_every=120)
                 if frame is None:
                     self.Play.window_controller.keys_up(list("wasd"))
                     print("Stale frame detected -- pausing actions until feed resumes")
+                    time.sleep(1)
+                    continue
+                frame_age = time.time() - frame_time if frame_time > 0 else float("inf")
+                if frame_age > self.window_controller.FRAME_STALE_TIMEOUT:
+                    self.Play.window_controller.keys_up(list("wasd"))
+                    print("Stale frame detected -- pausing actions until feed resumes")
+                    self.window_controller.ensure_brawl_stars_running(force=True)
                     time.sleep(1)
                     continue
                 self.last_processed_frame_time = frame_time
