@@ -587,8 +587,35 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
 
                         global _active_dashboard
                         if _active_dashboard is not None:
+                            active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+                            coerce_int = getattr(self.Stage_manager, "_coerce_int", None)
+                            if not callable(coerce_int):
+                                def coerce_int(value, default=0):
+                                    try:
+                                        return int(value)
+                                    except (TypeError, ValueError):
+                                        return default
                             current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
                             current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
+                            live_trophies = coerce_int(
+                                tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
+                                0,
+                            )
+                            live_wins = coerce_int(
+                                getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
+                                0,
+                            )
+                            live_streak = coerce_int(
+                                tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
+                                0,
+                            )
+                            if active_entry:
+                                if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
+                                    active_entry["trophies"] = live_trophies
+                                if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
+                                    active_entry["wins"] = live_wins
+                                if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
+                                    active_entry["win_streak"] = live_streak
                             roster_signature = tuple(
                                 (
                                     str(entry.get('brawler', '')),
@@ -638,12 +665,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     ips=self.current_ips,
                                     state=self.state or 'starting',
                                     brawler=bname,
-                                    trophies=tobs.current_trophies,
+                                    trophies=live_trophies,
                                     target=target_val,
                                     victories=session_victories,
                                     defeats=session_defeats,
                                     draws=session_draws,
-                                    streak=tobs.win_streak,
+                                    streak=live_streak,
                                     game_mode=self.Play.game_mode_name if self.Play.game_mode_name != 'unknown' else (self.Stage_manager.detected_game_mode or ''),
                                     playstyle='hold' if self.Play.must_brawler_hold_attack(bname, self.Play.brawlers_info) else 'tap',
                                     player_hp=self.Play.player_hp_percent,
