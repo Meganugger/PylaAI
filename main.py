@@ -3,6 +3,7 @@ import ctypes
 import gc
 import threading
 import time
+import traceback
 
 from gui.hub import Hub
 from gui.login import login
@@ -789,6 +790,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 except Exception as _loop_err:
                     _consecutive_errors += 1
                     print(f"[ERROR] Main loop exception ({_consecutive_errors}): {_loop_err}")
+                    traceback.print_exc()
                     try:
                         self.window_controller.keys_up(list("wasd"))
                     except Exception:

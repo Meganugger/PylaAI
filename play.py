@@ -8,7 +8,7 @@ from shapely import LineString
 from shapely.geometry import Polygon
 from state_finder.main import get_state, find_game_result
 from detect import Detect
-from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
+from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info, reader
 from visual_overlay import VisualOverlay
 from hp_estimator import HPEstimator
 from pathfinder import PathPlanner
@@ -1794,13 +1794,17 @@ class Movement:
             
             # Use cached OCR reader for speed
             if 'reader' not in _ocr_cache:
-                import easyocr
-                _ocr_cache['reader'] = easyocr.Reader(['en'], gpu=True, verbose=False)
-            
-            reader = _ocr_cache['reader']
+                _ocr_cache['reader'] = reader
+
+            ocr_reader = _ocr_cache['reader']
             # Fast OCR with limited settings
-            results = reader.readtext(masked_crop, detail=0, paragraph=False, 
-                                     allowlist='0123456789', batch_size=1)
+            results = ocr_reader.readtext(
+                masked_crop,
+                detail=0,
+                paragraph=False,
+                allowlist='0123456789',
+                batch_size=1,
+            )
             
             if results:
                 for text in results:
@@ -3168,6 +3172,67 @@ class Play(Movement):
         for key in self.time_since_detections:
             if key in data and data[key]:
                 self.time_since_detections[key] = time.time()
+
+    def _handle_missing_player_data(self, frame, brawler, current_time, runtime_state):
+        self._player_was_visible = False
+        player_missing_for = current_time - self.time_since_player_last_found
+        if (
+            runtime_state == "match"
+            and player_missing_for >= 0.25
+            and (current_time - self._last_end_result_probe_time) >= 0.5
+        ):
+            self._last_end_result_probe_time = current_time
+            game_result = find_game_result(frame)
+            if game_result:
+                print(f"[RESULT] play missing-player probe detected {game_result}")
+                self._pending_end_result = game_result
+                self._runtime_state = f"end_{game_result}"
+                self.window_controller.keys_up(list("wasd"))
+                self.time_since_last_proceeding = current_time
+                return
+
+        fast_respawn_modes = ('wipeout', 'duels', 'knockout', 'bounty')
+        dead_threshold = 1.0 if self.game_mode_name in fast_respawn_modes else 2.0
+        if current_time - self.time_since_player_last_found > dead_threshold and self._spawn_detected:
+            self._is_dead = True
+
+        time_since_player = current_time - self.time_since_player_last_found
+        if time_since_player > 0.5:
+            self.window_controller.keys_up(list("wasd"))
+
+        self.time_since_different_movement = time.time()
+        if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
+            current_state = get_state(frame)
+            if isinstance(current_state, str) and current_state.startswith("end_"):
+                print(f"[RESULT] play state probe detected {current_state}")
+                self._pending_end_result = current_state.split("_", 1)[1]
+                self._runtime_state = current_state
+                self.window_controller.keys_up(list("wasd"))
+                self.time_since_last_proceeding = current_time
+                return
+            if current_state != "match":
+                self.time_since_last_proceeding = current_time
+            else:
+                if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                    print("haven't detected the player in a while proceeding")
+                    self._last_no_player_log_time = current_time
+                self.window_controller.press_continue()
+                self.time_since_last_proceeding = time.time()
+
+        stats_info = getattr(self, '_stats_info', None) or {}
+        self._show_debug_overlay(frame, {}, "NO PLAYER", brawler, stats_info=stats_info)
+        if self.visual_overlay is not None:
+            self.visual_overlay.update(
+                is_dead=self._is_dead,
+                game_state=stats_info.get('state', 'match'),
+                match_phase=getattr(self, '_match_phase', 'early'),
+                our_score=getattr(self, '_our_score', 0),
+                their_score=getattr(self, '_their_score', 0),
+                death_count=getattr(self, '_death_count', 0),
+                kills=getattr(self, '_enemies_killed_this_match', 0),
+                player_hp=0 if self._is_dead else getattr(self, 'player_hp_percent', 100),
+                enemy_hp=getattr(self, 'enemy_hp_percent', -1),
+            )
 
     def do_movement(self, movement):
         movement = movement.lower()
@@ -4722,6 +4787,10 @@ class Play(Movement):
                 else:
                     self._runtime_state = "match"
 
+        if not data:
+            self._handle_missing_player_data(frame, brawler, current_time, runtime_state)
+            return
+
         # --- IN-MATCH SHOWDOWN DETECTION ---
         # Check for "Teams left" text at top of screen (only once, throttled)
         if not self._showdown_detected_in_match and not self.is_showdown:
@@ -4956,67 +5025,7 @@ class Play(Movement):
                         print(f"[PHASE] Match started - phase: early")
 
         if not data:
-            self._player_was_visible = False
-            player_missing_for = current_time - self.time_since_player_last_found
-            if (
-                runtime_state == "match"
-                and player_missing_for >= 0.25
-                and (current_time - self._last_end_result_probe_time) >= 0.5
-            ):
-                self._last_end_result_probe_time = current_time
-                game_result = find_game_result(frame)
-                if game_result:
-                    print(f"[RESULT] play missing-player probe detected {game_result}")
-                    self._pending_end_result = game_result
-                    self._runtime_state = f"end_{game_result}"
-                    self.window_controller.keys_up(list("wasd"))
-                    self.time_since_last_proceeding = current_time
-                    return
-            # Mark as dead if player not seen for threshold time and match has started
-            # Wipeout/duels have FAST respawns - use shorter threshold
-            fast_respawn_modes = ('wipeout', 'duels', 'knockout', 'bounty')
-            dead_threshold = 1.0 if self.game_mode_name in fast_respawn_modes else 2.0
-            if current_time - self.time_since_player_last_found > dead_threshold and self._spawn_detected:
-                self._is_dead = True
-            # Release all movement keys immediately when player is not detected
-            # (round ended, dead, or transition screen)
-            time_since_player = current_time - self.time_since_player_last_found
-            if time_since_player > 0.5:
-                self.window_controller.keys_up(list("wasd"))
-            self.time_since_different_movement = time.time()
-            if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                current_state = get_state(frame)
-                if isinstance(current_state, str) and current_state.startswith("end_"):
-                    print(f"[RESULT] play state probe detected {current_state}")
-                    self._pending_end_result = current_state.split("_", 1)[1]
-                    self._runtime_state = current_state
-                    self.window_controller.keys_up(list("wasd"))
-                    self.time_since_last_proceeding = current_time
-                    return
-                if current_state != "match":
-                    self.time_since_last_proceeding = current_time
-                else:
-                    if debug and (current_time - self._last_no_player_log_time >= 2.0):
-                        print("haven't detected the player in a while proceeding")
-                        self._last_no_player_log_time = current_time
-                    self.window_controller.press_continue()
-                    self.time_since_last_proceeding = time.time()
-            # Show debug overlay even when no player detected
-            self._show_debug_overlay(frame, {}, "NO PLAYER", brawler,
-                                     stats_info=getattr(self, '_stats_info', None))
-            # Update visual overlay with dead state so it auto-hides
-            if self.visual_overlay is not None:
-                self.visual_overlay.update(
-                    is_dead=self._is_dead,
-                    game_state=getattr(self, '_stats_info', {}).get('state', 'match'),
-                    match_phase=getattr(self, '_match_phase', 'early'),
-                    our_score=getattr(self, '_our_score', 0),
-                    their_score=getattr(self, '_their_score', 0),
-                    death_count=getattr(self, '_death_count', 0),
-                    kills=getattr(self, '_enemies_killed_this_match', 0),
-                    player_hp=0 if self._is_dead else getattr(self, 'player_hp_percent', 100),
-                    enemy_hp=getattr(self, 'enemy_hp_percent', -1),
-                )
+            self._handle_missing_player_data(frame, brawler, current_time, runtime_state)
             return
         self.time_since_last_proceeding = time.time()
         if current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold:
