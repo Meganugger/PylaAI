@@ -46,6 +46,10 @@ class Movement:
         self._showdown_regroup_distance = float(bot_config.get("showdown_regroup_distance", 165))
         self._showdown_team_pull_distance = float(bot_config.get("showdown_team_pull_distance", 130))
         self._showdown_enemy_chase_timeout = float(bot_config.get("showdown_enemy_chase_timeout", 2.0))
+        self._search_target_hold_time = float(bot_config.get("search_target_hold_time", 3.5))
+        self._unstuck_progress_distance = float(bot_config.get("unstuck_progress_distance", 42))
+        self._movement_anchor_pos = None
+        self._movement_anchor_command = ""
 
     @staticmethod
     def _normalize_gamemode_name(gamemode):
@@ -123,7 +127,7 @@ class Movement:
         translation_table = str.maketrans("wasd", "sdwa")
         return movement.translate(translation_table)
 
-    def unstuck_movement_if_needed(self, movement, current_time=None):
+    def unstuck_movement_if_needed(self, movement, current_time=None, player_pos=None):
         if current_time is None:
             current_time = time.time()
         movement = movement.lower()
@@ -135,6 +139,16 @@ class Movement:
 
         if "".join(self.keys_hold) != movement and movement[::-1] != "".join(self.keys_hold):
             self.time_since_different_movement = current_time
+            self._movement_anchor_command = movement
+            self._movement_anchor_pos = player_pos
+        elif player_pos is not None:
+            if self._movement_anchor_command != movement or self._movement_anchor_pos is None:
+                self._movement_anchor_command = movement
+                self._movement_anchor_pos = player_pos
+                self.time_since_different_movement = current_time
+            elif self.get_distance(self._movement_anchor_pos, player_pos) >= self._unstuck_progress_distance:
+                self._movement_anchor_pos = player_pos
+                self.time_since_different_movement = current_time
 
         # print(f"Last change: {self.time_since_different_movement}", f" self.hold: {self.keys_hold}",f" c movement: {movement}")
         if current_time - self.time_since_different_movement > self.fix_movement_keys["delay_to_trigger"]:
@@ -631,6 +645,7 @@ class Play(Movement):
         return self.brawler_ranges[brawler]
 
     def loop(self, brawler, data, current_time, wall_context):
+        player_pos = self.get_player_pos(data['player'][0])
         movement = self.get_movement(
             player_data=data['player'][0],
             enemy_data=data['enemy'],
@@ -639,7 +654,7 @@ class Play(Movement):
         )
         current_time = time.time()
         if current_time - self.time_since_movement > self.minimum_movement_delay:
-            movement = self.unstuck_movement_if_needed(movement, current_time)
+            movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
             self.do_movement(movement)
             self.time_since_movement = time.time()
         return movement
@@ -785,10 +800,12 @@ class Play(Movement):
         height = self.window_controller.height
         if self.is_showdown_mode:
             return [
-                (width * 0.5, height * 0.18),
-                (width * 0.32, height * 0.26),
-                (width * 0.68, height * 0.26),
-                (width * 0.5, height * 0.34),
+                (width * 0.50, height * 0.28),
+                (width * 0.32, height * 0.38),
+                (width * 0.68, height * 0.38),
+                (width * 0.40, height * 0.56),
+                (width * 0.60, height * 0.56),
+                (width * 0.50, height * 0.68),
             ]
         if self.game_mode == 3:
             return [
@@ -809,11 +826,15 @@ class Play(Movement):
 
         now = time.time()
         if self._search_target_switch_time == 0.0:
+            self._search_target_idx = min(
+                range(len(targets)),
+                key=lambda idx: self.get_distance(targets[idx], player_pos),
+            )
             self._search_target_switch_time = now
         idx = self._search_target_idx % len(targets)
         target = targets[idx]
         target_distance = self.get_distance(target, player_pos)
-        stale_target = (now - self._search_target_switch_time) > 3.5
+        stale_target = (now - self._search_target_switch_time) > self._search_target_hold_time
 
         if target_distance < 90 or stale_target:
             self._search_target_idx = (self._search_target_idx + 1) % len(targets)
@@ -1066,6 +1087,7 @@ class Play(Movement):
         if enemies:
             self._update_enemy_memory(enemies)
             self._last_enemy_seen_at = current_time
+            self._search_target_switch_time = 0.0
         should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
