@@ -3,6 +3,7 @@ import json
 import os
 import re
 import threading
+import traceback
 from datetime import datetime
 
 import requests
@@ -357,6 +358,7 @@ class QtBridge(QObject):
             except (TypeError, ValueError):
                 self._pyla_main(self.brawlers_data)
         except Exception as exc:
+            traceback.print_exc()
             self._notification("error", f"Bot thread error: {exc}")
         finally:
             self._set_runtime_binding("_active_dashboard", None)

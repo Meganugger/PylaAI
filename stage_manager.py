@@ -180,6 +180,33 @@ class StageManager:
         self._api_lobby_sync_attempts = 0
         self._last_api_lobby_sync_attempt_at = 0.0
 
+    @staticmethod
+    def _coerce_int(value, default=0):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return default
+
+    def _resolve_push_progress(self):
+        active = self.brawlers_pick_data[0] if self.brawlers_pick_data else {}
+        type_to_push = str(active.get("type", "trophies") or "trophies")
+        if type_to_push not in {"trophies", "wins"}:
+            type_to_push = "trophies"
+
+        if type_to_push == "wins":
+            raw_value = self.Trophy_observer.current_wins
+            default_target = 300
+        else:
+            raw_value = self.Trophy_observer.current_trophies
+            default_target = 1000
+
+        if raw_value is None:
+            raw_value = active.get(type_to_push)
+
+        value = self._coerce_int(raw_value, 0)
+        push_target = self._coerce_int(active.get("push_until"), default_target)
+        return type_to_push, value, push_target
+
     def start_brawl_stars(self, frame):
         data = extract_text_and_positions(np.asarray(frame))
         for key in list(data.keys()):
@@ -266,11 +293,8 @@ class StageManager:
         print(f"[FARM] Dynamic rotation: switching from {current_brawler.title()} "
               f"to {new_brawler.title()} ({self.brawlers_pick_data[0].get('trophies', 0)} trophies).")
         self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-        self.Trophy_observer.current_wins = (
-            self.brawlers_pick_data[0]['wins']
-            if self.brawlers_pick_data[0]['wins'] != "" else 0
-        )
-        self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+        self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
+        self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
         save_brawler_data(self.brawlers_pick_data)
         return True
 
@@ -472,9 +496,18 @@ class StageManager:
         if not self.brawlers_pick_data:
             return
         active = self.brawlers_pick_data[0]
-        active['trophies'] = self.Trophy_observer.current_trophies
-        active['wins'] = self.Trophy_observer.current_wins
-        active['win_streak'] = self.Trophy_observer.win_streak
+        active['trophies'] = self._coerce_int(
+            self.Trophy_observer.current_trophies,
+            self._coerce_int(active.get('trophies'), 0),
+        )
+        active['wins'] = self._coerce_int(
+            self.Trophy_observer.current_wins,
+            self._coerce_int(active.get('wins'), 0),
+        )
+        active['win_streak'] = self._coerce_int(
+            self.Trophy_observer.win_streak,
+            self._coerce_int(active.get('win_streak'), 0),
+        )
 
     def mark_match_started(self):
         if self._match_in_progress or self._awaiting_lobby_result_sync:
@@ -556,9 +589,21 @@ class StageManager:
                     print("[RESULT] lobby trophy OCR did not find a usable value")
                 return False
 
+        verified_trophies = self._coerce_int(verified_trophies, None)
+        if verified_trophies is None:
+            return False
+
         match_start_trophies = self.Trophy_observer.get_active_match_start_trophies(current_brawler)
         if match_start_trophies is None:
-            match_start_trophies = int(self.brawlers_pick_data[0].get("trophies", 0) or 0)
+            match_start_trophies = self._coerce_int(
+                self.brawlers_pick_data[0].get("trophies"),
+                self._coerce_int(self.Trophy_observer.current_trophies, 0),
+            )
+        else:
+            match_start_trophies = self._coerce_int(
+                match_start_trophies,
+                self._coerce_int(self.Trophy_observer.current_trophies, 0),
+            )
 
         if verification_source == "api" and verified_trophies == match_start_trophies:
             elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else 0.0
@@ -609,14 +654,7 @@ class StageManager:
         self.Trophy_observer.add_win(game_result)
         self.time_since_last_stat_change = time.time()
 
-        values = {
-            "trophies": self.Trophy_observer.current_trophies,
-            "wins": self.Trophy_observer.current_wins,
-        }
-        type_to_push = self.brawlers_pick_data[0]['type']
-        if type_to_push not in values:
-            type_to_push = "trophies"
-        value = values[type_to_push]
+        type_to_push, value, _ = self._resolve_push_progress()
 
         self._sync_active_brawler_progress()
         self.brawlers_pick_data[0][type_to_push] = value
@@ -750,22 +788,7 @@ class StageManager:
             print("[FARM] Pressed Q to start match after brawler switch")
             return
 
-        values = {
-            "trophies": self.Trophy_observer.current_trophies,
-            "wins": self.Trophy_observer.current_wins
-        }
-
-        type_of_push = self.brawlers_pick_data[0]['type']
-        if type_of_push not in values:
-            type_of_push = "trophies"
-        value = values[type_of_push]
-        if value == "" and type_of_push == "wins":
-            value = 0
-        push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
-        if push_current_brawler_till == "" and type_of_push == "wins":
-            push_current_brawler_till = 300
-        if push_current_brawler_till == "" and type_of_push == "trophies":
-            push_current_brawler_till = 1000
+        type_of_push, value, push_current_brawler_till = self._resolve_push_progress()
 
         if value >= push_current_brawler_till:
             # smart Trophy Farm: use intelligent rotation
@@ -791,8 +814,8 @@ class StageManager:
 
                 # Load next brawler's data
                 self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-                self.Trophy_observer.current_wins = self.brawlers_pick_data[0]['wins'] if self.brawlers_pick_data[0]['wins'] != "" else 0
-                self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+                self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
+                self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
                 next_brawler_name = self.brawlers_pick_data[0]['brawler']
                 save_brawler_data(self.brawlers_pick_data)
 
@@ -846,8 +869,8 @@ class StageManager:
                     loop.close()
                 self.brawlers_pick_data.pop(0)
                 self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-                self.Trophy_observer.current_wins = self.brawlers_pick_data[0]['wins'] if self.brawlers_pick_data[0]['wins'] != "" else 0
-                self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+                self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
+                self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
                 next_brawler_name = self.brawlers_pick_data[0]['brawler']
                 if self.brawlers_pick_data[0]["automatically_pick"]:
                     if debug: print("Picking next automatically picked brawler")
@@ -1035,25 +1058,10 @@ class StageManager:
                         self._quest_matches_played[bn] = self._quest_matches_played.get(bn, 0) + 1
                         print(f"[QUEST] {bn.title()} match #{self._quest_matches_played[bn]} completed")
 
-                    values = {
-                        "trophies": self.Trophy_observer.current_trophies,
-                        "wins": self.Trophy_observer.current_wins
-                    }
-                    type_to_push = self.brawlers_pick_data[0]['type']
-                    if type_to_push not in values:
-                        type_to_push = "trophies"
-                    value = values[type_to_push]
+                    type_to_push, value, push_current_brawler_till = self._resolve_push_progress()
                     self._sync_active_brawler_progress()
                     self.brawlers_pick_data[0][type_to_push] = value
                     save_brawler_data(self.brawlers_pick_data)
-                    push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
-
-                    if value == "" and type_to_push == "wins":
-                        value = 0
-                    if push_current_brawler_till == "" and type_to_push == "wins":
-                        push_current_brawler_till = 300
-                    if push_current_brawler_till == "" and type_to_push == "trophies":
-                        push_current_brawler_till = 1000
 
                     if value >= push_current_brawler_till:
                         if len(self.brawlers_pick_data) <= 1:
@@ -1083,11 +1091,8 @@ class StageManager:
                             has_next = self._pick_next_farm_brawler()
                             if has_next:
                                 self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-                                self.Trophy_observer.current_wins = (
-                                    self.brawlers_pick_data[0]['wins']
-                                    if self.brawlers_pick_data[0]['wins'] != "" else 0
-                                )
-                                self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+                                self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
+                                self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
                                 save_brawler_data(self.brawlers_pick_data)
                                 self._pending_brawler_switch = True
                                 print(f"[FARM] Queued switch to {self.brawlers_pick_data[0]['brawler'].title()} for next lobby.")
@@ -1281,25 +1286,10 @@ class StageManager:
 
             if self._result_applied_for_active_match and not result_post_processed:
                 result_post_processed = True
-                values = {
-                    "trophies": self.Trophy_observer.current_trophies,
-                    "wins": self.Trophy_observer.current_wins,
-                }
-                type_to_push = self.brawlers_pick_data[0]['type']
-                if type_to_push not in values:
-                    type_to_push = "trophies"
-                value = values[type_to_push]
+                type_to_push, value, push_current_brawler_till = self._resolve_push_progress()
                 self._sync_active_brawler_progress()
                 self.brawlers_pick_data[0][type_to_push] = value
                 save_brawler_data(self.brawlers_pick_data)
-                push_current_brawler_till = self.brawlers_pick_data[0]['push_until']
-
-                if value == "" and type_to_push == "wins":
-                    value = 0
-                if push_current_brawler_till == "" and type_to_push == "wins":
-                    push_current_brawler_till = 300
-                if push_current_brawler_till == "" and type_to_push == "trophies":
-                    push_current_brawler_till = 1000
 
                 if value >= push_current_brawler_till:
                     if len(self.brawlers_pick_data) <= 1:
@@ -1327,11 +1317,8 @@ class StageManager:
                         has_next = self._pick_next_farm_brawler()
                         if has_next:
                             self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-                            self.Trophy_observer.current_wins = (
-                                self.brawlers_pick_data[0]['wins']
-                                if self.brawlers_pick_data[0]['wins'] != "" else 0
-                            )
-                            self.Trophy_observer.win_streak = self.brawlers_pick_data[0]['win_streak']
+                            self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
+                            self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
                             save_brawler_data(self.brawlers_pick_data)
                             self._pending_brawler_switch = True
                             print(f"[FARM] Queued switch to {self.brawlers_pick_data[0]['brawler'].title()} for next lobby.")

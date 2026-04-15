@@ -153,9 +153,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._last_gc_time = time.time()
 
         def initialize_stage_manager(self):
-            self.Stage_manager.Trophy_observer.win_streak = data[0]['win_streak']
-            self.Stage_manager.Trophy_observer.current_trophies = data[0]['trophies']
-            self.Stage_manager.Trophy_observer.current_wins = data[0]['wins'] if data[0]['wins'] != "" else 0
+            active = data[0] if data else {}
+            self.Stage_manager.Trophy_observer.win_streak = self.Stage_manager._coerce_int(active.get('win_streak'), 0)
+            self.Stage_manager.Trophy_observer.current_trophies = self.Stage_manager._coerce_int(active.get('trophies'), 0)
+            self.Stage_manager.Trophy_observer.current_wins = self.Stage_manager._coerce_int(active.get('wins'), 0)
 
         @staticmethod
         def _start_easyocr_warmup():
