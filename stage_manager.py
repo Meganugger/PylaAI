@@ -7,7 +7,7 @@ import time
 import cv2
 import numpy as np
 
-from state_finder.main import get_state, find_game_result
+from state_finder.main import get_state, find_game_result, find_reward_claim_action
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
     save_brawler_data, reader, to_bgr_array
@@ -518,6 +518,11 @@ class StageManager:
         popup_location = find_template_center(screenshot, self.close_popup_icon)
         if popup_location:
             self.window_controller.click(*popup_location)
+            return
+
+        reward_action = find_reward_claim_action(screenshot)
+        if reward_action:
+            self.window_controller.click(*reward_action)
             return
 
         self.window_controller.press_continue()
