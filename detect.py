@@ -114,9 +114,37 @@ class Detect:
 
         return model, active_provider
 
+    @staticmethod
+    def _ensure_bgr_image(img):
+        if img is None:
+            raise ValueError("detect_objects received an empty frame.")
+
+        if isinstance(img, np.ndarray):
+            arr = img
+        elif isinstance(img, Image.Image):
+            arr = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+            return arr
+        else:
+            arr = np.asarray(img)
+            if not isinstance(arr, np.ndarray) or arr.size == 0:
+                raise TypeError(f"Unsupported frame type for detection: {type(img)}")
+            # FrameData and similar wrappers store RGB data and expose it via np.asarray().
+            if hasattr(img, "arr"):
+                if arr.ndim == 3 and arr.shape[2] == 3:
+                    return cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+                if arr.ndim == 3 and arr.shape[2] == 4:
+                    return cv2.cvtColor(arr, cv2.COLOR_RGBA2BGR)
+
+        if arr.ndim == 2:
+            return cv2.cvtColor(arr, cv2.COLOR_GRAY2BGR)
+        if arr.ndim == 3 and arr.shape[2] == 4:
+            return cv2.cvtColor(arr, cv2.COLOR_BGRA2BGR)
+        if arr.ndim != 3 or arr.shape[2] != 3:
+            raise ValueError(f"Unsupported frame shape for detection: {arr.shape}")
+        return arr
+
     def preprocess_image(self, img):
-        if isinstance(img, Image.Image):
-            img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        img = self._ensure_bgr_image(img)
 
         h, w, _ = img.shape
         scale = min(self.input_size[0] / h, self.input_size[1] / w)
@@ -254,8 +282,7 @@ class Detect:
 
     def detect_objects(self, img, conf_tresh=0.6):
         started_at = time.perf_counter()
-        if isinstance(img, Image.Image):
-            img = cv2.cvtColor(np.asarray(img), cv2.COLOR_RGB2BGR)
+        img = self._ensure_bgr_image(img)
         orig_h, orig_w = img.shape[:2]
         orig_img_shape = (orig_h, orig_w)
 
