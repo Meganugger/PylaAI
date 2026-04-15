@@ -62,16 +62,34 @@ class DefaultEasyOCR:
         self._reader_lock = threading.Lock()
 
     @staticmethod
+    def _torch_gpu_available():
+        try:
+            import torch
+        except Exception:
+            return False
+
+        try:
+            if torch.cuda.is_available():
+                return True
+        except Exception:
+            pass
+
+        try:
+            mps_backend = getattr(getattr(torch, "backends", None), "mps", None)
+            if mps_backend and mps_backend.is_available():
+                return True
+        except Exception:
+            pass
+
+        return False
+
+    @staticmethod
     def _should_use_gpu():
         configured_value = str(load_toml_as_dict("cfg/general_config.toml").get("easyocr_gpu", "auto")).lower()
-        available_providers = set(ort.get_available_providers())
-        has_gpu_provider = any(
-            provider in available_providers
-            for provider in ("CUDAExecutionProvider", "DmlExecutionProvider")
-        )
+        has_torch_gpu = DefaultEasyOCR._torch_gpu_available()
 
         if configured_value in ("yes", "true", "1", "gpu"):
-            return has_gpu_provider
+            return has_torch_gpu
         if configured_value in ("no", "false", "0", "cpu"):
             return False
 
@@ -79,7 +97,7 @@ class DefaultEasyOCR:
         if preferred_device not in ("gpu", "auto"):
             return False
 
-        return has_gpu_provider
+        return has_torch_gpu
 
     def _get_reader(self):
         if self.reader is not None:
