@@ -66,10 +66,15 @@ def load_template(image_path, width, height):
     current_width_ratio = width / orig_screen_width
     current_height_ratio = height / orig_screen_height
     image = cv2.imread(image_path)
+    if image is None:
+        raise FileNotFoundError(f"Template image could not be loaded: {image_path}")
     orig_height, orig_width = image.shape[:2]
+    new_width = max(1, int(orig_width * current_width_ratio))
+    new_height = max(1, int(orig_height * current_height_ratio))
     resized_image = cv2.resize(
         image,
-        (int(orig_width * current_width_ratio), int(orig_height * current_height_ratio))
+        (new_width, new_height),
+        interpolation=cv2.INTER_LINEAR,
     )
     return resized_image
 
