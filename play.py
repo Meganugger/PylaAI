@@ -2294,6 +2294,8 @@ class Play(Movement):
         self._last_state_probe_time = 0.0
         self._match_state_grace_until = 0.0
         self._last_state_guard_log_time = 0.0
+        self._state_guard_detected_frames = 0
+        self._last_state_guard_detection_time = 0.0
         self._last_no_player_log_time = 0.0
         self._last_end_result_probe_time = 0.0
         self._pending_end_result = None
@@ -2380,6 +2382,64 @@ class Play(Movement):
         except Exception as e:
             print(f"[BT] Could not initialize Behavior Tree: {e}")
             self._bt_combat = None
+
+    @staticmethod
+    def _entity_count(data, key):
+        if not data:
+            return 0
+        value = data.get(key)
+        if not value:
+            return 0
+        try:
+            return len(value)
+        except TypeError:
+            return 1
+
+    def _reset_match_state_guard(self):
+        self._state_guard_detected_frames = 0
+        self._last_state_guard_detection_time = 0.0
+
+    def _should_promote_detected_match(self, data, runtime_state, checked_state, current_time):
+        player_count = self._entity_count(data, "player")
+        if player_count <= 0:
+            self._reset_match_state_guard()
+            return False
+
+        enemy_count = self._entity_count(data, "enemy")
+        teammate_count = self._entity_count(data, "teammate")
+        supporting_entities = enemy_count + teammate_count
+
+        if checked_state == "match":
+            self._reset_match_state_guard()
+            return True
+
+        if runtime_state not in {"starting", "lobby"}:
+            self._reset_match_state_guard()
+            return False
+
+        if current_time - self._last_state_guard_detection_time > 1.0:
+            self._state_guard_detected_frames = 0
+
+        self._last_state_guard_detection_time = current_time
+        self._state_guard_detected_frames += 1
+
+        if supporting_entities > 0:
+            if debug:
+                print(
+                    "[MATCH] promoting to match from gameplay detections "
+                    f"(player={player_count}, enemy={enemy_count}, teammate={teammate_count}, state={checked_state})"
+                )
+            return True
+
+        if checked_state in {"", "lobby", "starting"} and self._state_guard_detected_frames >= 3:
+            if debug:
+                print(
+                    "[MATCH] promoting after repeated player detections "
+                    f"(frames={self._state_guard_detected_frames}, state={checked_state})"
+                )
+            return True
+
+        return False
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -4796,7 +4856,7 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
                 self.time_since_last_proceeding = current_time
                 return
-        data = self.get_main_data(frame)
+        data = self.get_main_data(frame) or {}
         if data:
             self.time_since_player_last_found = time.time()
             if runtime_state != "match":
@@ -4818,15 +4878,20 @@ class Play(Movement):
                         self._match_state_grace_until = 0.0
                 else:
                     checked_state = self._last_state_probe_result or runtime_state
-                if checked_state != "match":
+                if self._should_promote_detected_match(data, runtime_state, checked_state, current_time):
+                    self._runtime_state = "match"
+                    self._match_state_grace_until = current_time + 2.0
+                elif checked_state != "match":
                     if debug and (current_time - self._last_state_guard_log_time >= 2.0):
                         print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
                         self._last_state_guard_log_time = current_time
                     data = None
                 else:
+                    self._reset_match_state_guard()
                     self._runtime_state = "match"
 
         if not data:
+            self._reset_match_state_guard()
             self._handle_missing_player_data(frame, brawler, current_time, runtime_state)
             return
 
