@@ -261,6 +261,7 @@ class Movement:
         self._no_enemy_duration = 0.0           # How long since we last saw any enemy
         self._solo_search_target_idx = 0        # Index for rotating solo-search waypoints
         self._solo_search_last_switch = 0.0     # Last time solo-search target changed
+        self._solo_search_target_hold_time = float(bot_config.get("solo_search_target_hold_time", 3.6))
 
         # === DECISION REASON LOGGING ===
         self.last_decision_reason = ""      # Why the bot chose its current action
@@ -2672,12 +2673,21 @@ class Play(Movement):
             ratios = [(0.50, 0.50), (0.35, 0.35), (0.65, 0.35), (0.35, 0.65), (0.65, 0.65)]
 
         targets = [(width * rx, height * ry) for rx, ry in ratios]
+        if self._solo_search_last_switch == 0.0:
+            self._solo_search_target_idx = min(
+                range(len(targets)),
+                key=lambda target_idx: math.hypot(
+                    targets[target_idx][0] - player_pos[0],
+                    targets[target_idx][1] - player_pos[1],
+                ),
+            )
+            self._solo_search_last_switch = now
         idx = self._solo_search_target_idx % len(targets)
         target = targets[idx]
 
         dist = math.hypot(target[0] - player_pos[0], target[1] - player_pos[1])
         reached_target = dist < 95
-        stale_target = (now - self._solo_search_last_switch) > 3.6
+        stale_target = (now - self._solo_search_last_switch) > self._solo_search_target_hold_time
 
         recent = [(x, y) for x, y, t in self._visited_zones if now - t < 2.8]
         stuck_here = False
@@ -5277,6 +5287,7 @@ class Play(Movement):
 
                 # Update enemy position memory (so we know where they disappeared)
                 self._update_enemy_memory(enemies, player_pos)
+                self._solo_search_last_switch = 0.0
 
                 # Enemy reappeared - they're NOT dead anymore
                 self._enemy_was_low_hp_when_lost = False
