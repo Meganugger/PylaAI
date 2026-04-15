@@ -90,6 +90,13 @@ class QtBridge(QObject):
         except Exception:
             return default
 
+    @staticmethod
+    def _gamemode_type_for(gamemode):
+        normalized = str(gamemode or "").strip().lower()
+        if normalized in {"basketbrawl", "5v5", "brawlball_5v5"}:
+            return 5
+        return 3
+
     def _load_bot_config(self):
         config = load_config("bot")
         config.setdefault("gamemode", "knockout")
@@ -482,7 +489,7 @@ class QtBridge(QObject):
         self.bot_config["gamemode"] = gamemode
         matching = next((mode for mode in GAMEMODES if mode["value"] == gamemode), None)
         if matching:
-            self.bot_config["gamemode_type"] = 1 if gamemode in {"showdown", "duels"} else 5 if gamemode == "5v5" else 3
+            self.bot_config["gamemode_type"] = self._gamemode_type_for(gamemode)
 
         save_dict_as_toml(self.general_config, "cfg/general_config.toml")
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")

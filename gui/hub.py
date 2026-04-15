@@ -500,12 +500,16 @@ class Hub:
         self.rb_brawlball_3 = create_gamemode_button(
             self.gm3_frame, "brawlball", "Brawlball", orientation=3
         )
+        self.rb_showdown_3 = create_gamemode_button(
+            self.gm3_frame, "showdown", "Showdown", orientation=3
+        )
         self.rb_other_3 = create_gamemode_button(
             self.gm3_frame, "other", "Other Modes", orientation=3
         )
 
         self.rb_brawlball_3.grid(row=0, column=0, padx=S(10), pady=S(5))
-        self.rb_other_3.grid(row=0, column=1, padx=S(10), pady=S(5))
+        self.rb_showdown_3.grid(row=0, column=1, padx=S(10), pady=S(5))
+        self.rb_other_3.grid(row=0, column=2, padx=S(10), pady=S(5))
 
         # For type=5 (horizontal)
         self.rb_basketbrawl_5 = create_gamemode_button(
@@ -530,6 +534,7 @@ class Hub:
 
             # For vertical set
             set_button_color(self.rb_brawlball_3, "brawlball")
+            set_button_color(self.rb_showdown_3, "showdown")
             set_button_color(self.rb_other_3, "other")
 
             # For horizontal set

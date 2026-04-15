@@ -24,6 +24,8 @@ class Movement:
             "fixed": ""
         }
         self.game_mode = bot_config["gamemode_type"]
+        self.selected_gamemode = self._normalize_gamemode_name(bot_config.get("gamemode", "knockout"))
+        self.is_showdown_mode = "showdown" in self.selected_gamemode
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
         self.super_treshold = time_config["super"]
@@ -40,6 +42,16 @@ class Movement:
         self.is_hypercharge_ready = False
         self.window_controller = window_controller
         self.TILE_SIZE = 60
+        self._showdown_regroup_distance = float(bot_config.get("showdown_regroup_distance", 180))
+
+    @staticmethod
+    def _normalize_gamemode_name(gamemode):
+        return str(gamemode or "").strip().lower().replace("_", " ")
+
+    @classmethod
+    def _should_detect_walls_for_mode(cls, gamemode):
+        normalized = cls._normalize_gamemode_name(gamemode)
+        return "showdown" in normalized or normalized in {"brawlball", "brawl ball", "brawll ball"}
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -169,6 +181,11 @@ class Play(Movement):
             "enemy": time.time(),
         }
         self.time_since_last_proceeding = time.time()
+        self._teammate_positions = []
+        self._last_known_enemies = []
+        self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
+        self._no_enemy_duration = 0.0
+        self._last_enemy_seen_at = time.time()
 
         self.last_movement = ''
         self.last_movement_time = time.time()
@@ -202,7 +219,7 @@ class Play(Movement):
         }
         self._scaled_hud_cache = None
         self.scene_data = []
-        self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball"]
+        self.should_detect_walls = self._should_detect_walls_for_mode(self.selected_gamemode)
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
         self.gadget_pixels_minimum = bot_config["gadget_pixels_minimum"]
@@ -315,6 +332,19 @@ class Play(Movement):
 
     def no_enemy_movement(self, player_data, wall_context):
         player_position = self.get_player_pos(player_data)
+        if self.is_showdown_mode:
+            teammate_target = self._get_teammate_centroid()
+            if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
+                regroup_move = self._get_move_toward(player_position, teammate_target, wall_context)
+                if regroup_move:
+                    return regroup_move
+
+            last_enemy_pos = self._get_last_known_enemy_pos()
+            if last_enemy_pos is not None:
+                chase_move = self._get_move_toward(player_position, last_enemy_pos, wall_context)
+                if chase_move:
+                    return chase_move
+
         preferred_movement = 'W' if self.game_mode == 3 else 'D'  # Adjust based on game mode
 
         if not self.is_path_blocked(player_position, preferred_movement, wall_context):
@@ -330,6 +360,46 @@ class Play(Movement):
             print("no movement possible ?")
             # If no movement is possible, return empty string
             return preferred_movement
+
+    def _get_move_toward(self, player_pos, target_pos, wall_context):
+        direction_x = target_pos[0] - player_pos[0]
+        direction_y = target_pos[1] - player_pos[1]
+        horizontal = "D" if direction_x > 20 else "A" if direction_x < -20 else ""
+        vertical = "S" if direction_y > 20 else "W" if direction_y < -20 else ""
+        moves = [
+            vertical + horizontal,
+            vertical,
+            horizontal,
+        ]
+        for move in moves:
+            if move and not self.is_path_blocked(player_pos, move, wall_context):
+                return move
+        return None
+
+    def _update_enemy_memory(self, enemies):
+        now = time.time()
+        for enemy in enemies:
+            enemy_pos = self.get_enemy_pos(enemy)
+            self._last_known_enemies.append((enemy_pos[0], enemy_pos[1], now))
+
+        self._last_known_enemies = [
+            (x, y, seen_at)
+            for x, y, seen_at in self._last_known_enemies
+            if now - seen_at < self._enemy_memory_duration
+        ]
+
+    def _get_last_known_enemy_pos(self):
+        if not self._last_known_enemies:
+            return None
+        newest = max(self._last_known_enemies, key=lambda entry: entry[2])
+        return newest[0], newest[1]
+
+    def _get_teammate_centroid(self):
+        if not self._teammate_positions:
+            return None
+        centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
+        centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
+        return centroid_x, centroid_y
 
     def is_enemy_hittable(self, player_pos, enemy_pos, wall_context, skill_type):
         if self.can_attack_through_walls(self.current_brawler, skill_type, self.brawlers_info):
@@ -745,6 +815,15 @@ class Play(Movement):
             return
         self.time_since_last_proceeding = time.time()
         wall_context = self.get_wall_context(data['wall'])
+        teammates = data.get('teammate') or []
+        self._teammate_positions = [self.get_enemy_pos(teammate) for teammate in teammates]
+        enemies = data.get('enemy') or []
+        if enemies:
+            self._update_enemy_memory(enemies)
+            self._last_enemy_seen_at = current_time
+            self._no_enemy_duration = 0.0
+        else:
+            self._no_enemy_duration = current_time - self._last_enemy_seen_at
         should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
