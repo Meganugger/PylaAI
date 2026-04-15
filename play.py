@@ -87,6 +87,8 @@ class Movement:
             "fixed": ""
         }
         self.game_mode = bot_config["gamemode_type"]
+        self.selected_gamemode = self._normalize_gamemode_name(bot_config.get("gamemode", "knockout"))
+        self.is_showdown_mode = "showdown" in self.selected_gamemode
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
         self.super_treshold = time_config["super"]
@@ -103,6 +105,16 @@ class Movement:
         self.is_hypercharge_ready = False
         self.window_controller = window_controller
         self.TILE_SIZE = 60
+        self._showdown_regroup_distance = float(bot_config.get("showdown_regroup_distance", 165))
+
+    @staticmethod
+    def _normalize_gamemode_name(gamemode):
+        return str(gamemode or "").strip().lower().replace("_", " ")
+
+    @classmethod
+    def _should_detect_walls_for_mode(cls, gamemode):
+        normalized = cls._normalize_gamemode_name(gamemode)
+        return "showdown" in normalized or normalized in {"brawlball", "brawl ball", "brawll ball"}
         
     @staticmethod
     def get_enemy_pos(enemy):
@@ -297,7 +309,7 @@ class Play(Movement):
         }
         self._scaled_hud_cache = None
         self.scene_data = []
-        self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball"]
+        self.should_detect_walls = self._should_detect_walls_for_mode(self.selected_gamemode)
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
         self.gadget_pixels_minimum = bot_config["gadget_pixels_minimum"]
@@ -410,6 +422,19 @@ class Play(Movement):
 
     def no_enemy_movement(self, player_data, wall_context):
         player_position = self.get_player_pos(player_data)
+        if self.is_showdown_mode:
+            teammate_target = self._get_teammate_centroid()
+            if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
+                regroup_move = self._get_move_toward(player_position, teammate_target, wall_context)
+                if regroup_move:
+                    return regroup_move
+
+            last_enemy_pos = self._get_last_known_enemy_pos()
+            if last_enemy_pos is not None:
+                chase_move = self._get_move_toward(player_position, last_enemy_pos, wall_context)
+                if chase_move:
+                    return chase_move
+
         preferred_movement = 'W' if self.game_mode == 3 else 'D'  # Adjust based on game mode
 
         if not self.is_path_blocked(player_position, preferred_movement, wall_context):
@@ -429,10 +454,12 @@ class Play(Movement):
     def _get_move_toward(self, player_pos, target_pos, wall_context):
         direction_x = target_pos[0] - player_pos[0]
         direction_y = target_pos[1] - player_pos[1]
+        horizontal = "D" if direction_x > 20 else "A" if direction_x < -20 else ""
+        vertical = "S" if direction_y > 20 else "W" if direction_y < -20 else ""
         moves = [
-            self.get_vertical_move_key(direction_y) + self.get_horizontal_move_key(direction_x),
-            self.get_vertical_move_key(direction_y),
-            self.get_horizontal_move_key(direction_x),
+            vertical + horizontal,
+            vertical,
+            horizontal,
         ]
         for move in moves:
             if move and not self.is_path_blocked(player_pos, move, wall_context):
