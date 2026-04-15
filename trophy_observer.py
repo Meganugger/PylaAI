@@ -572,7 +572,7 @@ class TrophyObserver:
 
     def add_win(self, game_result):
         if game_result == "victory":
-            self.current_wins += 1
+            self.current_wins = self._safe_int(self.current_wins, 0) + 1
             print(f"[RESULT] current_wins incremented to {self.current_wins}")
 
     def find_game_result(self, screenshot, current_brawler, game_result=None):
