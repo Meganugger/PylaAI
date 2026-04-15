@@ -7,7 +7,7 @@ import cv2
 import numpy as np
 
 sys.path.append(os.path.abspath('../'))
-from utils import load_toml_as_dict, to_bgr_array, record_timing
+from utils import load_toml_as_dict, to_bgr_array, record_timing, reader
 
 orig_screen_width, orig_screen_height = 1920, 1080
 
@@ -22,9 +22,17 @@ for file in os.listdir("./state_finder/images_to_detect"):
 
 region_data = load_toml_as_dict("./cfg/lobby_config.toml")['template_matching']
 region_data.setdefault("reward_claim_corner", [0, 0, 190, 120])
+region_data.setdefault("reward_claim_button", [620, 860, 680, 180])
+region_data.setdefault("reward_claim_title", [420, 120, 1080, 220])
 debug = load_toml_as_dict("./cfg/general_config.toml").get("super_debug", "no") == "yes"
 _last_state_debug_value = None
 _last_state_debug_time = 0.0
+_reward_claim_cache = {
+    "checked_at": 0.0,
+    "shape": None,
+    "detected": False,
+    "button_center": None,
+}
 crop_region = region_data.get("end_result")
 if not crop_region:
     crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
@@ -64,6 +72,114 @@ def load_template(image_path, width, height):
         (int(orig_width * current_width_ratio), int(orig_height * current_height_ratio))
     )
     return resized_image
+
+
+def _crop_region(image, region):
+    current_height, current_width = image.shape[:2]
+    orig_x, orig_y, orig_width, orig_height = region
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+
+    x1 = max(0, int(orig_x * width_ratio))
+    y1 = max(0, int(orig_y * height_ratio))
+    x2 = min(current_width, int((orig_x + orig_width) * width_ratio))
+    y2 = min(current_height, int((orig_y + orig_height) * height_ratio))
+    cropped = image[y1:y2, x1:x2]
+    return cropped, (x1, y1, x2, y2)
+
+
+def _region_center(image, region):
+    _, (x1, y1, x2, y2) = _crop_region(image, region)
+    return int((x1 + x2) / 2), int((y1 + y2) / 2)
+
+
+def _normalize_reward_text(text):
+    normalized = str(text or "").strip().lower()
+    replacements = {
+        "0": "o",
+        "1": "l",
+        "5": "s",
+        "6": "g",
+        "8": "b",
+        "!": "l",
+        "|": "l",
+        "$": "s",
+    }
+    for source, target in replacements.items():
+        normalized = normalized.replace(source, target)
+    return "".join(ch for ch in normalized if ch.isalnum())
+
+
+def _ocr_text_tokens(image, region, allowlist=None):
+    cropped, _ = _crop_region(image, region)
+    if cropped.size == 0:
+        return []
+
+    variants = [cropped]
+    try:
+        gray = cv2.cvtColor(cropped, cv2.COLOR_BGR2GRAY)
+        enlarged = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+        _, otsu = cv2.threshold(enlarged, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        variants.extend([gray, enlarged, otsu])
+    except Exception:
+        pass
+
+    tokens = []
+    seen = set()
+    for variant in variants:
+        try:
+            result = reader.readtext(variant, allowlist=allowlist)
+        except TypeError:
+            result = reader.readtext(variant)
+        except Exception:
+            continue
+        for _bbox, text, _prob in result:
+            normalized = _normalize_reward_text(text)
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                tokens.append(normalized)
+    return tokens
+
+
+def _is_mastery_reward_screen(image):
+    now = time.time()
+    shape = tuple(image.shape[:2])
+    if _reward_claim_cache["shape"] == shape and (now - _reward_claim_cache["checked_at"]) < 0.6:
+        return _reward_claim_cache["detected"], _reward_claim_cache["button_center"]
+
+    button_tokens = _ocr_text_tokens(
+        image,
+        region_data["reward_claim_button"],
+        allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' ",
+    )
+    title_tokens = _ocr_text_tokens(
+        image,
+        region_data["reward_claim_title"],
+        allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz' ",
+    )
+
+    has_lets_go = any(
+        "letsgo" in token or ("let" in token and token.endswith("go"))
+        for token in button_tokens
+    )
+    has_mastery_title = any(
+        "master" in token or "reward" in token
+        for token in title_tokens
+    )
+    detected = has_lets_go or (has_mastery_title and any(token in {"go", "letsgo"} for token in button_tokens))
+    button_center = _region_center(image, region_data["reward_claim_button"]) if detected else None
+
+    _reward_claim_cache["checked_at"] = now
+    _reward_claim_cache["shape"] = shape
+    _reward_claim_cache["detected"] = detected
+    _reward_claim_cache["button_center"] = button_center
+    return detected, button_center
+
+
+def find_reward_claim_action(screenshot):
+    screenshot_bgr = to_bgr_array(screenshot)
+    _detected, button_center = _is_mastery_reward_screen(screenshot_bgr)
+    return button_center
 
 
 def find_game_result(screenshot):
@@ -124,11 +240,14 @@ def is_in_offer_popup(image) -> bool:
 
 
 def is_in_reward_claim(image) -> bool:
-    return is_template_in_region(
+    if is_template_in_region(
         image,
         path + 'end_battle_top_left_continue_corner.png',
         region_data["reward_claim_corner"]
-    )
+    ):
+        return True
+    detected, _button_center = _is_mastery_reward_screen(image)
+    return detected
 
 
 def is_in_lobby(image) -> bool:
