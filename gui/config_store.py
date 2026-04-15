@@ -60,6 +60,7 @@ CONFIG_SPECS = {
             "discord_id": "",
             "brawlstars_package": "com.supercell.brawlstars",
             "api_base_url": "localhost",
+            "current_emulator": "LDPlayer",
             "visual_overlay_enabled": "no",
             "visual_overlay_player_dot": "yes",
             "visual_overlay_attack_range": "yes",
@@ -94,7 +95,7 @@ CONFIG_SPECS = {
             "hp_critical_enter_pct": 20,
             "hp_critical_exit_pct": 26,
         },
-        "legacy_keys": {"current_emulator"},
+        "legacy_keys": set(),
     },
     "match_history": {
         "path": "cfg/match_history.toml",
