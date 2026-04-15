@@ -104,6 +104,43 @@ ApplicationWindow {
     function liveTotalKills() { return liveMetricNumber(liveValue("total_kills"), 0) }
     function liveTotalAssists() { return liveMetricNumber(liveValue("total_assists"), 0) }
     function liveTotalDamage() { return liveMetricNumber(liveValue("total_damage"), 0) }
+    function botStateValue(key, fallback) {
+        if (state && state.bot && state.bot[key] !== undefined && state.bot[key] !== null && state.bot[key] !== "")
+            return state.bot[key]
+        return fallback
+    }
+    function activeRosterEntry() {
+        const activeName = String(live.brawler || "").toLowerCase()
+        if (!activeName)
+            return null
+        for (let i = 0; i < roster.length; ++i) {
+            const row = roster[i]
+            if (String(row.brawler || "").toLowerCase() === activeName)
+                return row
+        }
+        return null
+    }
+    function liveTrophies() {
+        const value = liveValue("trophies")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.trophies, 0) : 0
+    }
+    function liveTarget() {
+        const value = liveValue("target")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.push_until || row.pushUntil, 0) : 0
+    }
+    function liveStreak() {
+        const value = liveValue("streak")
+        if (value !== undefined)
+            return liveMetricNumber(value, 0)
+        const row = activeRosterEntry()
+        return row ? liveMetricNumber(row.win_streak || row.winStreak, 0) : 0
+    }
     function displayState(value) { return String(value || "ready").replace(/_/g, " ").toUpperCase() }
     function liveWinRate() {
         const matches = liveSessionMatches()
@@ -1326,8 +1363,8 @@ ApplicationWindow {
                                             anchors.margins: 20
                                             spacing: 8
                                             CardTitle { text: "Progress" }
-                                            Label { text: liveMetricNumber(live.trophies, 0) + " / " + liveMetricNumber(live.target, 0); color: root.gold; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
-                                            Label { text: "To target: " + Math.max(0, liveMetricNumber(live.target, 0) - liveMetricNumber(live.trophies, 0)); color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: liveTrophies() + " / " + liveTarget(); color: root.gold; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
+                                            Label { text: "To target: " + Math.max(0, liveTarget() - liveTrophies()); color: root.textDim; font.pixelSize: 13 }
                                         }
                                     }
                                     AppCard {
