@@ -4,15 +4,16 @@ PylaAI is a Windows-only Python automation project for Brawl Stars development a
 
 ## Branch Focus
 
-This branch is `performance`.
+This branch is `strongest-bot`.
 
-Its goal is to push IPS as high as possible while staying playable:
-- tighter CPU and thread pressure
-- lower oversubscription
-- lighter combat logic
-- stronger preference for stable throughput
+Its goal is to make the bot as strong as possible in matches:
+- richer combat logic
+- better target choice
+- better teammate-aware behavior
+- smarter ammo discipline and burst pacing
+- more aggressive enemy search when vision is lost
 
-If you want the most aggressive “best possible bot” behavior instead, use the `strongest-bot` branch.
+This branch may use more runtime budget than the `performance` branch when that tradeoff improves gameplay quality.
 
 ## Supported Platform
 
@@ -76,10 +77,10 @@ or run:
 .\setup.bat
 ```
 
-`setup.bat` also writes an IPS-friendly default preset for the backend you choose on this branch:
-- `CUDA`: tighter GPU-side thread pressure
-- `DirectML`: low-oversubscription GPU defaults
-- `CPU`: a CPU-only preset that stays conservative on thread count
+`setup.bat` also writes a sane default performance preset for the backend you choose:
+- `CUDA`: balanced GPU-friendly limits
+- `DirectML`: slightly higher ONNX CPU-side threading than CUDA
+- `CPU`: a CPU-only preset with higher worker counts
 
 It also remembers the selected backend in `cfg/general_config.toml` so runtime provider selection and default thread tuning can stay aligned with your install choice.
 

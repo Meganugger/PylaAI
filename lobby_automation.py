@@ -39,6 +39,9 @@ class LobbyAutomation:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
     def select_brawler(self, brawler):
+        brawler = str(brawler or "").strip().lower()
+        if not brawler:
+            return False
         brawler_menu_treshold = 0.8
         found = False
         current_frame = self.window_controller.screenshot()
@@ -108,7 +111,8 @@ class LobbyAutomation:
         if not found_brawler:
             print(f"WARNING: Brawler '{brawler}' was not found after 50 scroll attempts. "
                   f"The bot will continue with the currently selected brawler.")
-            raise ValueError(f"Brawler '{brawler}' could not be found in the brawler selection menu.")
+            return False
+        return True
 
     @staticmethod
     def resolve_ocr_typos(potential_brawler_name: str) -> str:

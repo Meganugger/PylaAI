@@ -121,6 +121,16 @@ class WindowController:
             frame = self.last_frame.copy() if copy_frame else self.last_frame
             return frame, self.last_frame_time
 
+    def get_current_frame(self, copy_frame=True, timeout=15.0):
+        frame, frame_time = self.get_latest_frame(copy_frame=copy_frame)
+        if frame is None:
+            frame, frame_time = self.wait_for_next_frame(timeout=timeout, copy_frame=copy_frame)
+            if frame is None:
+                return None, frame_time
+
+        self._ensure_frame_geometry(frame)
+        return frame, frame_time
+
     def ensure_brawl_stars_running(self, force=False):
         now = time.monotonic()
         if not force and now - self.last_app_state_check < self.APP_STATE_CHECK_INTERVAL:
@@ -181,7 +191,7 @@ class WindowController:
                 self.frame_condition.wait(timeout=remaining)
 
     def screenshot(self, array=False):
-        frame, frame_time = self.wait_for_next_frame(copy_frame=True, timeout=15.0)
+        frame, frame_time = self.get_current_frame(copy_frame=True, timeout=15.0)
         if frame is None:
             raise ConnectionError(
                 "No frame received from scrcpy within 15s. "
@@ -191,9 +201,6 @@ class WindowController:
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
-
-        self._ensure_frame_geometry(frame)
-
         if array:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
