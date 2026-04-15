@@ -64,8 +64,14 @@ class DefaultEasyOCR:
     @staticmethod
     def _should_use_gpu():
         configured_value = str(load_toml_as_dict("cfg/general_config.toml").get("easyocr_gpu", "auto")).lower()
+        available_providers = set(ort.get_available_providers())
+        has_gpu_provider = any(
+            provider in available_providers
+            for provider in ("CUDAExecutionProvider", "DmlExecutionProvider")
+        )
+
         if configured_value in ("yes", "true", "1", "gpu"):
-            return True
+            return has_gpu_provider
         if configured_value in ("no", "false", "0", "cpu"):
             return False
 
@@ -73,8 +79,7 @@ class DefaultEasyOCR:
         if preferred_device not in ("gpu", "auto"):
             return False
 
-        available_providers = ort.get_available_providers()
-        return "CUDAExecutionProvider" not in available_providers and "DmlExecutionProvider" not in available_providers
+        return has_gpu_provider
 
     def _get_reader(self):
         if self.reader is not None:
@@ -207,12 +212,20 @@ def _config_defaults_for_path(file_path):
     normalized = file_path.replace("\\", "/").lstrip("./")
     return _CONFIG_DEFAULTS.get(normalized, {})
 
+
 def load_toml_as_dict(file_path):
+    loaded = {}
     if os.path.exists(file_path):
         with open(file_path, 'r') as f:
-            return toml.load(f)
-    else:
-        return {}
+            loaded = toml.load(f)
+
+    defaults = _config_defaults_for_path(file_path)
+    if not defaults:
+        return loaded
+
+    merged = dict(defaults)
+    merged.update(loaded)
+    return merged
 
 
 reader = DefaultEasyOCR()
