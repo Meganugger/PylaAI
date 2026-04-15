@@ -2,6 +2,19 @@
 
 PylaAI is a Windows-only Python automation project for Brawl Stars development and experimentation. This repository is source-first: the recommended setup path is a local virtual environment plus an editable install from the repo root.
 
+## Branch Focus
+
+This branch is `strongest-bot`.
+
+Its goal is to make the bot as strong as possible in matches:
+- richer combat logic
+- better target choice
+- better teammate-aware behavior
+- smarter ammo discipline and burst pacing
+- more aggressive enemy search when vision is lost
+
+This branch may use more runtime budget than the `performance` branch when that tradeoff improves gameplay quality.
+
 ## Supported Platform
 
 - Windows 10/11
