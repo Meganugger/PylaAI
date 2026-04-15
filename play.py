@@ -132,8 +132,8 @@ class Movement:
             "fixed": ""
         }
         self.game_mode = bot_config["gamemode_type"]
-        self.game_mode_name = bot_config.get("gamemode", "knockout")  # Human-readable name
-        self.is_showdown = False  # Updated from stage_manager detection
+        self.game_mode_name = self._normalize_gamemode_name(bot_config.get("gamemode", "knockout"))
+        self.is_showdown = "showdown" in self.game_mode_name
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
         self.super_treshold = time_config["super"]
@@ -1859,6 +1859,45 @@ class Movement:
             return "W" if direction_y > 0 else "S"
         return "S" if direction_y > 0 else "W"
 
+    @staticmethod
+    def _normalize_gamemode_name(gamemode):
+        return str(gamemode or "").strip().lower().replace("_", " ")
+
+    @classmethod
+    def _should_detect_walls_for_mode(cls, gamemode):
+        normalized = cls._normalize_gamemode_name(gamemode)
+        return "showdown" in normalized or normalized in {
+            "brawlball",
+            "brawl ball",
+            "brawll ball",
+            "knockout",
+            "gemgrab",
+            "gem grab",
+            "heist",
+            "hotzone",
+            "hot zone",
+            "bounty",
+            "wipeout",
+            "duels",
+            "other",
+        }
+
+    def apply_gamemode_context(self, gamemode_name=None, gamemode_type=None, is_showdown=None):
+        if gamemode_name is not None:
+            normalized = self._normalize_gamemode_name(gamemode_name)
+            if normalized:
+                self.game_mode_name = normalized
+        if gamemode_type is not None:
+            try:
+                self.game_mode = int(gamemode_type)
+            except (TypeError, ValueError):
+                pass
+        if is_showdown is None:
+            is_showdown = "showdown" in self.game_mode_name
+        self.is_showdown = bool(is_showdown)
+        if hasattr(self, "should_detect_walls"):
+            self.should_detect_walls = self._should_detect_walls_for_mode(self.game_mode_name)
+
     def attack(self, touch_up=True, touch_down=True):
         self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
         self.last_attack_time = time.time()
@@ -2237,7 +2276,7 @@ class Play(Movement):
         self.wall_history = []
         self.wall_history_length = 5  # Shorter history reduces stale/ghost walls
         self.scene_data = []
-        self.should_detect_walls = bot_config["gamemode"] in ["brawlball", "brawl_ball", "brawll ball", "knockout", "gemgrab", "heist", "hotzone", "bounty", "wipeout", "duels", "other"]
+        self.should_detect_walls = self._should_detect_walls_for_mode(self.game_mode_name)
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
         self.gadget_pixels_minimum = bot_config["gadget_pixels_minimum"]

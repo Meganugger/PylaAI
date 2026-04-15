@@ -168,9 +168,11 @@ class StageManager:
         self.window_controller = window_controller
         # Default to config values, auto-detection will override if successful
         _bot_cfg = load_toml_as_dict("./cfg/bot_config.toml")
-        self.detected_game_mode = _bot_cfg.get("gamemode", "knockout")
-        self.detected_game_mode_type = _bot_cfg.get("gamemode_type", 3)
-        self.is_showdown = False  # Updated by detection
+        configured_mode = str(_bot_cfg.get("gamemode", "knockout") or "knockout").strip().lower()
+        configured_mode_info = GAMEMODE_MAP.get(configured_mode, {})
+        self.detected_game_mode = configured_mode
+        self.detected_game_mode_type = int(_bot_cfg.get("gamemode_type", configured_mode_info.get("type", 3)))
+        self.is_showdown = bool(configured_mode_info.get("showdown", "showdown" in configured_mode))
 
         # Smart Trophy Farm settings
         self.smart_trophy_farm = _bot_cfg.get("smart_trophy_farm", "no") == "yes"

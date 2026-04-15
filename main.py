@@ -441,10 +441,14 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     if self.Stage_manager.detected_game_mode_type is not None:
                         if self.Play.game_mode != self.Stage_manager.detected_game_mode_type:
                             print(f"[AUTO-MODE] Updating game_mode: {self.Play.game_mode} -> {self.Stage_manager.detected_game_mode_type} ({self.Stage_manager.detected_game_mode})")
-                            self.Play.game_mode = self.Stage_manager.detected_game_mode_type
-                        self.Play.is_showdown = self.Stage_manager.is_showdown or self.Play._showdown_detected_in_match
-                        if not self.Play._showdown_detected_in_match:
-                            self.Play.game_mode_name = self.Stage_manager.detected_game_mode or 'unknown'
+                        resolved_mode_name = self.Stage_manager.detected_game_mode
+                        if self.Play._showdown_detected_in_match and not self.Stage_manager.is_showdown:
+                            resolved_mode_name = self.Play.game_mode_name
+                        self.Play.apply_gamemode_context(
+                            gamemode_name=resolved_mode_name or "unknown",
+                            gamemode_type=self.Stage_manager.detected_game_mode_type,
+                            is_showdown=self.Stage_manager.is_showdown or self.Play._showdown_detected_in_match,
+                        )
 
                         # Pass objective waypoint from GAMEMODE_MAP to Play
                         from stage_manager import GAMEMODE_MAP
