@@ -62,8 +62,9 @@ Git must be available during install because the project installs the intended s
 ### 1. Clone the repository
 
 ```powershell
-git clone https://github.com/PylaAI/PylaAI.git
+git clone https://github.com/Meganugger/PylaAI.git
 cd PylaAI
+git checkout strongest-bot-full
 ```
 
 ### 2. Recommended one-click setup
