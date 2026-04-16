@@ -1592,9 +1592,52 @@ ApplicationWindow {
                                                 clip: true
                                                 Image { anchors.fill: parent; source: modelData.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
                                             }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 2; Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 17; font.bold: true } Label { text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"; color: root.textDim; font.pixelSize: 13 } }
-                                            Label { text: modelData.matches + " matches"; color: root.info; font.pixelSize: 14; font.bold: true }
-                                            Label { text: Number(modelData.winrate || 0).toFixed(1) + "%"; color: root.gold; font.pixelSize: 18; font.bold: true }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 2
+                                                Label {
+                                                    text: modelData.displayName
+                                                    color: root.textMain
+                                                    font.pixelSize: 17
+                                                    font.bold: true
+                                                }
+                                                Label {
+                                                    text: modelData.wins + "W | " + modelData.defeats + "L | " + modelData.draws + "D"
+                                                    color: root.textDim
+                                                    font.pixelSize: 13
+                                                }
+                                            }
+                                            Item {
+                                                Layout.preferredWidth: 150
+                                                Layout.alignment: Qt.AlignVCenter
+                                                implicitHeight: matchesLabel.implicitHeight
+                                                Label {
+                                                    id: matchesLabel
+                                                    anchors.centerIn: parent
+                                                    width: parent.width
+                                                    text: modelData.matches + " matches"
+                                                    color: root.info
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    elide: Text.ElideRight
+                                                }
+                                            }
+                                            Item {
+                                                Layout.preferredWidth: 110
+                                                Layout.alignment: Qt.AlignVCenter
+                                                implicitHeight: winrateLabel.implicitHeight
+                                                Label {
+                                                    id: winrateLabel
+                                                    anchors.centerIn: parent
+                                                    width: parent.width
+                                                    text: Number(modelData.winrate || 0).toFixed(1) + "%"
+                                                    color: root.gold
+                                                    font.pixelSize: 18
+                                                    font.bold: true
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                }
+                                            }
                                         }
                                     }
                                 }
