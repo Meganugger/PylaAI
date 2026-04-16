@@ -3,11 +3,11 @@ import os
 import sys
 
 import utils
-from utils import api_base_url
+from utils import api_base_url, get_brawler_data_path
 
 sys.path.append(os.path.abspath('../'))
 
-BRAWLER_DATA_FILE = "latest_brawler_data.json"
+BRAWLER_DATA_FILE = get_brawler_data_path()
 
 
 class App:

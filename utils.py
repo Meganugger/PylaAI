@@ -7,6 +7,7 @@ import json
 import threading
 
 from runtime_threads import apply_process_thread_limits, configure_torch_threads, configure_opencv_threads
+from instance_support import current_config_dir, current_runtime_root, get_brawler_data_path
 
 apply_process_thread_limits()
 
@@ -140,11 +141,14 @@ _CONFIG_DEFAULTS = {
         "cpu_or_gpu": "auto",
         "preferred_backend": "auto",
         "max_ips": "auto",
-        "pyla_version": "1.0.0+strongestbot",
+        "pyla_version": "1.0.0+performance",
         "long_press_star_drop": "yes",
         "trophies_multiplier": 1,
         "run_for_minutes": 600,
         "emulator_port": 5037,
+        "instance_index": 1,
+        "instance_count": 1,
+        "scrcpy_max_fps": "auto",
         "brawlstars_package": "com.supercell.brawlstars",
         "brawlstars_api_key": "",
         "brawlstars_player_tag": "",
@@ -234,13 +238,36 @@ def _config_defaults_for_path(file_path):
     return _CONFIG_DEFAULTS.get(normalized, {})
 
 
+def resolve_cfg_path(file_path):
+    normalized = str(file_path or "").replace("\\", "/")
+    config_dir = current_config_dir()
+    if normalized.startswith("./cfg/"):
+        return os.path.join(config_dir, normalized[6:])
+    if normalized.startswith("cfg/"):
+        return os.path.join(config_dir, normalized[4:])
+    return file_path
+
+
+def resolve_runtime_path(file_path):
+    normalized = str(file_path or "").replace("\\", "/").lstrip("./")
+    if normalized == "latest_brawler_data.json":
+        return get_brawler_data_path()
+    if normalized.startswith("cfg/"):
+        return resolve_cfg_path(normalized)
+    return file_path
+
+
+def get_runtime_root():
+    return current_runtime_root()
+
+
 def load_toml_as_dict(file_path):
+    defaults = _config_defaults_for_path(file_path)
+    file_path = resolve_runtime_path(file_path)
     loaded = {}
     if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
+        with open(file_path, 'r', encoding="utf-8") as f:
             loaded = toml.load(f)
-
-    defaults = _config_defaults_for_path(file_path)
     if not defaults:
         return loaded
 
@@ -252,7 +279,7 @@ def load_toml_as_dict(file_path):
 reader = DefaultEasyOCR()
 cfg_api_base_url = str(load_toml_as_dict("cfg/general_config.toml").get("api_base_url", "localhost")).strip()
 api_base_url = cfg_api_base_url if cfg_api_base_url and cfg_api_base_url != "default" else "localhost"
-brawlers_info_file_path = "cfg/brawlers_info.json"
+brawlers_info_file_path = resolve_cfg_path("cfg/brawlers_info.json")
 _timing_stats = {}
 _timing_enabled = None
 STATE_ICON_PATHS = (
@@ -291,7 +318,7 @@ def save_brawler_data(data):
     """
     Save the given data to a json file. As a list of dictionaries.
     """
-    with open("latest_brawler_data.json", 'w') as f:
+    with open(get_brawler_data_path(), 'w', encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
 
@@ -328,12 +355,14 @@ def find_template_center(main_img, template, threshold=0.8):
 
 
 def save_dict_as_toml(data, file_path):
-    with open(file_path, 'w') as f:
+    file_path = resolve_runtime_path(file_path)
+    with open(file_path, 'w', encoding="utf-8") as f:
         toml.dump(data, f)
 
 
 def update_toml_file(path, new_data):
-    with open(path, 'w') as file:
+    path = resolve_runtime_path(path)
+    with open(path, 'w', encoding="utf-8") as file:
         toml.dump(new_data, file)
 
 def load_brawlers_info():

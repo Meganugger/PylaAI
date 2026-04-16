@@ -322,6 +322,7 @@ try {
     Write-Host ""
     Write-Host "Setup completed successfully." -ForegroundColor Green
     Write-Host "You can now launch the bot by double-clicking start.bat." -ForegroundColor Green
+    Write-Host "Optional multi-instance setup: run '.venv\\Scripts\\python.exe main.py --setup-instances 2' to generate per-instance configs and start_1.bat / start_2.bat launchers." -ForegroundColor Cyan
 }
 catch {
     Write-Host ""

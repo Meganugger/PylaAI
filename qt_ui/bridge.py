@@ -14,7 +14,14 @@ from gui.api import check_if_exists
 from gui.config_store import load_config
 from lobby_automation import LobbyAutomation
 from stage_manager import StageManager
-from utils import load_brawlers_info, load_toml_as_dict, save_brawler_data, save_dict_as_toml
+from utils import (
+    get_brawler_data_path,
+    load_brawlers_info,
+    load_toml_as_dict,
+    resolve_cfg_path,
+    save_brawler_data,
+    save_dict_as_toml,
+)
 
 
 GAMEMODES = [
@@ -142,10 +149,11 @@ class QtBridge(QObject):
 
     @staticmethod
     def _load_saved_roster():
-        if not os.path.exists("latest_brawler_data.json"):
+        roster_path = get_brawler_data_path()
+        if not os.path.exists(roster_path):
             return []
         try:
-            with open("latest_brawler_data.json", "r", encoding="utf-8") as handle:
+            with open(roster_path, "r", encoding="utf-8") as handle:
                 data = json.load(handle)
             return data if isinstance(data, list) else []
         except Exception:
@@ -210,7 +218,7 @@ class QtBridge(QObject):
         return f"file:///{icon_path.replace(os.sep, '/')}" if os.path.exists(icon_path) else ""
 
     def _brawler_scan_data(self):
-        scan_path = os.path.join("cfg", "brawler_scan.json")
+        scan_path = resolve_cfg_path("cfg/brawler_scan.json")
         if not os.path.exists(scan_path):
             return {}
         try:
@@ -222,7 +230,7 @@ class QtBridge(QObject):
 
     @staticmethod
     def _save_brawler_scan_data(data):
-        scan_path = os.path.join("cfg", "brawler_scan.json")
+        scan_path = resolve_cfg_path("cfg/brawler_scan.json")
         payload = {"brawlers": data if isinstance(data, dict) else {}}
         with open(scan_path, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=4)

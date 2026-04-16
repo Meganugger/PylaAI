@@ -2,7 +2,6 @@ import os
 
 import toml
 
-_GENERAL_CONFIG_PATH = "cfg/general_config.toml"
 _config_cache = None
 _process_limits_applied = False
 _opencv_threads_applied = False
@@ -31,9 +30,10 @@ _THREAD_PRESETS = {
 
 def _load_general_config():
     global _config_cache
+    general_config_path = os.path.join(os.environ.get("PYLA_CONFIG_DIR", "cfg"), "general_config.toml")
     if _config_cache is None:
-        if os.path.exists(_GENERAL_CONFIG_PATH):
-            with open(_GENERAL_CONFIG_PATH, "r") as file:
+        if os.path.exists(general_config_path):
+            with open(general_config_path, "r", encoding="utf-8") as file:
                 _config_cache = toml.load(file)
         else:
             _config_cache = {}
@@ -42,6 +42,14 @@ def _load_general_config():
 
 def _cpu_count():
     return max(2, os.cpu_count() or 4)
+
+
+def _instance_count(config=None):
+    config = _load_general_config() if config is None else config
+    try:
+        return max(1, min(16, int(config.get("instance_count", 1) or 1)))
+    except Exception:
+        return 1
 
 
 def _detect_available_backend():
@@ -80,11 +88,23 @@ def get_preferred_backend(config=None):
 
 
 def get_thread_preset(backend=None):
+    config = _load_general_config()
     normalized_backend = str(backend or get_preferred_backend()).lower()
     if normalized_backend in ("auto", ""):
         return get_thread_preset(get_preferred_backend())
     if normalized_backend == "cpu":
         cpu_count = _cpu_count()
+        instance_count = _instance_count(config)
+        if instance_count > 1:
+            per_instance_budget = max(2, cpu_count // instance_count)
+            return {
+                "process_threads": max(2, min(4, per_instance_budget)),
+                "opencv_threads": 1,
+                "onnx_intra_threads": max(1, min(3, per_instance_budget)),
+                "onnx_inter_threads": 1,
+                "torch_threads": max(1, min(2, per_instance_budget)),
+                "torch_interop_threads": 1,
+            }
         return {
             "process_threads": max(4, min(12, cpu_count)),
             "opencv_threads": max(1, min(4, cpu_count // 2)),
