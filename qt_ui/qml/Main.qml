@@ -183,6 +183,33 @@ ApplicationWindow {
     function multiInstanceState() {
         return (state && state.multiInstance) ? state.multiInstance : ({})
     }
+    function positiveInt(value, fallback) {
+        const parsed = parseInt(String(value === undefined ? "" : value).trim())
+        if (isNaN(parsed) || parsed < 1)
+            return fallback
+        return parsed
+    }
+    function sequentialPortsCsv(startPort, count) {
+        const ports = []
+        const base = positiveInt(startPort, 5037)
+        const total = positiveInt(count, 1)
+        for (let i = 0; i < total; ++i)
+            ports.push(String(base + i))
+        return ports.join(", ")
+    }
+    function suggestedPortsCsv() {
+        return sequentialPortsCsv(portField ? portField.text : multiInstanceState().currentPort, instanceCountField ? instanceCountField.text : multiInstanceState().instanceCount)
+    }
+    function applySuggestedPorts() {
+        instancePortsField.text = suggestedPortsCsv()
+    }
+    function launcherListText() {
+        const count = positiveInt(instanceCountField ? instanceCountField.text : multiInstanceState().instanceCount, positiveInt(multiInstanceState().instanceCount, 1))
+        const launchers = []
+        for (let i = 1; i <= count; ++i)
+            launchers.push("start_" + i + ".bat")
+        return launchers.join(", ")
+    }
     function stabilizeScroll(view) {
         if (!view || !view.contentItem)
             return
@@ -273,10 +300,20 @@ ApplicationWindow {
         })
     }
     function saveMultiInstance() {
+        let ports = String(instancePortsField.text || "").trim()
+        if (!ports) {
+            ports = suggestedPortsCsv()
+            instancePortsField.text = ports
+        }
+        let fps = String(scrcpyMaxFpsField.text || "").trim()
+        if (!fps) {
+            fps = "auto"
+            scrcpyMaxFpsField.text = fps
+        }
         backend.configureMultiInstance({
             "instance_count": instanceCountField.text,
-            "ports": instancePortsField.text,
-            "scrcpy_max_fps": scrcpyMaxFpsField.text,
+            "ports": ports,
+            "scrcpy_max_fps": fps,
             "current_port": portField.text
         })
     }
@@ -1750,12 +1787,38 @@ ApplicationWindow {
                                         anchors.margins: 22
                                         spacing: 16
                                         SectionEyebrow { text: "MULTI-INSTANCE" }
-                                        CardTitle { text: "Instance Orchestration" }
+                                        CardTitle { text: "Multi-Instance Setup" }
                                         Label {
                                             Layout.fillWidth: true
-                                            text: "Use this section to control the performance branch's multi-instance setup. Save Settings stores this instance's own runtime values. Generate / Refresh Instances fans the current template out across start_1.bat, start_2.bat, and the matching instance config folders."
+                                            text: "This section is for one thing: creating the launcher files and per-instance config folders for multi-instance farming. The simplest flow is: choose how many bots you want, confirm this window's port, click Auto Fill Ports, then click Create / Update Launchers."
                                             color: root.textDim
                                             wrapMode: Text.WordWrap
+                                        }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            radius: 16
+                                            color: root.panelAlt
+                                            border.color: root.border
+                                            border.width: 1
+                                            implicitHeight: quickStartGuide.implicitHeight + 28
+                                            ColumnLayout {
+                                                id: quickStartGuide
+                                                anchors.fill: parent
+                                                anchors.margins: 14
+                                                spacing: 8
+                                                Label {
+                                                    text: "Quick Start"
+                                                    color: root.textMain
+                                                    font.pixelSize: 15
+                                                    font.bold: true
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: "1. Set How Many Bots.\n2. Set the port for this emulator window.\n3. Click Auto Fill Ports.\n4. Click Create / Update Launchers.\n5. Run: " + launcherListText()
+                                                    color: root.textDim
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
                                         }
                                         GridLayout {
                                             width: parent.width
@@ -1782,7 +1845,7 @@ ApplicationWindow {
                                             }
                                             SummaryTile {
                                                 Layout.fillWidth: true
-                                                label: "scrcpy Max FPS"
+                                                label: "Video FPS Limit"
                                                 value: String(multiInstanceState().scrcpyMaxFps || "auto")
                                                 valueColor: root.gold
                                             }
@@ -1792,15 +1855,34 @@ ApplicationWindow {
                                             columns: 3
                                             columnSpacing: 14
                                             rowSpacing: 12
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "This Instance Port" } AppTextField { id: portField; Layout.fillWidth: true; placeholderText: "5037" } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Total Instances" } AppTextField { id: instanceCountField; Layout.fillWidth: true; placeholderText: "1" } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "scrcpy Max FPS" } AppTextField { id: scrcpyMaxFpsField; Layout.fillWidth: true; placeholderText: "auto or 18" } }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "Port for This Window" }
+                                                AppTextField { id: portField; Layout.fillWidth: true; placeholderText: "5037" }
+                                                AppLabel { text: "Use the ADB port for the emulator window you are currently configuring." }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "How Many Bots" }
+                                                AppTextField { id: instanceCountField; Layout.fillWidth: true; placeholderText: "1" }
+                                                AppLabel { text: "This controls how many start_n.bat launchers and instance folders get created." }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "Video FPS Limit" }
+                                                AppTextField { id: scrcpyMaxFpsField; Layout.fillWidth: true; placeholderText: "auto" }
+                                                AppLabel { text: "Keep this on auto unless you want to force a manual scrcpy cap." }
+                                            }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Layout.columnSpan: 2
                                                 spacing: 6
-                                                AppLabel { text: "All Instance Ports (comma separated)" }
+                                                AppLabel { text: "Ports for All Bots (comma separated)" }
                                                 AppTextField { id: instancePortsField; Layout.fillWidth: true; placeholderText: "5037, 5038, 5039" }
+                                                AppLabel { text: "If you leave this blank, Pyla will auto-fill consecutive ports from the current port." }
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
@@ -1822,11 +1904,64 @@ ApplicationWindow {
                                                     }
                                                 }
                                             }
+                                            RowLayout {
+                                                Layout.columnSpan: 3
+                                                Layout.fillWidth: true
+                                                spacing: 10
+                                                Button {
+                                                    id: autoFillPortsButton
+                                                    implicitHeight: root.fieldHeight
+                                                    implicitWidth: 150
+                                                    text: "Auto Fill Ports"
+                                                    onClicked: applySuggestedPorts()
+                                                    background: Rectangle {
+                                                        radius: 14
+                                                        color: autoFillPortsButton.down ? "#141922" : (autoFillPortsButton.hovered ? "#1A2230" : root.panelAlt)
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                    }
+                                                    contentItem: Text {
+                                                        text: autoFillPortsButton.text
+                                                        color: root.textMain
+                                                        font.pixelSize: 14
+                                                        font.bold: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                    }
+                                                }
+                                                Button {
+                                                    id: autoFpsButton
+                                                    implicitHeight: root.fieldHeight
+                                                    implicitWidth: 132
+                                                    text: "Use Auto FPS"
+                                                    onClicked: scrcpyMaxFpsField.text = "auto"
+                                                    background: Rectangle {
+                                                        radius: 14
+                                                        color: autoFpsButton.down ? "#141922" : (autoFpsButton.hovered ? "#1A2230" : root.panelAlt)
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                    }
+                                                    contentItem: Text {
+                                                        text: autoFpsButton.text
+                                                        color: root.textMain
+                                                        font.pixelSize: 14
+                                                        font.bold: true
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        verticalAlignment: Text.AlignVCenter
+                                                    }
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: "Suggested ports: " + suggestedPortsCsv()
+                                                    color: root.textDim
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
                                                 Layout.columnSpan: 3
                                                 spacing: 6
-                                                AppLabel { text: "Current Launcher" }
+                                                AppLabel { text: "Launcher for This Window" }
                                                 AppTextField {
                                                     Layout.fillWidth: true
                                                     readOnly: true
@@ -1888,15 +2023,15 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             spacing: 12
                                             AccentButton {
-                                                implicitWidth: 246
-                                                text: "Generate / Refresh Instances"
+                                                implicitWidth: 224
+                                                text: "Create / Update Launchers"
                                                 onClicked: saveMultiInstance()
                                             }
                                             Button {
                                                 id: refreshInstancesButton
                                                 implicitHeight: root.fieldHeight
-                                                implicitWidth: 160
-                                                text: "Refresh Overview"
+                                                implicitWidth: 176
+                                                text: "Reload Generated Status"
                                                 onClicked: refreshMultiInstanceOverview()
                                                 background: Rectangle {
                                                     radius: 14
@@ -1915,7 +2050,7 @@ ApplicationWindow {
                                             }
                                             Label {
                                                 Layout.fillWidth: true
-                                                text: "Active instance selection is decided by --instance or the generated start_n.bat launchers."
+                                                text: "Create / Update Launchers writes the instance folders and start_n.bat files. Reload Generated Status only re-reads what already exists on disk."
                                                 color: root.textDim
                                                 wrapMode: Text.WordWrap
                                             }

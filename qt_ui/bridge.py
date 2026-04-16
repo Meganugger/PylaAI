@@ -363,26 +363,38 @@ class QtBridge(QObject):
         current_launcher = launcher_path(current_id)
 
         summary_lines = [
+            "Quick start:",
+            f"1. Set the total instances to {configured_count}.",
+            f"2. Make sure this window is using port {current_port}.",
+            "3. Use Auto Fill Ports if you want consecutive ports.",
+            "4. Click Create / Update Launchers.",
+            "5. Start one bot with each generated start_n.bat file.",
+            "",
             f"Active instance: {current_id}",
             f"Configured instances: {configured_count}",
             f"This instance port: {current_port}",
             f"scrcpy max FPS: {current_fps}",
-            f"Config dir: {current_config_dir()}",
-            f"Runtime root: {current_runtime_root()}",
-            f"Autostart command: {autostart_command(current_id)}",
+            f"Launcher for this window: {os.path.basename(current_launcher)}",
         ]
         if rows:
             summary_lines.append("")
-            summary_lines.append("Generated instances:")
+            summary_lines.append("Generated launchers:")
             for row in rows:
                 status = "ready" if row.get("launcher_exists") else "missing launcher"
                 summary_lines.append(
-                    f"#{row.get('instance', '?')} -> port {row.get('port', 5037)} | "
+                    f"{os.path.basename(str(row.get('launcher_path', '') or ''))} -> port {row.get('port', 5037)} | "
                     f"scrcpy {row.get('scrcpy_max_fps', 'auto')} | {status}"
                 )
         else:
             summary_lines.append("")
-            summary_lines.append("No generated launchers yet. Use Generate / Refresh Instances to create them.")
+            summary_lines.append("No generated launchers yet. Use Create / Update Launchers to make them.")
+
+        summary_lines.extend([
+            "",
+            f"Config dir: {current_config_dir()}",
+            f"Runtime root: {current_runtime_root()}",
+            f"Autostart command: {autostart_command(current_id)}",
+        ])
 
         return {
             "currentInstance": current_id,
