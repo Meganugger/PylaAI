@@ -180,6 +180,9 @@ ApplicationWindow {
     function hasCapability(name) {
         return !!(state.capabilities && state.capabilities[name])
     }
+    function multiInstanceState() {
+        return (state && state.multiInstance) ? state.multiInstance : ({})
+    }
     function stabilizeScroll(view) {
         if (!view || !view.contentItem)
             return
@@ -263,17 +266,27 @@ ApplicationWindow {
     }
     function saveSettings() {
         backend.saveSettings({
-            "general": {"max_ips": maxIps.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase()},
+            "general": {"max_ips": maxIps.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase(), "instance_count": instanceCountField.text, "scrcpy_max_fps": scrcpyMaxFpsField.text},
             "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked)},
             "time": {"state_check": stateCheck.text, "no_detections": noDetect.text, "idle": idleField.text, "gadget": gadgetField.text, "hypercharge": hyperField.text, "super": superField.text, "wall_detection": wallField.text, "no_detection_proceed": noProceed.text, "check_if_brawl_stars_crashed": crashCheck.text},
             "login": {"key": pylaKey.text}
         })
+    }
+    function saveMultiInstance() {
+        const payload = {
+            "instance_count": instanceCountField.text,
+            "ports": instancePortsField.text,
+            "scrcpy_max_fps": scrcpyMaxFpsField.text
+        }
+        saveSettings()
+        backend.configureMultiInstance(payload)
     }
     function applyStateToForms() {
         const general = (state && state.general) ? state.general : ({})
         const bot = (state && state.bot) ? state.bot : ({})
         const timeCfg = (state && state.time) ? state.time : ({})
         const loginState = (state && state.login) ? state.login : ({})
+        const multi = multiInstanceState()
         if (!state.general) return
         orientationBox.currentIndex = Math.max(0, ["vertical","horizontal"].indexOf(String(general.map_orientation || "vertical").toLowerCase()))
         settingsOrientation.currentIndex = orientationBox.currentIndex
@@ -298,6 +311,9 @@ ApplicationWindow {
         packageField.text = String(general.brawlstars_package || "com.supercell.brawlstars")
         portField.text = String(general.emulator_port || 5037)
         autoPushField.text = String(general.auto_push_target_trophies || 1000)
+        instanceCountField.text = String(multi.instanceCount || general.instance_count || 1)
+        scrcpyMaxFpsField.text = String(multi.scrcpyMaxFps || general.scrcpy_max_fps || "auto")
+        instancePortsField.text = String(multi.portsCsv || portField.text)
         pylaKey.text = String(loginState.key || "")
         minMove.text = String(bot.minimum_movement_delay || 0.08)
         unstuckDelay.text = String(bot.unstuck_movement_delay || 1.5)
@@ -1711,11 +1727,190 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Backend" } AppComboBox { id: backendBox; Layout.fillWidth: true; model: ["auto","cpu","gpu"] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Package" } AppTextField { id: packageField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: settingsTimer; Layout.fillWidth: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Port" } AppTextField { id: portField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
-                                        ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } } } }
+                                        }
+                                    }
+                                }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: multiInstanceContent.implicitHeight + 44
+                                    ColumnLayout {
+                                        id: multiInstanceContent
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        SectionEyebrow { text: "MULTI-INSTANCE" }
+                                        CardTitle { text: "Instance Orchestration" }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: "Use this section to control the performance branch's multi-instance setup. Save Settings stores this instance's own runtime values. Generate / Refresh Instances fans the current template out across start_1.bat, start_2.bat, and the matching instance config folders."
+                                            color: root.textDim
+                                            wrapMode: Text.WordWrap
+                                        }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 4
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            SummaryTile {
+                                                Layout.fillWidth: true
+                                                label: "Active Instance"
+                                                value: lineValue(multiInstanceState().currentInstance, "")
+                                                valueColor: root.textMain
+                                            }
+                                            SummaryTile {
+                                                Layout.fillWidth: true
+                                                label: "Configured Count"
+                                                value: lineValue(multiInstanceState().instanceCount, "")
+                                                valueColor: root.info
+                                            }
+                                            SummaryTile {
+                                                Layout.fillWidth: true
+                                                label: "Current Port"
+                                                value: lineValue(multiInstanceState().currentPort, "")
+                                                valueColor: root.textMain
+                                            }
+                                            SummaryTile {
+                                                Layout.fillWidth: true
+                                                label: "scrcpy Max FPS"
+                                                value: String(multiInstanceState().scrcpyMaxFps || "auto")
+                                                valueColor: root.gold
+                                            }
+                                        }
+                                        GridLayout {
+                                            width: parent.width
+                                            columns: 3
+                                            columnSpacing: 14
+                                            rowSpacing: 12
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "This Instance Port" } AppTextField { id: portField; Layout.fillWidth: true; placeholderText: "5037" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Total Instances" } AppTextField { id: instanceCountField; Layout.fillWidth: true; placeholderText: "1" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "scrcpy Max FPS" } AppTextField { id: scrcpyMaxFpsField; Layout.fillWidth: true; placeholderText: "auto or 18" } }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: 2
+                                                spacing: 6
+                                                AppLabel { text: "All Instance Ports (comma separated)" }
+                                                AppTextField { id: instancePortsField; Layout.fillWidth: true; placeholderText: "5037, 5038, 5039" }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "Launcher Ready" }
+                                                Rectangle {
+                                                    Layout.fillWidth: true
+                                                    implicitHeight: root.fieldHeight
+                                                    radius: 14
+                                                    color: root.panelAlt
+                                                    border.color: root.border
+                                                    border.width: 1
+                                                    Label {
+                                                        anchors.centerIn: parent
+                                                        text: multiInstanceState().launcherExists ? "YES" : "NO"
+                                                        color: multiInstanceState().launcherExists ? root.success : root.warning
+                                                        font.pixelSize: 14
+                                                        font.bold: true
+                                                    }
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: 3
+                                                spacing: 6
+                                                AppLabel { text: "Current Launcher" }
+                                                AppTextField {
+                                                    Layout.fillWidth: true
+                                                    readOnly: true
+                                                    text: String(multiInstanceState().launcherPath || "")
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: 3
+                                                spacing: 6
+                                                AppLabel { text: "Autostart Command" }
+                                                AppTextField {
+                                                    Layout.fillWidth: true
+                                                    readOnly: true
+                                                    text: String(multiInstanceState().autostartCommand || "")
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "Config Directory" }
+                                                AppTextField {
+                                                    Layout.fillWidth: true
+                                                    readOnly: true
+                                                    text: String(multiInstanceState().configDir || "")
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: 2
+                                                spacing: 6
+                                                AppLabel { text: "Runtime Root" }
+                                                AppTextField {
+                                                    Layout.fillWidth: true
+                                                    readOnly: true
+                                                    text: String(multiInstanceState().runtimeRoot || "")
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            implicitHeight: 150
+                                            radius: 16
+                                            color: root.panelAlt
+                                            border.color: root.border
+                                            border.width: 1
+                                            TextArea {
+                                                anchors.fill: parent
+                                                anchors.margins: 12
+                                                readOnly: true
+                                                color: root.textMain
+                                                text: String(multiInstanceState().summary || "")
+                                                wrapMode: TextEdit.Wrap
+                                                selectByMouse: true
+                                                background: null
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            AccentButton {
+                                                text: "Generate / Refresh Instances"
+                                                onClicked: saveMultiInstance()
+                                            }
+                                            Button {
+                                                id: refreshInstancesButton
+                                                implicitHeight: root.fieldHeight
+                                                implicitWidth: 160
+                                                text: "Refresh Overview"
+                                                onClicked: { hydrate(backend.initialState()); applyStateToForms(); rebuildExcludeModels() }
+                                                background: Rectangle {
+                                                    radius: 14
+                                                    color: refreshInstancesButton.down ? "#141922" : (refreshInstancesButton.hovered ? "#1A2230" : root.panelAlt)
+                                                    border.color: root.border
+                                                    border.width: 1
+                                                }
+                                                contentItem: Text {
+                                                    text: refreshInstancesButton.text
+                                                    color: root.textMain
+                                                    font.pixelSize: 14
+                                                    font.bold: true
+                                                    horizontalAlignment: Text.AlignHCenter
+                                                    verticalAlignment: Text.AlignVCenter
+                                                }
+                                            }
+                                            Label {
+                                                Layout.fillWidth: true
+                                                text: "Active instance selection is decided by --instance or the generated start_n.bat launchers."
+                                                color: root.textDim
+                                                wrapMode: Text.WordWrap
+                                            }
                                         }
                                     }
                                 }

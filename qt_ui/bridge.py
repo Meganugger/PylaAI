@@ -12,6 +12,15 @@ from PySide6.QtWidgets import QFileDialog
 
 from gui.api import check_if_exists
 from gui.config_store import load_config
+from instance_support import (
+    autostart_command,
+    configure_instances,
+    current_config_dir,
+    current_instance_id,
+    current_runtime_root,
+    launcher_path,
+    list_instances,
+)
 from lobby_automation import LobbyAutomation
 from stage_manager import StageManager
 from utils import (
@@ -96,6 +105,16 @@ class QtBridge(QObject):
             return float(value)
         except Exception:
             return default
+
+    @staticmethod
+    def _normalize_scrcpy_max_fps(value):
+        raw_value = str(value or "").strip().lower()
+        if raw_value in ("", "auto", "none"):
+            return "auto"
+        try:
+            return str(max(0, int(float(raw_value))))
+        except Exception:
+            return "auto"
 
     @staticmethod
     def _gamemode_type_for(gamemode):
@@ -324,6 +343,52 @@ class QtBridge(QObject):
         rows.sort(key=lambda item: (-item["matches"], item["displayName"]))
         return rows
 
+    def _multi_instance_state(self):
+        rows = list_instances()
+        current_id = current_instance_id(self._as_int(self.general_config.get("instance_index", 1), 1))
+        configured_count = max(self._as_int(self.general_config.get("instance_count", 1), 1), len(rows) or 1)
+        current_port = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
+        current_fps = self._normalize_scrcpy_max_fps(self.general_config.get("scrcpy_max_fps", "auto"))
+        ports_csv = ", ".join(str(row.get("port", 5037)) for row in rows) if rows else str(current_port)
+        current_launcher = launcher_path(current_id)
+
+        summary_lines = [
+            f"Active instance: {current_id}",
+            f"Configured instances: {configured_count}",
+            f"This instance port: {current_port}",
+            f"scrcpy max FPS: {current_fps}",
+            f"Config dir: {current_config_dir()}",
+            f"Runtime root: {current_runtime_root()}",
+            f"Autostart command: {autostart_command(current_id)}",
+        ]
+        if rows:
+            summary_lines.append("")
+            summary_lines.append("Generated instances:")
+            for row in rows:
+                status = "ready" if row.get("launcher_exists") else "missing launcher"
+                summary_lines.append(
+                    f"#{row.get('instance', '?')} -> port {row.get('port', 5037)} | "
+                    f"scrcpy {row.get('scrcpy_max_fps', 'auto')} | {status}"
+                )
+        else:
+            summary_lines.append("")
+            summary_lines.append("No generated launchers yet. Use Generate / Refresh Instances to create them.")
+
+        return {
+            "currentInstance": current_id,
+            "instanceCount": configured_count,
+            "currentPort": current_port,
+            "scrcpyMaxFps": current_fps,
+            "portsCsv": ports_csv,
+            "configDir": current_config_dir(),
+            "runtimeRoot": current_runtime_root(),
+            "launcherPath": current_launcher,
+            "launcherExists": os.path.exists(current_launcher),
+            "autostartCommand": autostart_command(current_id),
+            "instances": rows,
+            "summary": "\n".join(summary_lines),
+        }
+
     def _notification(self, level, message):
         self._push_log(level, message)
         self.notificationRaised.emit(level, message)
@@ -423,6 +488,7 @@ class QtBridge(QObject):
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
             "live": dict(self._live_data),
+            "multiInstance": self._multi_instance_state(),
         }
 
     @Slot(result="QVariantList")
@@ -546,6 +612,8 @@ class QtBridge(QObject):
             "auto_push_target_trophies",
             "current_emulator",
             "map_orientation",
+            "instance_count",
+            "scrcpy_max_fps",
         ):
             if key in general:
                 self.general_config[key] = general[key]
@@ -553,6 +621,8 @@ class QtBridge(QObject):
         self.general_config["emulator_port"] = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
         self.general_config["run_for_minutes"] = self._as_int(self.general_config.get("run_for_minutes", 600), 600)
         self.general_config["auto_push_target_trophies"] = self._as_int(self.general_config.get("auto_push_target_trophies", 1000), 1000)
+        self.general_config["instance_count"] = max(1, self._as_int(self.general_config.get("instance_count", 1), 1))
+        self.general_config["scrcpy_max_fps"] = self._normalize_scrcpy_max_fps(self.general_config.get("scrcpy_max_fps", "auto"))
 
         for key in (
             "minimum_movement_delay",
@@ -615,6 +685,29 @@ class QtBridge(QObject):
         self._validate_existing_login()
         self._emit_state()
         self._notification("success", "Settings saved.")
+
+    @Slot("QVariantMap")
+    def configureMultiInstance(self, payload):
+        try:
+            count = max(1, self._as_int(payload.get("instance_count", self.general_config.get("instance_count", 1)), 1))
+            scrcpy_max_fps = self._normalize_scrcpy_max_fps(payload.get("scrcpy_max_fps", self.general_config.get("scrcpy_max_fps", "auto")))
+            ports = payload.get("ports", "")
+            configured = configure_instances(count, ports=ports, scrcpy_max_fps=scrcpy_max_fps)
+
+            self.general_config["instance_count"] = count
+            self.general_config["scrcpy_max_fps"] = scrcpy_max_fps
+
+            current_id = current_instance_id(self._as_int(self.general_config.get("instance_index", 1), 1))
+            current_row = next((row for row in configured if int(row.get("instance", 0) or 0) == current_id), None)
+            if current_row and current_row.get("port") is not None:
+                self.general_config["emulator_port"] = self._as_int(current_row.get("port"), self.general_config.get("emulator_port", 5037))
+
+            save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+            self.general_config = self._load_general_config()
+            self._emit_state()
+            self._notification("success", f"Configured {count} instance(s) and refreshed launcher files.")
+        except Exception as exc:
+            self._notification("error", f"Could not configure multi-instance mode: {exc}")
 
     @Slot("QVariantMap")
     def addOrUpdateRosterEntry(self, payload):
