@@ -65,9 +65,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
             _set_active_stage_manager_instance(self.Stage_manager)
             self.states_requiring_frame_data = ["lobby", "popup", "end", "reward_claim"]
-            self._startup_brawler_target = data[0]['brawler']
-            self._pending_initial_brawler_select = False
-            self.Play.current_brawler = data[0]['brawler']
+            active_entry = data[0] if data else {}
+            self._startup_brawler_target = str(active_entry.get('brawler', '') or '').strip().lower()
+            self._pending_initial_brawler_select = bool(
+                self._startup_brawler_target and active_entry.get('automatically_pick', True)
+            )
+            self.Play.current_brawler = self._startup_brawler_target
             self.no_detections_action_threshold = 60 * 8
             self.initialize_stage_manager()
             self._easyocr_warmup_started = False
