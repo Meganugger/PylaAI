@@ -48,6 +48,13 @@ def current_instance_id(default=1):
         return 1
 
 
+def _is_current_runtime_instance(instance_id):
+    try:
+        return os.path.abspath(current_runtime_root()) == os.path.abspath(instance_root(instance_id))
+    except Exception:
+        return False
+
+
 def current_runtime_root():
     return os.environ.get(RUNTIME_ROOT_ENV_KEY, DEFAULT_RUNTIME_ROOT)
 
@@ -217,10 +224,41 @@ def autostart_command(instance_id):
     return f"{_python_launcher()} main.py --instance {int(instance_id)} --autostart"
 
 
-def configure_instances(requested_count, ports=None, scrcpy_max_fps="auto"):
+def _prune_extra_instances(count):
+    instances_dir = os.path.join(PROJECT_ROOT, "instances")
+    if os.path.isdir(instances_dir):
+        for name in os.listdir(instances_dir):
+            if not str(name).isdigit():
+                continue
+            instance_id = int(name)
+            if instance_id <= count or _is_current_runtime_instance(instance_id):
+                continue
+            shutil.rmtree(instance_root(instance_id), ignore_errors=True)
+
+    for name in os.listdir(PROJECT_ROOT):
+        match = re.fullmatch(r"start_(\d+)\.bat", str(name), flags=re.IGNORECASE)
+        if not match:
+            continue
+        instance_id = int(match.group(1))
+        if instance_id <= count or _is_current_runtime_instance(instance_id):
+            continue
+        try:
+            os.remove(os.path.join(PROJECT_ROOT, name))
+        except OSError:
+            pass
+
+
+def configure_instances(requested_count, ports=None, scrcpy_max_fps="auto", current_instance=None, current_port=None):
     count = _normalize_count(requested_count)
     normalized_ports = _normalize_ports(count, ports)
     normalized_fps = _normalize_scrcpy_max_fps(scrcpy_max_fps)
+    target_instance = current_instance_id(current_instance or 1)
+    target_port = None
+    if current_port not in (None, ""):
+        try:
+            target_port = int(current_port)
+        except (TypeError, ValueError):
+            target_port = None
     os.makedirs(os.path.join(PROJECT_ROOT, "instances"), exist_ok=True)
     configured = []
 
@@ -237,6 +275,8 @@ def configure_instances(requested_count, ports=None, scrcpy_max_fps="auto"):
 
         if normalized_ports[index - 1] is not None:
             current_port = normalized_ports[index - 1]
+        elif target_port is not None and index == target_instance:
+            current_port = target_port
 
         _upsert_toml_scalar(config_path, "emulator_port", str(current_port))
         _upsert_toml_scalar(config_path, "instance_index", str(index))
@@ -255,10 +295,11 @@ def configure_instances(requested_count, ports=None, scrcpy_max_fps="auto"):
             "autostart_command": autostart_command(index),
         })
 
+    _prune_extra_instances(count)
     return configured
 
 
-def list_instances():
+def list_instances(max_instance_count=None):
     instances_dir = os.path.join(PROJECT_ROOT, "instances")
     rows = []
     if not os.path.isdir(instances_dir):
@@ -268,6 +309,8 @@ def list_instances():
         if not str(name).isdigit():
             continue
         instance_id = int(name)
+        if max_instance_count is not None and instance_id > int(max_instance_count):
+            continue
         cfg_dir = instance_config_dir(instance_id)
         general_path = os.path.join(cfg_dir, "general_config.toml")
         settings = _read_instance_general_settings(general_path)

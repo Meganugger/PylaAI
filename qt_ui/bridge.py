@@ -107,6 +107,16 @@ class QtBridge(QObject):
             return default
 
     @staticmethod
+    def _coerce_int(value, fallback, minimum=None):
+        try:
+            parsed = int(str(value).strip())
+        except Exception:
+            parsed = fallback
+        if minimum is not None:
+            parsed = max(minimum, parsed)
+        return parsed
+
+    @staticmethod
     def _normalize_scrcpy_max_fps(value):
         raw_value = str(value or "").strip().lower()
         if raw_value in ("", "auto", "none"):
@@ -344,10 +354,10 @@ class QtBridge(QObject):
         return rows
 
     def _multi_instance_state(self):
-        rows = list_instances()
-        current_id = current_instance_id(self._as_int(self.general_config.get("instance_index", 1), 1))
-        configured_count = max(self._as_int(self.general_config.get("instance_count", 1), 1), len(rows) or 1)
-        current_port = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
+        configured_count = self._coerce_int(self.general_config.get("instance_count", 1), 1, minimum=1)
+        rows = list_instances(max_instance_count=configured_count)
+        current_id = current_instance_id(self._coerce_int(self.general_config.get("instance_index", 1), 1, minimum=1))
+        current_port = self._coerce_int(self.general_config.get("emulator_port", 5037), 5037, minimum=1)
         current_fps = self._normalize_scrcpy_max_fps(self.general_config.get("scrcpy_max_fps", "auto"))
         ports_csv = ", ".join(str(row.get("port", 5037)) for row in rows) if rows else str(current_port)
         current_launcher = launcher_path(current_id)
@@ -618,10 +628,11 @@ class QtBridge(QObject):
             if key in general:
                 self.general_config[key] = general[key]
 
-        self.general_config["emulator_port"] = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
-        self.general_config["run_for_minutes"] = self._as_int(self.general_config.get("run_for_minutes", 600), 600)
-        self.general_config["auto_push_target_trophies"] = self._as_int(self.general_config.get("auto_push_target_trophies", 1000), 1000)
-        self.general_config["instance_count"] = max(1, self._as_int(self.general_config.get("instance_count", 1), 1))
+        self.general_config["emulator_port"] = self._coerce_int(self.general_config.get("emulator_port", 5037), 5037, minimum=1)
+        self.general_config["run_for_minutes"] = self._coerce_int(self.general_config.get("run_for_minutes", 600), 600, minimum=1)
+        self.general_config["auto_push_target_trophies"] = self._coerce_int(self.general_config.get("auto_push_target_trophies", 1000), 1000, minimum=0)
+        previous_count = self._coerce_int(load_config("general").get("instance_count", 1), 1, minimum=1)
+        self.general_config["instance_count"] = self._coerce_int(self.general_config.get("instance_count", previous_count), previous_count, minimum=1)
         self.general_config["scrcpy_max_fps"] = self._normalize_scrcpy_max_fps(self.general_config.get("scrcpy_max_fps", "auto"))
 
         for key in (
@@ -689,18 +700,27 @@ class QtBridge(QObject):
     @Slot("QVariantMap")
     def configureMultiInstance(self, payload):
         try:
-            count = max(1, self._as_int(payload.get("instance_count", self.general_config.get("instance_count", 1)), 1))
+            existing_count = self._coerce_int(self.general_config.get("instance_count", 1), 1, minimum=1)
+            count = self._coerce_int(payload.get("instance_count", existing_count), existing_count, minimum=1)
             scrcpy_max_fps = self._normalize_scrcpy_max_fps(payload.get("scrcpy_max_fps", self.general_config.get("scrcpy_max_fps", "auto")))
             ports = payload.get("ports", "")
-            configured = configure_instances(count, ports=ports, scrcpy_max_fps=scrcpy_max_fps)
+            current_id = current_instance_id(self._coerce_int(self.general_config.get("instance_index", 1), 1, minimum=1))
+            current_port = self._coerce_int(payload.get("current_port", self.general_config.get("emulator_port", 5037)), self._coerce_int(self.general_config.get("emulator_port", 5037), 5037, minimum=1), minimum=1)
+            configured = configure_instances(
+                count,
+                ports=ports,
+                scrcpy_max_fps=scrcpy_max_fps,
+                current_instance=current_id,
+                current_port=current_port,
+            )
 
             self.general_config["instance_count"] = count
             self.general_config["scrcpy_max_fps"] = scrcpy_max_fps
-
-            current_id = current_instance_id(self._as_int(self.general_config.get("instance_index", 1), 1))
             current_row = next((row for row in configured if int(row.get("instance", 0) or 0) == current_id), None)
             if current_row and current_row.get("port") is not None:
-                self.general_config["emulator_port"] = self._as_int(current_row.get("port"), self.general_config.get("emulator_port", 5037))
+                self.general_config["emulator_port"] = self._coerce_int(current_row.get("port"), current_port, minimum=1)
+            else:
+                self.general_config["emulator_port"] = current_port
 
             save_dict_as_toml(self.general_config, "cfg/general_config.toml")
             self.general_config = self._load_general_config()

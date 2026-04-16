@@ -273,13 +273,20 @@ ApplicationWindow {
         })
     }
     function saveMultiInstance() {
-        const payload = {
+        backend.configureMultiInstance({
             "instance_count": instanceCountField.text,
             "ports": instancePortsField.text,
-            "scrcpy_max_fps": scrcpyMaxFpsField.text
-        }
-        saveSettings()
-        backend.configureMultiInstance(payload)
+            "scrcpy_max_fps": scrcpyMaxFpsField.text,
+            "current_port": portField.text
+        })
+    }
+    function refreshMultiInstanceOverview() {
+        const fresh = backend.initialState()
+        const merged = {}
+        for (let key in state)
+            merged[key] = state[key]
+        merged.multiInstance = fresh.multiInstance || {}
+        state = merged
     }
     function applyStateToForms() {
         const general = (state && state.general) ? state.general : ({})
@@ -1881,6 +1888,7 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             spacing: 12
                                             AccentButton {
+                                                implicitWidth: 246
                                                 text: "Generate / Refresh Instances"
                                                 onClicked: saveMultiInstance()
                                             }
@@ -1889,7 +1897,7 @@ ApplicationWindow {
                                                 implicitHeight: root.fieldHeight
                                                 implicitWidth: 160
                                                 text: "Refresh Overview"
-                                                onClicked: { hydrate(backend.initialState()); applyStateToForms(); rebuildExcludeModels() }
+                                                onClicked: refreshMultiInstanceOverview()
                                                 background: Rectangle {
                                                     radius: 14
                                                     color: refreshInstancesButton.down ? "#141922" : (refreshInstancesButton.hovered ? "#1A2230" : root.panelAlt)
