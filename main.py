@@ -308,7 +308,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 wait_started_at = time.perf_counter()
                 frame_timeout = 15.0 if self.last_processed_frame_time <= 0 else 1.0
                 frame, frame_time = self.window_controller.get_current_frame(
-                    copy_frame=True,
+                    copy_frame=False,
                     timeout=frame_timeout,
                 )
                 record_timing("frame_fetch", time.perf_counter() - wait_started_at, print_every=120)
