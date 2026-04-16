@@ -93,9 +93,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 getattr(self.Stage_manager.Trophy_observer, "history_revision", 0) or 0
             )
             self._last_live_push = 0.0
+            self._last_live_stats_push = 0.0
             self._last_roster_signature = None
             self._last_roster_push_time = 0.0
             self._last_live_exception_time = 0.0
+            self._live_push_interval = 0.25
+            self._live_stats_push_interval = 0.25
+            self._roster_push_interval = 2.0
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
@@ -304,7 +308,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 wait_started_at = time.perf_counter()
                 frame_timeout = 15.0 if self.last_processed_frame_time <= 0 else 1.0
                 frame, frame_time = self.window_controller.get_current_frame(
-                    copy_frame=True,
+                    copy_frame=False,
                     timeout=frame_timeout,
                 )
                 record_timing("frame_fetch", time.perf_counter() - wait_started_at, print_every=120)
@@ -390,7 +394,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             active_entry["wins"] = live_wins
                         if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
                             active_entry["win_streak"] = live_streak
-                    if hasattr(tobs, "update_live_match_stats"):
+                    now = time.time()
+                    if (
+                        hasattr(tobs, "update_live_match_stats")
+                        and (now - self._last_live_stats_push) >= self._live_stats_push_interval
+                    ):
                         try:
                             tobs.update_live_match_stats(
                                 brawler,
@@ -399,12 +407,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 damage=current_damage,
                                 deaths=current_deaths,
                             )
+                            self._last_live_stats_push = now
                         except Exception as live_stats_exc:
                             if time.time() - self._last_live_exception_time >= 5.0:
                                 print(f"[LIVE] Match stat sync error: {live_stats_exc}")
                                 self._last_live_exception_time = time.time()
 
-                    now = time.time()
                     roster_signature = tuple(
                         (
                             str(entry.get("brawler", "")),
@@ -423,7 +431,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         roster_signature != self._last_roster_signature
                         or current_match_counter != self._last_dashboard_match_counter
                         or current_history_revision != self._last_dashboard_history_revision
-                        or (now - self._last_roster_push_time) >= 2.0
+                        or (now - self._last_roster_push_time) >= self._roster_push_interval
                     )
                     if should_sync_roster:
                         try:
@@ -443,7 +451,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 print(f"[LIVE] Roster sync error: {roster_exc}")
                                 self._last_live_exception_time = now
 
-                    if (now - self._last_live_push) >= 0.2:
+                    if (now - self._last_live_push) >= self._live_push_interval:
                         self._last_live_push = now
                         try:
                             session_victories = int(session_stats.get("victories", 0) or 0)
