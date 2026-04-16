@@ -46,7 +46,7 @@ def _print_session_summary(s):
     """Print a formatted session summary to the console."""
     bar = "=" * 56
     cprint(f"\n{bar}", "#FF6B00")
-    cprint("         ★  SESSION SUMMARY  ★", "#FF6B00")
+    cprint("         â˜…  SESSION SUMMARY  â˜…", "#FF6B00")
     cprint(bar, "#FF6B00")
 
     cprint(f"  Duration:     {s['duration']}", "#E0E0E0")
@@ -103,13 +103,15 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             if main_module:
                 main_module._active_stage_manager = self.Stage_manager
             self.states_requiring_data = ["lobby", "popup", "end", "reward_claim"]
-            if data[0]['automatically_pick']:
+            active_entry = data[0] if data else {}
+            startup_brawler = str(active_entry.get('brawler', '') or '').strip().lower()
+            if startup_brawler and active_entry.get('automatically_pick', True):
                 if debug: print("Picking brawler automatically")
                 try:
-                    self.lobby_automator.select_brawler(data[0]['brawler'])
+                    self.lobby_automator.select_brawler(startup_brawler)
                 except Exception as e:
                     print(f"WARNING: Brawler selection failed: {e}. Continuing with current brawler.")
-            self.Play.current_brawler = data[0]['brawler']
+            self.Play.current_brawler = startup_brawler
             self.no_detections_action_threshold = 60 * 5  # 5 min (was 2)
             self.initialize_stage_manager()
             # Register first brawler for session summary
