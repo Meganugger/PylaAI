@@ -8,7 +8,7 @@ import threading
 import cv2
 import numpy as np
 
-from state_finder.main import get_state, find_game_result, find_reward_claim_action
+from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, async_notify_user, \
     save_brawler_data, reader, to_bgr_array
@@ -547,6 +547,11 @@ class StageManager:
         reward_action = find_reward_claim_action(screenshot)
         if reward_action:
             self.window_controller.click(*reward_action)
+            return
+
+        fallback_center = get_reward_claim_button_center(screenshot)
+        if fallback_center:
+            self.window_controller.click(*fallback_center)
             return
 
         self.window_controller.press_continue()

@@ -217,6 +217,11 @@ def find_reward_claim_action(screenshot):
     return button_center
 
 
+def get_reward_claim_button_center(screenshot):
+    screenshot_bgr = to_bgr_array(screenshot)
+    return _region_center(screenshot_bgr, region_data["reward_claim_button"])
+
+
 def find_game_result(screenshot):
     screenshot_bgr = to_bgr_array(screenshot)
     scores = {}
