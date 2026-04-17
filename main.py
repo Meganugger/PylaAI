@@ -17,7 +17,7 @@ from stage_manager import StageManager
 from state_finder.main import get_state, find_game_result
 from time_management import TimeManagement
 from utils import load_toml_as_dict, current_wall_model_is_latest, api_base_url, ensure_state_icons_present
-from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
+from utils import get_brawler_list, update_missing_brawlers_info, check_version, \
     update_wall_model_classes, get_latest_wall_model_file, get_latest_version, cprint, record_timing, reader
 from window_controller import WindowController
 
@@ -141,18 +141,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.Play.time_since_detections[key] = now
             print(f"Brawl Stars recovered successfully (state: {current_state}).")
             return
-
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                loop.run_until_complete(async_notify_user("bot_is_stuck", screenshot))
-            finally:
-                loop.close()
-            print("Bot got stuck. User notified. Shutting down.")
-            self.window_controller.keys_up(list("wasd"))
-            self.window_controller.close()
-            import sys
-            sys.exit(1)
 
         def _run_initial_brawler_select(self):
             if not self._pending_initial_brawler_select:
