@@ -381,14 +381,28 @@ class QtBridge(QObject):
         history = load_toml_as_dict("cfg/match_history.toml")
         return history if isinstance(history, dict) else {}
 
-    def _build_trophy_farm_roster(self):
-        target = self._coerce_int(self.bot_config.get("trophy_farm_target", 500), 500, minimum=0)
-        strategy = self._normalize_farm_strategy(self.bot_config.get("trophy_farm_strategy", "lowest_first"))
+    def _farm_settings(self, overrides=None):
+        source = dict(self.bot_config)
+        if isinstance(overrides, dict):
+            source.update(overrides)
+        target = self._coerce_int(source.get("trophy_farm_target", 500), 500, minimum=0)
+        strategy = self._normalize_farm_strategy(source.get("trophy_farm_strategy", "lowest_first"))
         excluded = {
             str(item or "").strip().lower()
-            for item in self.bot_config.get("trophy_farm_excluded", [])
+            for item in source.get("trophy_farm_excluded", [])
             if str(item or "").strip()
         }
+        return {
+            "target": target,
+            "strategy": strategy,
+            "excluded": excluded,
+        }
+
+    def _build_trophy_farm_roster(self, overrides=None):
+        farm_settings = self._farm_settings(overrides)
+        target = farm_settings["target"]
+        strategy = farm_settings["strategy"]
+        excluded = farm_settings["excluded"]
         scan_data = self._brawler_scan_data()
         roster_lookup = {
             str(entry.get("brawler", "")).strip().lower(): entry
@@ -450,6 +464,23 @@ class QtBridge(QObject):
             })
 
         return roster, queue, target, strategy
+
+    def _build_trophy_farm_preview(self, overrides=None):
+        _roster, queue, target, strategy = self._build_trophy_farm_roster(overrides)
+        preview = []
+        for index, item in enumerate(queue, start=1):
+            preview.append({
+                "order": index,
+                "brawler": item["brawler"],
+                "displayName": item["brawler"].title(),
+                "icon": self._icon_url_for(item["brawler"]),
+                "trophies": self._as_int(item.get("trophies", 0), 0),
+                "winrate": self._as_int(item.get("winrate", 50), 50),
+                "matches": self._as_int(item.get("total_games", 0), 0),
+                "target": target,
+                "strategy": strategy,
+            })
+        return preview
 
     def _detect_adb_ports(self):
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -677,6 +708,7 @@ class QtBridge(QObject):
             "roster": self.getRoster(),
             "brawlers": self._build_brawler_payload(),
             "history": self.getHistory(),
+            "farmPreview": self.getFarmPreview(),
             "logs": self.getLogs(),
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
@@ -705,6 +737,14 @@ class QtBridge(QObject):
     @Slot(result="QVariantList")
     def getBrawlers(self):
         return self._build_brawler_payload()
+
+    @Slot(result="QVariantList")
+    def getFarmPreview(self):
+        return self._build_trophy_farm_preview()
+
+    @Slot("QVariantMap", result="QVariantList")
+    def previewFarmSettings(self, payload):
+        return self._build_trophy_farm_preview(payload or {})
 
     @Slot()
     def importAllBrawlersFromBrawlStarsApi(self):
