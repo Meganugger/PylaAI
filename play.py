@@ -5015,6 +5015,12 @@ class Play(Movement):
                     self.window_controller.keys_up(list("wasd"))
                     self.time_since_last_proceeding = current_time
                     return
+                if current_state == "reward_claim":
+                    print("[RESULT] play state probe detected reward_claim")
+                    self._runtime_state = current_state
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
                 if current_state != "match":
                     self.time_since_last_proceeding = current_time
                 else:
