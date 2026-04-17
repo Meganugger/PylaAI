@@ -1,3 +1,4 @@
+import asyncio
 import hashlib
 import io
 import os
@@ -468,37 +469,228 @@ def check_version():
             print("Error, couldn't get the version, please check your internet connection or go ask for help in the discord.")
 
 
-async def async_notify_user(message_type: str | None = None, screenshot: Image = None) -> None:
-    user_id = load_toml_as_dict("cfg/general_config.toml")["discord_id"]
-    webhook_url = load_toml_as_dict("cfg/general_config.toml")["personal_webhook"]
-    if not webhook_url:
-        print("Couldn't notify: no webhook configured.")
-        return
+def has_notification_webhook() -> bool:
+    webhook_url = str(load_toml_as_dict("cfg/general_config.toml").get("personal_webhook", "") or "").strip()
+    return bool(webhook_url)
 
-    if message_type == "completed":
-        status_line = f"Pyla has completed all its targets!"
-        ping = f"<@{user_id}>"
-    elif message_type == "bot_is_stuck":
-        status_line = f"Your bot is currently stuck!"
-        ping = f"<@{user_id}>"
-    else:
-        status_line = f"Pyla completed brawler goal for {message_type}!"
-        ping = f"<@{user_id}>"
+
+def _safe_notification_int(value, default=0):
+    try:
+        return int(round(float(value)))
+    except (TypeError, ValueError):
+        return default
+
+
+def _format_signed_value(value):
+    number = _safe_notification_int(value, 0)
+    return f"+{number}" if number > 0 else str(number)
+
+
+def _normalize_discord_ping(user_id):
+    raw = str(user_id or "").strip()
+    if not raw:
+        return None
+    if raw.startswith("<@") and raw.endswith(">"):
+        return raw
+    raw = raw.strip("<>@! ")
+    return f"<@{raw}>" if raw else None
+
+
+def _normalize_notification_event(message_type, subject=None):
+    raw_event = str(message_type or "").strip()
+    event = raw_event.lower()
+    aliases = {
+        "completed": "all_targets_completed",
+        "bot_is_stuck": "bot_stuck",
+    }
+    event = aliases.get(event, event)
+    known_events = {
+        "all_targets_completed",
+        "farm_completed",
+        "quests_completed",
+        "bot_stuck",
+        "brawler_completed",
+        "milestone_reached",
+        "status_update",
+    }
+    if event not in known_events:
+        if subject is None and raw_event:
+            subject = raw_event
+        if subject:
+            return "brawler_completed", subject
+        return "status_update", subject
+    return event, subject
+
+
+def _notification_heading(event_type, subject=None, live_summary=None):
+    summary = live_summary or {}
+    brawler_name = str(subject or summary.get("brawler") or "current brawler").replace("_", " ").title()
+    if event_type == "all_targets_completed":
+        return "All Targets Completed", "Pyla has completed all configured targets."
+    if event_type == "farm_completed":
+        return "Trophy Farm Completed", "Pyla has completed the current Trophy Farm queue."
+    if event_type == "quests_completed":
+        return "Quest Queue Completed", "Pyla has completed all queued quest targets."
+    if event_type == "bot_stuck":
+        return "Bot Needs Attention", "Pyla could not recover cleanly and may need manual help."
+    if event_type == "milestone_reached":
+        milestone_start = _safe_notification_int(summary.get("milestone_start"), 0)
+        milestone_end = _safe_notification_int(summary.get("milestone_end"), milestone_start + 249)
+        return "Trophy Milestone Reached", f"{brawler_name} reached the {milestone_start}-{milestone_end} trophy range."
+    if event_type == "brawler_completed":
+        return "Brawler Goal Completed", f"Pyla completed {brawler_name}'s target and moved on."
+    return "Pyla Update", f"Pyla sent a new update for {brawler_name}."
+
+
+def _build_notification_embed(event_type, subject=None, live_summary=None):
+    summary = live_summary or {}
+    title, description = _notification_heading(event_type, subject=subject, live_summary=summary)
+    embed = discord.Embed(title=title, description=description)
+
+    if not summary:
+        return embed
+
+    brawler_name = str(summary.get("brawler") or subject or "").replace("_", " ").title()
+    if brawler_name:
+        embed.add_field(name="Brawler", value=brawler_name, inline=True)
+
+    trophies = _safe_notification_int(summary.get("trophies"), None)
+    if trophies is not None:
+        trophy_text = str(trophies)
+        if "session_trophy_delta" in summary:
+            trophy_text += f" ({_format_signed_value(summary.get('session_trophy_delta'))} session)"
+        embed.add_field(name="Trophies", value=trophy_text, inline=True)
+
+    session_matches = _safe_notification_int(summary.get("session_matches"), 0)
+    session_victories = _safe_notification_int(summary.get("session_victories"), 0)
+    session_defeats = _safe_notification_int(summary.get("session_defeats"), 0)
+    session_draws = _safe_notification_int(summary.get("session_draws"), 0)
+    session_winrate = float(summary.get("session_winrate") or 0.0)
+    if session_matches > 0:
+        embed.add_field(
+            name="Session",
+            value=(
+                f"{session_victories}W / {session_defeats}L / {session_draws}D\n"
+                f"{session_matches} matches ({session_winrate:.1f}% WR)"
+            ),
+            inline=True,
+        )
+
+    current_wins = _safe_notification_int(summary.get("current_wins"), 0)
+    win_streak = _safe_notification_int(summary.get("win_streak"), 0)
+    embed.add_field(
+        name="Progress",
+        value=f"{current_wins} wins\n{win_streak} streak",
+        inline=True,
+    )
+
+    last_match_result = str(summary.get("last_match_result") or "").strip().lower()
+    if last_match_result:
+        verification = "verified" if summary.get("last_match_verified") else "estimated"
+        embed.add_field(
+            name="Last Match",
+            value=f"{last_match_result.title()} ({_format_signed_value(summary.get('last_match_trophy_delta'))}, {verification})",
+            inline=True,
+        )
+
+    if event_type == "milestone_reached":
+        milestone_start = _safe_notification_int(summary.get("milestone_start"), 0)
+        milestone_end = _safe_notification_int(summary.get("milestone_end"), milestone_start + 249)
+        embed.add_field(
+            name="Milestone",
+            value=f"{milestone_start}-{milestone_end} trophies",
+            inline=True,
+        )
+
+    return embed
+
+
+def _prepare_webhook_image(screenshot):
+    image_to_send = None
+    if isinstance(screenshot, Image.Image):
+        image_to_send = screenshot
+    elif isinstance(screenshot, np.ndarray):
+        try:
+            if screenshot.ndim == 2:
+                image_to_send = Image.fromarray(screenshot)
+            elif screenshot.ndim == 3 and screenshot.shape[2] == 4:
+                image_to_send = Image.fromarray(cv2.cvtColor(screenshot, cv2.COLOR_BGRA2RGBA))
+            elif screenshot.ndim == 3:
+                image_to_send = Image.fromarray(cv2.cvtColor(screenshot, cv2.COLOR_BGR2RGB))
+        except Exception:
+            image_to_send = None
+
+    if image_to_send is None:
+        return None
 
     buffer = io.BytesIO()
-    screenshot.save(buffer, format="PNG")
+    image_to_send.save(buffer, format="PNG")
     buffer.seek(0)
-    file = discord.File(buffer, filename="screenshot.png")
+    return discord.File(buffer, filename="screenshot.png")
 
-    # Build the embed that holds both the text and the screenshot
-    embed = discord.Embed(description=status_line)
-    embed.set_image(url="attachment://screenshot.png")   # show the attached screenshot
 
-    # Send the embed
+async def async_notify_user(
+    message_type: str | None = None,
+    screenshot: Image = None,
+    subject: str | None = None,
+    live_summary: dict | None = None,
+) -> bool:
+    general_config = load_toml_as_dict("cfg/general_config.toml")
+    webhook_url = str(general_config.get("personal_webhook", "") or "").strip()
+    if not webhook_url:
+        print("Couldn't notify: no webhook configured.")
+        return False
+
+    event_type, subject = _normalize_notification_event(message_type, subject=subject)
+    ping = _normalize_discord_ping(general_config.get("discord_id", ""))
+    embed = _build_notification_embed(event_type, subject=subject, live_summary=live_summary)
+    file = _prepare_webhook_image(screenshot)
+    if file is not None:
+        embed.set_image(url="attachment://screenshot.png")
+
+    send_kwargs = {
+        "embed": embed,
+        "username": "Pyla notifier",
+    }
+    if file is not None:
+        send_kwargs["file"] = file
+    if ping:
+        send_kwargs["content"] = ping
+
     async with aiohttp.ClientSession() as session:
         webhook = Webhook.from_url(webhook_url, session=session)
-        print("sending webhook")
-        await webhook.send(embed=embed, file=file, username="Pyla notifier", content=ping)
+        print(f"sending webhook ({event_type})")
+        await webhook.send(**send_kwargs)
+    return True
+
+
+def notify_user(
+    message_type: str | None = None,
+    screenshot: Image = None,
+    subject: str | None = None,
+    live_summary: dict | None = None,
+    timeout: float = 15.0,
+) -> bool:
+    loop = asyncio.new_event_loop()
+    try:
+        asyncio.set_event_loop(loop)
+        return bool(loop.run_until_complete(
+            asyncio.wait_for(
+                async_notify_user(
+                    message_type,
+                    screenshot=screenshot,
+                    subject=subject,
+                    live_summary=live_summary,
+                ),
+                timeout=timeout,
+            )
+        ))
+    except Exception as exc:
+        print(f"Couldn't notify via webhook: {exc}")
+        return False
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
         
 def get_discord_link():
     if api_base_url == "localhost":

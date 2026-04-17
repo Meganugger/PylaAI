@@ -15,7 +15,7 @@ from stage_manager import StageManager
 from state_finder.main import get_state, find_game_result
 from time_management import TimeManagement
 from utils import FrameData, load_toml_as_dict, current_wall_model_is_latest, api_base_url, update_icons, reader
-from utils import get_brawler_list, update_missing_brawlers_info, check_version, async_notify_user, \
+from utils import get_brawler_list, update_missing_brawlers_info, check_version, notify_user, \
     update_wall_model_classes, get_latest_wall_model_file, get_latest_version, cprint
 from window_controller import WindowController
 
@@ -283,17 +283,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 print(f"[RECOVERY] Restart failed: {e}")
 
             # Fall back to notification + exit if recovery failed
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
             try:
                 screenshot = self.window_controller.screenshot()
-                loop.run_until_complete(
-                    asyncio.wait_for(async_notify_user("bot_is_stuck", screenshot), timeout=15)
-                )
+                notify_user("bot_stuck", screenshot=screenshot)
             except Exception:
                 pass
-            finally:
-                loop.close()
             print("Recovery failed. User notified. Shutting down.")
             self.window_controller.close()
             import sys

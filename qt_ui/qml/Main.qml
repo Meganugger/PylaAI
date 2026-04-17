@@ -1820,8 +1820,15 @@ ApplicationWindow {
                                             columnSpacing: 14
                                             rowSpacing: 12
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Pyla API Key" } AppTextField { id: pylaKey; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Discord ID" } AppTextField { id: discordField; Layout.fillWidth: true } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Webhook" } AppTextField { id: webhookField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Discord ID" } AppTextField { id: discordField; Layout.fillWidth: true; placeholderText: "Optional: numeric Discord user ID for pings" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Webhook" } AppTextField { id: webhookField; Layout.fillWidth: true; placeholderText: "Optional: Discord webhook URL" } }
+                                            Label {
+                                                Layout.columnSpan: 2
+                                                Layout.fillWidth: true
+                                                text: "Webhook notifications are optional. If you add a webhook URL, Pyla can send Discord updates for completed brawlers, all targets completed, Trophy Farm or Quest queue completion, true stuck-recovery alerts, and 250-trophy milestone ranges using the same live-session info shown in the app.\n\nDiscord ID is optional and only controls the ping. Paste your numeric Discord user ID if you want those webhook messages to mention you, or leave it blank to send the same messages without a ping."
+                                                color: root.textDim
+                                                wrapMode: Text.WordWrap
+                                            }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "API Base URL" } AppTextField { id: apiBaseField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Brawl Stars API Key" } AppTextField { id: bsApiField; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "Paste key from developer.brawlstars.com" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Player Tag" } AppTextField { id: playerTagField; Layout.fillWidth: true; placeholderText: "Paste your in-game tag (# optional)" } }
