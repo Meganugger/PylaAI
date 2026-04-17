@@ -261,6 +261,8 @@ class Play(Movement):
         self._pending_end_result = None
         self._last_confirmed_match_time = 0.0
         self._last_match_evidence_time = 0.0
+        self._last_valid_player_bbox = None
+        self._last_valid_player_seen_at = 0.0
         self._teammate_positions = []
         self._last_known_enemies = []
         self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
@@ -377,6 +379,52 @@ class Play(Movement):
             return True
 
         return False
+
+    def _remember_player_detection(self, data, current_time):
+        players = (data or {}).get("player") or []
+        if not players or not self._is_plausible_player_detection(data):
+            return
+        try:
+            self._last_valid_player_bbox = [float(value) for value in players[0][:4]]
+            self._last_valid_player_seen_at = current_time
+        except Exception:
+            pass
+
+    def _restore_recent_player_detection(self, data, current_time, runtime_state):
+        if not isinstance(data, dict):
+            return data
+        if data.get("player"):
+            return data
+        if not self._last_valid_player_bbox:
+            return data
+
+        player_age = current_time - self._last_valid_player_seen_at
+        if player_age > 0.8:
+            return data
+
+        supporting_entities = self._entity_count(data, "enemy") + self._entity_count(data, "teammate")
+        has_recent_match = (
+            runtime_state == "match"
+            and (current_time - self._last_confirmed_match_time) <= 1.0
+        )
+        allow_restore = False
+        if supporting_entities > 0 and has_recent_match:
+            allow_restore = True
+        elif has_recent_match and player_age <= 0.35:
+            allow_restore = True
+
+        if not allow_restore:
+            return data
+
+        restored = dict(data)
+        restored["player"] = [list(self._last_valid_player_bbox)]
+        if debug and (current_time - self._last_no_player_log_time >= 1.5):
+            print(
+                "[MATCH] reusing recent player detection "
+                f"(age={player_age:.2f}s, enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')})"
+            )
+            self._last_no_player_log_time = current_time
+        return restored
 
 
     def get_wall_context(self, walls):
@@ -992,10 +1040,12 @@ class Play(Movement):
         elif self.keep_walls_in_memory:
             data['wall'] = self.last_walls_data
 
+        data = self._restore_recent_player_detection(data, current_time, runtime_state)
 
         data = self.validate_game_data(data)
         self.track_no_detections(data)
         if data:
+            self._remember_player_detection(data, current_time)
             if (
                 self._is_plausible_player_detection(data)
                 and (
