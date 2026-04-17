@@ -214,7 +214,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 allow_reward_ocr = (
                     runtime_state.startswith("end_")
                     or runtime_state == "reward_claim"
-                    or (runtime_state == "match" and player_missing_for >= 1.0)
                 )
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 if state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
