@@ -360,6 +360,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.manage_time_tasks(frame)
                 record_timing("time_tasks", time.perf_counter() - tasks_started_at, print_every=120)
 
+                runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+                if runtime_state.startswith("end_") or runtime_state == "reward_claim":
+                    c += 1
+                    continue
+
                 brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                 if self.Play.current_brawler != brawler:
                     self.Play.current_brawler = brawler
