@@ -1398,8 +1398,7 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                allow_reward_ocr = runtime_state == "match" and player_missing_for >= 1.0
-                current_state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
+                current_state = get_state(frame)
                 if isinstance(current_state, str) and current_state.startswith("end_"):
                     print(f"[RESULT] play state probe detected {current_state}")
                     self._pending_end_result = current_state.split("_", 1)[1]
