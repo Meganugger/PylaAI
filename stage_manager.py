@@ -56,9 +56,11 @@ class StageManager:
         }
         self.Lobby_automation = lobby_automator
         self.lobby_config = load_toml_as_dict("./cfg/lobby_config.toml")
+        self.bot_config = load_toml_as_dict("./cfg/bot_config.toml")
         self.brawl_stars_icon = None
         self.close_popup_icon = None
         self.brawlers_pick_data = brawlers_data
+        self.smart_trophy_farm = self.bot_config.get("smart_trophy_farm", "no")
         brawler_list = [brawler["brawler"] for brawler in brawlers_data]
         self.Trophy_observer = TrophyObserver(brawler_list)
         self.time_since_last_stat_change = time.time()

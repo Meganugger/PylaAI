@@ -101,6 +101,13 @@ class QtBridge(QObject):
         config = load_config("bot")
         config.setdefault("gamemode", "knockout")
         config.setdefault("gamemode_type", 3)
+        config.setdefault("smart_trophy_farm", "no")
+        config.setdefault("trophy_farm_target", 500)
+        config.setdefault("trophy_farm_strategy", "lowest_first")
+        config.setdefault("trophy_farm_excluded", [])
+        config.setdefault("quest_farm_enabled", "no")
+        config.setdefault("quest_farm_mode", "games")
+        config.setdefault("quest_farm_excluded", [])
         return config
 
     def _load_general_config(self):
@@ -108,6 +115,22 @@ class QtBridge(QObject):
         config.setdefault("current_emulator", "LDPlayer")
         config.setdefault("map_orientation", "vertical")
         return config
+
+    @staticmethod
+    def _is_enabled(value):
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_farm_strategy(value):
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "lowest_first": "lowest_first",
+            "highest_first": "highest_winrate",
+            "highest_winrate": "highest_winrate",
+            "in_order": "sequential",
+            "sequential": "sequential",
+        }
+        return aliases.get(normalized, "lowest_first")
 
     def _validate_existing_login(self):
         api_base_url = str(self.general_config.get("api_base_url", "localhost")).strip()
@@ -316,6 +339,80 @@ class QtBridge(QObject):
         rows.sort(key=lambda item: (-item["matches"], item["displayName"]))
         return rows
 
+    def _match_history_map(self):
+        history = load_toml_as_dict("cfg/match_history.toml")
+        return history if isinstance(history, dict) else {}
+
+    def _build_trophy_farm_roster(self):
+        target = max(0, self._as_int(self.bot_config.get("trophy_farm_target", 500), 500))
+        strategy = self._normalize_farm_strategy(self.bot_config.get("trophy_farm_strategy", "lowest_first"))
+        excluded = {
+            str(item or "").strip().lower()
+            for item in self.bot_config.get("trophy_farm_excluded", [])
+            if str(item or "").strip()
+        }
+        scan_data = self._brawler_scan_data()
+        roster_lookup = {
+            str(entry.get("brawler", "")).strip().lower(): entry
+            for entry in self.brawlers_data
+            if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
+        }
+        history = self._match_history_map()
+        queue = []
+
+        for brawler in self._all_brawlers:
+            if brawler in excluded:
+                continue
+
+            scan_entry = scan_data.get(brawler, {})
+            if not isinstance(scan_entry, dict):
+                scan_entry = {}
+            if scan_entry and scan_entry.get("unlocked") is False:
+                continue
+
+            selected_entry = roster_lookup.get(brawler, {})
+            trophies = self._as_int(selected_entry.get("trophies", scan_entry.get("trophies", 0)), 0)
+            if trophies >= target:
+                continue
+
+            history_entry = history.get(brawler, {})
+            if not isinstance(history_entry, dict):
+                history_entry = {}
+            wins = self._as_int(history_entry.get("victory", 0), 0)
+            defeats = self._as_int(history_entry.get("defeat", 0), 0)
+            total_games = wins + defeats
+            winrate = round((wins / total_games) * 100) if total_games else 50
+            queue.append({
+                "brawler": brawler,
+                "trophies": trophies,
+                "winrate": winrate,
+                "total_games": total_games,
+                "source": selected_entry,
+            })
+
+        if strategy == "highest_winrate":
+            queue.sort(key=lambda item: (-item["winrate"], item["trophies"], item["brawler"]))
+        elif strategy == "sequential":
+            queue.sort(key=lambda item: item["brawler"])
+        else:
+            queue.sort(key=lambda item: (item["trophies"], item["brawler"]))
+
+        roster = []
+        for item in queue:
+            source = item.get("source", {})
+            roster.append({
+                "brawler": item["brawler"],
+                "push_until": target,
+                "trophies": item["trophies"],
+                "wins": self._as_int(source.get("wins", 0), 0),
+                "type": "trophies",
+                "automatically_pick": bool(source.get("automatically_pick", True)),
+                "win_streak": self._as_int(source.get("win_streak", 0), 0),
+                "manual_trophies": bool(source.get("manual_trophies", False)),
+            })
+
+        return roster, queue, target, strategy
+
     def _notification(self, level, message):
         self._push_log(level, message)
         self.notificationRaised.emit(level, message)
@@ -498,15 +595,18 @@ class QtBridge(QObject):
 
     @Slot("QVariantMap")
     def saveFarmSettings(self, payload):
-        self.bot_config["smart_trophy_farm"] = "yes" if payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")) in (True, "yes", "true", "1") else "no"
-        self.bot_config["trophy_farm_strategy"] = str(payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first")))
+        farm_enabled = self._is_enabled(payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")))
+        self.bot_config["smart_trophy_farm"] = "yes" if farm_enabled else "no"
+        self.bot_config["trophy_farm_strategy"] = self._normalize_farm_strategy(
+            payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first"))
+        )
         self.bot_config["trophy_farm_target"] = self._as_int(payload.get("trophy_farm_target", self.bot_config.get("trophy_farm_target", 500)), 500)
         excluded = payload.get("trophy_farm_excluded", self.bot_config.get("trophy_farm_excluded", []))
         if isinstance(excluded, list):
             self.bot_config["trophy_farm_excluded"] = sorted({str(item).lower() for item in excluded if item})
 
         if self.capabilities.get("quest_farm"):
-            self.bot_config["quest_farm_enabled"] = "yes" if payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no")) in (True, "yes", "true", "1") else "no"
+            self.bot_config["quest_farm_enabled"] = "yes" if self._is_enabled(payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no"))) else "no"
             self.bot_config["quest_farm_mode"] = str(payload.get("quest_farm_mode", self.bot_config.get("quest_farm_mode", "games")))
             quest_excluded = payload.get("quest_farm_excluded", self.bot_config.get("quest_farm_excluded", []))
             if isinstance(quest_excluded, list):
@@ -514,7 +614,10 @@ class QtBridge(QObject):
 
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
         self._emit_state()
-        self._notification("success", "Farm settings saved.")
+        if farm_enabled:
+            self._notification("success", "Farm settings saved. Trophy Farm will build its queue the next time you start the bot.")
+        else:
+            self._notification("success", "Farm settings saved. Start Bot will keep using your normal roster until Trophy Farm is enabled.")
 
     @Slot("QVariantMap")
     def saveSettings(self, payload):
@@ -692,7 +795,21 @@ class QtBridge(QObject):
 
     @Slot()
     def startBot(self):
-        if not self.brawlers_data:
+        if self._bot_thread and self._bot_thread.is_alive():
+            self._notification("warning", "The bot is already running.")
+            return
+
+        runtime_roster = list(self.brawlers_data)
+        if self._is_enabled(self.bot_config.get("smart_trophy_farm", "no")):
+            runtime_roster, queue, target, _strategy = self._build_trophy_farm_roster()
+            if not runtime_roster:
+                self._notification("warning", f"Trophy Farm is enabled, but no eligible brawlers are below {target} trophies.")
+                return
+            self.brawlers_data = self._normalize_roster(runtime_roster)
+            self._emit_roster()
+            self._emit_state()
+            self._notification("info", f"Trophy Farm queue ready: {len(queue)} brawler(s) below {target} trophies.")
+        elif not runtime_roster:
             self._notification("warning", "Select at least one brawler first.")
             return
 
