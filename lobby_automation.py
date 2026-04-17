@@ -3,6 +3,7 @@ import time
 import numpy as np
 
 from stage_manager import load_image
+from state_finder.main import get_state
 from utils import extract_text_and_positions, count_hsv_pixels, load_toml_as_dict, find_template_center
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
@@ -38,6 +39,10 @@ class LobbyAutomation:
         if gray_pixels > 1000:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
+    @staticmethod
+    def _can_select_brawler_in_state(state):
+        return state in {"lobby", "brawler_selection"}
+
     def select_brawler(self, brawler):
         brawler = str(brawler or "").strip().lower()
         if not brawler:
@@ -45,6 +50,13 @@ class LobbyAutomation:
         brawler_menu_treshold = 0.8
         found = False
         current_frame = self.window_controller.screenshot()
+        current_state = get_state(current_frame)
+        if not self._can_select_brawler_in_state(current_state):
+            print(
+                f"WARNING: Skipping brawler selection for '{brawler}' because "
+                f"the current state is '{current_state}'."
+            )
+            return False
         if self.brawler_menu_template is None:
             self.brawler_menu_template = load_image(
                 r'state_finder/images_to_detect/brawler_menu_btn.png',
@@ -63,6 +75,13 @@ class LobbyAutomation:
                 brawler_menu_treshold -= 0.1
                 time.sleep(1)
                 current_frame = self.window_controller.screenshot()
+                current_state = get_state(current_frame)
+                if not self._can_select_brawler_in_state(current_state):
+                    print(
+                        f"WARNING: Aborting brawler selection for '{brawler}' because "
+                        f"the state changed to '{current_state}'."
+                    )
+                    return False
             if not found and brawler_menu_treshold < 0.5:
                 current_frame.save(r'brawler_menu_btn_not_found.png')
                 raise ValueError("Brawler menu button not found on screen, even at low threshold.")
@@ -72,6 +91,13 @@ class LobbyAutomation:
         found_brawler = False
         for i in range(50):
             screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+            if not self._can_select_brawler_in_state(current_state):
+                print(
+                    f"WARNING: Aborting brawler selection for '{brawler}' because "
+                    f"the state changed to '{current_state}'."
+                )
+                return False
             screenshot = screenshot.resize((int(screenshot.width * 0.65), int(screenshot.height * 0.65)))
             screenshot = np.array(screenshot)
             if debug: print("extracting text on current screen...")
