@@ -196,6 +196,18 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.Play.time_since_detections[key] = now
             return True
 
+        def _cancel_initial_brawler_select(self, reason):
+            if not self._pending_initial_brawler_select:
+                return False
+            self._pending_initial_brawler_select = False
+            target_brawler = str(self._startup_brawler_target or "").strip().lower()
+            if reason:
+                print(
+                    f"[STARTUP] Skipping initial brawler selection for "
+                    f"'{target_brawler or 'current brawler'}': {reason}"
+                )
+            return True
+
         def manage_time_tasks(self, frame):
             now = time.time()
             runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
@@ -225,9 +237,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 if state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
                     self.Play.note_confirmed_match_state(now)
-                if not self._easyocr_warmup_started and self._pending_initial_brawler_select:
-                    self._start_easyocr_warmup()
-                    self._easyocr_warmup_started = True
+                if (
+                    self._pending_initial_brawler_select
+                    and (
+                        state == "match"
+                        or runtime_state == "match"
+                        or self.Stage_manager._match_in_progress
+                        or getattr(self.Play, "has_recent_match_context", lambda *_args, **_kwargs: False)(now)
+                    )
+                ):
+                    self._cancel_initial_brawler_select("match context was already detected")
                 if state == "lobby" and self._pending_initial_brawler_select:
                     self._run_initial_brawler_select()
                     try:
