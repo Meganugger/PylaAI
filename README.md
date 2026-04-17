@@ -260,6 +260,19 @@ Notes:
 - Match result recovery uses end-screen detection first, then lobby/API verification when needed, so showdown placements and delayed lobby returns can still resolve to the correct trophy change.
 - If the Brawl Stars API fields are empty, PylaAI will still run, but lobby result verification has to rely on OCR and may take longer when a result was not detected on the end screen.
 
+## Webhook Notifications
+
+- `Webhook` is optional. If it is empty, PylaAI does not send Discord notifications.
+- If you add a Discord webhook URL, PylaAI can send updates for:
+  - completed brawler goals
+  - all targets completed
+  - Trophy Farm completed
+  - Quest queue completed
+  - true stuck-recovery failures
+  - 250-trophy milestone ranges such as `250-499`, `500-749`, and so on
+- Milestone notifications include the same live-session information Pyla already tracks in the app, such as current trophies, session W/L/D, current wins, streak, and last-match trophy delta.
+- `Discord ID` is optional and is only used for the ping. Paste your numeric Discord user ID if you want those webhook messages to mention you. Leave it blank if you want the same messages without a mention.
+
 ## What This Fixes
 
 The install flow now declares the runtime dependencies that were previously missing or only installed through fragile `setup.py` side effects, including:

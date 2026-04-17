@@ -1,7 +1,6 @@
 import os.path
 import sys
 
-import asyncio
 import time
 import threading
 
@@ -10,7 +9,7 @@ import numpy as np
 
 from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center
 from trophy_observer import TrophyObserver
-from utils import find_template_center, load_toml_as_dict, async_notify_user, \
+from utils import find_template_center, load_toml_as_dict, notify_user, has_notification_webhook, \
     save_brawler_data, reader, to_bgr_array
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
@@ -75,6 +74,7 @@ class StageManager:
         self._api_lobby_sync_attempts = 0
         self._last_api_lobby_sync_attempt_at = 0.0
         self._lobby_ocr_warmup_started = False
+        self._pending_webhook_milestone_summary = None
 
     def _is_easyocr_ready(self):
         try:
@@ -145,6 +145,62 @@ class StageManager:
         active['win_streak'] = self._coerce_int(
             self.Trophy_observer.win_streak,
             self._coerce_int(active.get('win_streak'), 0),
+        )
+
+    def _current_brawler_name(self):
+        if not self.brawlers_pick_data:
+            return None
+        return self.brawlers_pick_data[0].get('brawler')
+
+    def _build_live_summary(self, brawler_name=None):
+        target_brawler = brawler_name or self._current_brawler_name()
+        return self.Trophy_observer.build_live_notification_summary(target_brawler)
+
+    def _queue_webhook_milestone(self, brawler_name=None):
+        target_brawler = brawler_name or self._current_brawler_name()
+        if not target_brawler:
+            self._pending_webhook_milestone_summary = None
+            return None
+        self._pending_webhook_milestone_summary = self.Trophy_observer.preview_trophy_milestone(target_brawler)
+        return self._pending_webhook_milestone_summary
+
+    def _flush_webhook_milestone(self, screenshot=None):
+        summary = self._pending_webhook_milestone_summary
+        self._pending_webhook_milestone_summary = None
+        if not summary or not has_notification_webhook():
+            return False
+
+        brawler_name = summary.get("brawler")
+        if not self.Trophy_observer.commit_trophy_milestone(brawler_name, summary.get("milestone_bucket")):
+            return False
+
+        if screenshot is None:
+            try:
+                screenshot = self.window_controller.screenshot()
+            except Exception:
+                screenshot = None
+        return notify_user(
+            "milestone_reached",
+            screenshot=screenshot,
+            subject=brawler_name,
+            live_summary=summary,
+        )
+
+    def _send_webhook(self, message_type, screenshot=None, subject=None, current_brawler=None, live_summary=None):
+        if not has_notification_webhook():
+            return False
+        if live_summary is None:
+            live_summary = self._build_live_summary(current_brawler or subject)
+        if screenshot is None:
+            try:
+                screenshot = self.window_controller.screenshot()
+            except Exception:
+                screenshot = None
+        return notify_user(
+            message_type,
+            screenshot=screenshot,
+            subject=subject,
+            live_summary=live_summary,
         )
 
     @staticmethod
@@ -364,6 +420,7 @@ class StageManager:
 
         self.Trophy_observer.reconcile_verified_trophies(current_brawler, verified_trophies)
         self._sync_active_brawler_progress()
+        self._queue_webhook_milestone(current_brawler)
         save_brawler_data(self.brawlers_pick_data)
         self._awaiting_lobby_result_sync = False
         self._match_in_progress = False
@@ -395,6 +452,7 @@ class StageManager:
         type_to_push, value, _ = self._resolve_push_progress()
 
         self._sync_active_brawler_progress()
+        self._queue_webhook_milestone(current_brawler)
         self.brawlers_pick_data[0][type_to_push] = value
         save_brawler_data(self.brawlers_pick_data)
         self._result_applied_for_active_match = True
@@ -456,30 +514,33 @@ class StageManager:
             self._match_in_progress = False
             self._lobby_sync_started_at = 0.0
             self._pending_verified_result = None
+        self._flush_webhook_milestone(data)
         type_of_push, value, push_current_brawler_till = self._resolve_push_progress()
 
         if value >= push_current_brawler_till:
             if len(self.brawlers_pick_data) <= 1:
                 print("Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
                       "Bot will now pause itself until closed.", value, push_current_brawler_till)
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    screenshot = self.window_controller.screenshot()
-                    loop.run_until_complete(async_notify_user("bot_is_stuck", screenshot))
-                finally:
-                    loop.close()
+                screenshot = self.window_controller.screenshot()
+                self._flush_webhook_milestone(screenshot)
+                self._send_webhook(
+                    "all_targets_completed",
+                    screenshot=screenshot,
+                    current_brawler=self._current_brawler_name(),
+                )
                 print("Bot stopping: all targets completed with no more brawlers.")
                 self.window_controller.keys_up(list("wasd"))
                 self.window_controller.close()
                 sys.exit(0)
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            try:
-                screenshot = self.window_controller.screenshot()
-                loop.run_until_complete(async_notify_user(self.brawlers_pick_data[0]["brawler"], screenshot))
-            finally:
-                loop.close()
+            screenshot = self.window_controller.screenshot()
+            completed_brawler = self.brawlers_pick_data[0]["brawler"]
+            completed_summary = self._build_live_summary(completed_brawler)
+            self._send_webhook(
+                "brawler_completed",
+                screenshot=screenshot,
+                subject=completed_brawler,
+                live_summary=completed_summary,
+            )
             self.brawlers_pick_data.pop(0)
             self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
             self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
@@ -606,13 +667,13 @@ class StageManager:
                         print(
                             "Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
                             "Bot will now pause itself until closed.")
-                        loop = asyncio.new_event_loop()
-                        asyncio.set_event_loop(loop)
-                        try:
-                            screenshot = self.window_controller.screenshot()
-                            loop.run_until_complete(async_notify_user("completed", screenshot))
-                        finally:
-                            loop.close()
+                        screenshot = self.window_controller.screenshot()
+                        self._flush_webhook_milestone(screenshot)
+                        self._send_webhook(
+                            "all_targets_completed",
+                            screenshot=screenshot,
+                            current_brawler=self._current_brawler_name(),
+                        )
                         if os.path.exists("latest_brawler_data.json"):
                             os.remove("latest_brawler_data.json")
                         print("Bot stopping: all targets completed.")
