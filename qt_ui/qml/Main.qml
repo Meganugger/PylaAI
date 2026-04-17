@@ -180,6 +180,14 @@ ApplicationWindow {
     function hasCapability(name) {
         return !!(state.capabilities && state.capabilities[name])
     }
+    function farmStrategyUiValue(value) {
+        const raw = String(value || "lowest_first")
+        if (raw === "highest_winrate")
+            return "highest_first"
+        if (raw === "sequential")
+            return "in_order"
+        return raw
+    }
     function stabilizeScroll(view) {
         if (!view || !view.contentItem)
             return
@@ -314,7 +322,7 @@ ApplicationWindow {
         crashCheck.text = String(state.time.check_if_brawl_stars_crashed || 10)
         farmEnabled.checked = boolFrom(state.bot.smart_trophy_farm)
         farmTarget.text = String(state.bot.trophy_farm_target || 500)
-        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(String(state.bot.trophy_farm_strategy || "lowest_first")))
+        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(farmStrategyUiValue(state.bot.trophy_farm_strategy || "lowest_first")))
         questEnabled.checked = boolFrom(state.bot.quest_farm_enabled)
         questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(state.bot.quest_farm_mode || "games")))
     }
@@ -1085,7 +1093,7 @@ ApplicationWindow {
                                         CardTitle { text: "Trophy Farm" }
                                         Label {
                                             Layout.fillWidth: true
-                                            text: "Trophy Farm lets Pyla rotate through lower-priority brawlers until they reach your target. Use exclusions to keep mains, ranked picks, or special cases out of the automatic farm pool."
+                                            text: "Trophy Farm lets Pyla rotate through lower-priority brawlers until they reach your target. Save Farm stores the plan, and Start Bot rebuilds the actual farm queue from your target and exclusions."
                                             color: root.textDim
                                             font.pixelSize: 14
                                             wrapMode: Text.WordWrap
@@ -1096,6 +1104,13 @@ ApplicationWindow {
                                             AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500" }
                                             AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
                                             AppButton { text: "Save Farm"; onClicked: saveFarm() }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: farmEnabled.checked ? "Start Bot will use a generated Trophy Farm queue instead of your manual roster." : "Trophy Farm is off, so Start Bot will use your normal roster."
+                                            color: farmEnabled.checked ? root.info : root.textDim
+                                            font.pixelSize: 13
+                                            wrapMode: Text.WordWrap
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
