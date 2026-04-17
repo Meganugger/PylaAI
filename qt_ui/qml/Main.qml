@@ -183,6 +183,14 @@ ApplicationWindow {
     function multiInstanceState() {
         return (state && state.multiInstance) ? state.multiInstance : ({})
     }
+    function farmStrategyUiValue(value) {
+        const raw = String(value || "lowest_first")
+        if (raw === "highest_winrate")
+            return "highest_first"
+        if (raw === "sequential")
+            return "in_order"
+        return raw
+    }
     function positiveInt(value, fallback) {
         const parsed = parseInt(String(value === undefined ? "" : value).trim())
         if (isNaN(parsed) || parsed < 1)
@@ -198,7 +206,25 @@ ApplicationWindow {
         return ports.join(", ")
     }
     function suggestedPortsCsv() {
-        return sequentialPortsCsv(portField ? portField.text : multiInstanceState().currentPort, instanceCountField ? instanceCountField.text : multiInstanceState().instanceCount)
+        const total = positiveInt(instanceCountField ? instanceCountField.text : multiInstanceState().instanceCount, positiveInt(multiInstanceState().instanceCount, 1))
+        const currentPort = positiveInt(portField ? portField.text : multiInstanceState().currentPort, positiveInt(multiInstanceState().currentPort, 5037))
+        const detected = multiInstanceState().detectedAdbPorts || []
+        const ports = []
+        function pushPort(value) {
+            const port = positiveInt(value, 0)
+            if (port > 0 && ports.indexOf(String(port)) === -1)
+                ports.push(String(port))
+        }
+        if (!detected.length || currentPort !== 5037 || detected.indexOf(currentPort) !== -1)
+            pushPort(currentPort)
+        for (let i = 0; i < detected.length; ++i)
+            pushPort(detected[i])
+        let nextPort = ports.length ? positiveInt(ports[0], currentPort) : currentPort
+        while (ports.length < total) {
+            pushPort(nextPort)
+            nextPort += 1
+        }
+        return ports.slice(0, total).join(", ")
     }
     function applySuggestedPorts() {
         instancePortsField.text = suggestedPortsCsv()
@@ -318,11 +344,11 @@ ApplicationWindow {
         })
     }
     function refreshMultiInstanceOverview() {
-        const fresh = backend.initialState()
+        const freshMulti = backend.getMultiInstanceState()
         const merged = {}
         for (let key in state)
             merged[key] = state[key]
-        merged.multiInstance = fresh.multiInstance || {}
+        merged.multiInstance = freshMulti || {}
         state = merged
     }
     function applyStateToForms() {
@@ -378,7 +404,7 @@ ApplicationWindow {
         crashCheck.text = String(timeCfg.check_if_brawl_stars_crashed || 10)
         farmEnabled.checked = boolFrom(bot.smart_trophy_farm)
         farmTarget.text = String(bot.trophy_farm_target || 500)
-        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(String(bot.trophy_farm_strategy || "lowest_first")))
+        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(farmStrategyUiValue(bot.trophy_farm_strategy || "lowest_first")))
         questEnabled.checked = boolFrom(bot.quest_farm_enabled)
         questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(bot.quest_farm_mode || "games")))
     }
@@ -1152,7 +1178,7 @@ ApplicationWindow {
                                         CardTitle { text: "Trophy Farm" }
                                         Label {
                                             Layout.fillWidth: true
-                                            text: "Trophy Farm lets Pyla rotate through lower-priority brawlers until they reach your target. Use exclusions to keep mains, ranked picks, or special cases out of the automatic farm pool."
+                                            text: "Trophy Farm lets Pyla rotate through lower-priority brawlers until they reach your target. Save Farm stores the plan, and Start Bot rebuilds the actual farm queue from your target and exclusions."
                                             color: root.textDim
                                             font.pixelSize: 14
                                             wrapMode: Text.WordWrap
@@ -1163,6 +1189,13 @@ ApplicationWindow {
                                             AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500" }
                                             AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
                                             AppButton { text: "Save Farm"; onClicked: saveFarm() }
+                                        }
+                                        Label {
+                                            Layout.fillWidth: true
+                                            text: farmEnabled.checked ? "Start Bot will use a generated Trophy Farm queue instead of your manual roster." : "Trophy Farm is off, so Start Bot will use your normal roster."
+                                            color: farmEnabled.checked ? root.info : root.textDim
+                                            font.pixelSize: 13
+                                            wrapMode: Text.WordWrap
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
@@ -1790,7 +1823,7 @@ ApplicationWindow {
                                         CardTitle { text: "Multi-Instance Setup" }
                                         Label {
                                             Layout.fillWidth: true
-                                            text: "This section is for one thing: creating the launcher files and per-instance config folders for multi-instance farming. The simplest flow is: choose how many bots you want, confirm this window's port, click Auto Fill Ports, then click Create / Update Launchers."
+                                            text: "This section is for one thing: creating the launcher files and per-instance config folders for multi-instance farming. Auto Fill Ports now prefers live ADB-detected emulator ports, then fills any missing slots sequentially."
                                             color: root.textDim
                                             wrapMode: Text.WordWrap
                                         }
@@ -1814,7 +1847,7 @@ ApplicationWindow {
                                                 }
                                                 Label {
                                                     Layout.fillWidth: true
-                                                    text: "1. Set How Many Bots.\n2. Set the port for this emulator window.\n3. Click Auto Fill Ports.\n4. Click Create / Update Launchers.\n5. Run: " + launcherListText()
+                                                    text: "1. Set How Many Bots.\n2. Set the port for this emulator window.\n3. Click Auto Fill Ports to use ADB-detected ports first.\n4. Click Create / Update Launchers.\n5. Run: " + launcherListText()
                                                     color: root.textDim
                                                     wrapMode: Text.WordWrap
                                                 }
@@ -1882,7 +1915,7 @@ ApplicationWindow {
                                                 spacing: 6
                                                 AppLabel { text: "Ports for All Bots (comma separated)" }
                                                 AppTextField { id: instancePortsField; Layout.fillWidth: true; placeholderText: "5037, 5038, 5039" }
-                                                AppLabel { text: "If you leave this blank, Pyla will auto-fill consecutive ports from the current port." }
+                                                AppLabel { text: "If you leave this blank, Pyla will try live ADB ports first, then fill any remaining slots with consecutive ports." }
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true
@@ -1956,6 +1989,13 @@ ApplicationWindow {
                                                     color: root.textDim
                                                     wrapMode: Text.WordWrap
                                                 }
+                                            }
+                                            Label {
+                                                Layout.fillWidth: true
+                                                Layout.columnSpan: 3
+                                                text: multiInstanceState().detectedPortsCsv ? "ADB detected right now: " + multiInstanceState().detectedPortsCsv : "ADB detected right now: none. Auto Fill Ports will fall back to consecutive ports."
+                                                color: multiInstanceState().detectedPortsCsv ? root.info : root.textDim
+                                                wrapMode: Text.WordWrap
                                             }
                                             ColumnLayout {
                                                 Layout.fillWidth: true

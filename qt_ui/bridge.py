@@ -2,6 +2,7 @@ import inspect
 import json
 import os
 import re
+import subprocess
 import threading
 import traceback
 from datetime import datetime
@@ -137,6 +138,13 @@ class QtBridge(QObject):
         config = load_config("bot")
         config.setdefault("gamemode", "knockout")
         config.setdefault("gamemode_type", 3)
+        config.setdefault("smart_trophy_farm", "no")
+        config.setdefault("trophy_farm_target", 500)
+        config.setdefault("trophy_farm_strategy", "lowest_first")
+        config.setdefault("trophy_farm_excluded", [])
+        config.setdefault("quest_farm_enabled", "no")
+        config.setdefault("quest_farm_mode", "games")
+        config.setdefault("quest_farm_excluded", [])
         return config
 
     def _load_general_config(self):
@@ -144,6 +152,22 @@ class QtBridge(QObject):
         config.setdefault("current_emulator", "LDPlayer")
         config.setdefault("map_orientation", "vertical")
         return config
+
+    @staticmethod
+    def _is_enabled(value):
+        return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+    @staticmethod
+    def _normalize_farm_strategy(value):
+        normalized = str(value or "").strip().lower()
+        aliases = {
+            "lowest_first": "lowest_first",
+            "highest_first": "highest_winrate",
+            "highest_winrate": "highest_winrate",
+            "in_order": "sequential",
+            "sequential": "sequential",
+        }
+        return aliases.get(normalized, "lowest_first")
 
     def _validate_existing_login(self):
         api_base_url = str(self.general_config.get("api_base_url", "localhost")).strip()
@@ -353,12 +377,155 @@ class QtBridge(QObject):
         rows.sort(key=lambda item: (-item["matches"], item["displayName"]))
         return rows
 
+    def _match_history_map(self):
+        history = load_toml_as_dict("cfg/match_history.toml")
+        return history if isinstance(history, dict) else {}
+
+    def _build_trophy_farm_roster(self):
+        target = self._coerce_int(self.bot_config.get("trophy_farm_target", 500), 500, minimum=0)
+        strategy = self._normalize_farm_strategy(self.bot_config.get("trophy_farm_strategy", "lowest_first"))
+        excluded = {
+            str(item or "").strip().lower()
+            for item in self.bot_config.get("trophy_farm_excluded", [])
+            if str(item or "").strip()
+        }
+        scan_data = self._brawler_scan_data()
+        roster_lookup = {
+            str(entry.get("brawler", "")).strip().lower(): entry
+            for entry in self.brawlers_data
+            if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
+        }
+        history = self._match_history_map()
+        queue = []
+
+        for brawler in self._all_brawlers:
+            if brawler in excluded:
+                continue
+
+            scan_entry = scan_data.get(brawler, {})
+            if not isinstance(scan_entry, dict):
+                scan_entry = {}
+            if scan_entry and scan_entry.get("unlocked") is False:
+                continue
+
+            selected_entry = roster_lookup.get(brawler, {})
+            trophies = self._as_int(selected_entry.get("trophies", scan_entry.get("trophies", 0)), 0)
+            if trophies >= target:
+                continue
+
+            history_entry = history.get(brawler, {})
+            if not isinstance(history_entry, dict):
+                history_entry = {}
+            wins = self._as_int(history_entry.get("victory", 0), 0)
+            defeats = self._as_int(history_entry.get("defeat", 0), 0)
+            total_games = wins + defeats
+            winrate = round((wins / total_games) * 100) if total_games else 50
+            queue.append({
+                "brawler": brawler,
+                "trophies": trophies,
+                "winrate": winrate,
+                "total_games": total_games,
+                "source": selected_entry,
+            })
+
+        if strategy == "highest_winrate":
+            queue.sort(key=lambda item: (-item["winrate"], item["trophies"], item["brawler"]))
+        elif strategy == "sequential":
+            queue.sort(key=lambda item: item["brawler"])
+        else:
+            queue.sort(key=lambda item: (item["trophies"], item["brawler"]))
+
+        roster = []
+        for item in queue:
+            source = item.get("source", {})
+            roster.append({
+                "brawler": item["brawler"],
+                "push_until": target,
+                "trophies": item["trophies"],
+                "wins": self._as_int(source.get("wins", 0), 0),
+                "type": "trophies",
+                "automatically_pick": bool(source.get("automatically_pick", True)),
+                "win_streak": self._as_int(source.get("win_streak", 0), 0),
+                "manual_trophies": bool(source.get("manual_trophies", False)),
+            })
+
+        return roster, queue, target, strategy
+
+    def _detect_adb_ports(self):
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        adb_candidates = [
+            os.path.join(project_root, "adb.exe"),
+            "adb.exe",
+            "adb",
+        ]
+        adb_command = next((candidate for candidate in adb_candidates if candidate == "adb" or candidate == "adb.exe" or os.path.exists(candidate)), None)
+        if not adb_command:
+            return []
+
+        try:
+            result = subprocess.run(
+                [adb_command, "devices"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+                check=False,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except Exception:
+            return []
+
+        ports = []
+        seen = set()
+        for line in (result.stdout or "").splitlines():
+            line = line.strip()
+            if not line or line.lower().startswith("list of devices"):
+                continue
+            parts = line.split()
+            if len(parts) < 2 or parts[1].lower() != "device":
+                continue
+            serial = parts[0]
+            match = re.fullmatch(r"(?:127\.0\.0\.1|localhost):(\d+)", serial)
+            if not match:
+                match = re.fullmatch(r"emulator-(\d+)", serial)
+            if not match:
+                continue
+            port = self._coerce_int(match.group(1), 0, minimum=1)
+            if port and port not in seen:
+                seen.add(port)
+                ports.append(port)
+        return sorted(ports)
+
+    def _suggest_multi_instance_ports(self, count, current_port, detected_ports=None):
+        total = self._coerce_int(count, 1, minimum=1)
+        detected = list(detected_ports if detected_ports is not None else self._detect_adb_ports())
+        base_port = self._coerce_int(current_port, detected[0] if detected else 5037, minimum=1)
+        ports = []
+
+        def add_port(value):
+            port = self._coerce_int(value, 0, minimum=1)
+            if port and port not in ports:
+                ports.append(port)
+
+        if not detected or base_port != 5037 or base_port in detected:
+            add_port(base_port)
+        for port in detected:
+            add_port(port)
+
+        candidate = ports[0] if ports else base_port
+        while len(ports) < total:
+            add_port(candidate)
+            candidate += 1
+
+        return ports[:total]
+
     def _multi_instance_state(self):
         configured_count = self._coerce_int(self.general_config.get("instance_count", 1), 1, minimum=1)
         rows = list_instances(max_instance_count=configured_count)
         current_id = current_instance_id(self._coerce_int(self.general_config.get("instance_index", 1), 1, minimum=1))
         current_port = self._coerce_int(self.general_config.get("emulator_port", 5037), 5037, minimum=1)
         current_fps = self._normalize_scrcpy_max_fps(self.general_config.get("scrcpy_max_fps", "auto"))
+        detected_ports = self._detect_adb_ports()
+        suggested_ports = self._suggest_multi_instance_ports(configured_count, current_port, detected_ports=detected_ports)
         ports_csv = ", ".join(str(row.get("port", 5037)) for row in rows) if rows else str(current_port)
         current_launcher = launcher_path(current_id)
 
@@ -366,7 +533,7 @@ class QtBridge(QObject):
             "Quick start:",
             f"1. Set the total instances to {configured_count}.",
             f"2. Make sure this window is using port {current_port}.",
-            "3. Use Auto Fill Ports if you want consecutive ports.",
+            "3. Use Auto Fill Ports to prefer live ADB ports first.",
             "4. Click Create / Update Launchers.",
             "5. Start one bot with each generated start_n.bat file.",
             "",
@@ -374,6 +541,7 @@ class QtBridge(QObject):
             f"Configured instances: {configured_count}",
             f"This instance port: {current_port}",
             f"scrcpy max FPS: {current_fps}",
+            f"ADB detected ports: {', '.join(str(port) for port in detected_ports) if detected_ports else 'none detected'}",
             f"Launcher for this window: {os.path.basename(current_launcher)}",
         ]
         if rows:
@@ -402,6 +570,9 @@ class QtBridge(QObject):
             "currentPort": current_port,
             "scrcpyMaxFps": current_fps,
             "portsCsv": ports_csv,
+            "detectedAdbPorts": detected_ports,
+            "detectedPortsCsv": ", ".join(str(port) for port in detected_ports),
+            "suggestedPortsCsv": ", ".join(str(port) for port in suggested_ports),
             "configDir": current_config_dir(),
             "runtimeRoot": current_runtime_root(),
             "launcherPath": current_launcher,
@@ -594,15 +765,18 @@ class QtBridge(QObject):
 
     @Slot("QVariantMap")
     def saveFarmSettings(self, payload):
-        self.bot_config["smart_trophy_farm"] = "yes" if payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")) in (True, "yes", "true", "1") else "no"
-        self.bot_config["trophy_farm_strategy"] = str(payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first")))
+        farm_enabled = self._is_enabled(payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")))
+        self.bot_config["smart_trophy_farm"] = "yes" if farm_enabled else "no"
+        self.bot_config["trophy_farm_strategy"] = self._normalize_farm_strategy(
+            payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first"))
+        )
         self.bot_config["trophy_farm_target"] = self._as_int(payload.get("trophy_farm_target", self.bot_config.get("trophy_farm_target", 500)), 500)
         excluded = payload.get("trophy_farm_excluded", self.bot_config.get("trophy_farm_excluded", []))
         if isinstance(excluded, list):
             self.bot_config["trophy_farm_excluded"] = sorted({str(item).lower() for item in excluded if item})
 
         if self.capabilities.get("quest_farm"):
-            self.bot_config["quest_farm_enabled"] = "yes" if payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no")) in (True, "yes", "true", "1") else "no"
+            self.bot_config["quest_farm_enabled"] = "yes" if self._is_enabled(payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no"))) else "no"
             self.bot_config["quest_farm_mode"] = str(payload.get("quest_farm_mode", self.bot_config.get("quest_farm_mode", "games")))
             quest_excluded = payload.get("quest_farm_excluded", self.bot_config.get("quest_farm_excluded", []))
             if isinstance(quest_excluded, list):
@@ -610,7 +784,10 @@ class QtBridge(QObject):
 
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
         self._emit_state()
-        self._notification("success", "Farm settings saved.")
+        if farm_enabled:
+            self._notification("success", "Farm settings saved. Trophy Farm will build its queue the next time you start the bot.")
+        else:
+            self._notification("success", "Farm settings saved. Start Bot will keep using your normal roster until Trophy Farm is enabled.")
 
     @Slot("QVariantMap")
     def saveSettings(self, payload):
@@ -741,6 +918,10 @@ class QtBridge(QObject):
         except Exception as exc:
             self._notification("error", f"Could not configure multi-instance mode: {exc}")
 
+    @Slot(result="QVariantMap")
+    def getMultiInstanceState(self):
+        return self._multi_instance_state()
+
     @Slot("QVariantMap")
     def addOrUpdateRosterEntry(self, payload):
         brawler = str(payload.get("brawler", "")).strip().lower()
@@ -825,7 +1006,21 @@ class QtBridge(QObject):
 
     @Slot()
     def startBot(self):
-        if not self.brawlers_data:
+        if self._bot_thread and self._bot_thread.is_alive():
+            self._notification("warning", "The bot is already running.")
+            return
+
+        runtime_roster = list(self.brawlers_data)
+        if self._is_enabled(self.bot_config.get("smart_trophy_farm", "no")):
+            runtime_roster, queue, target, _strategy = self._build_trophy_farm_roster()
+            if not runtime_roster:
+                self._notification("warning", f"Trophy Farm is enabled, but no eligible brawlers are below {target} trophies.")
+                return
+            self.brawlers_data = self._normalize_roster(runtime_roster)
+            self._emit_roster()
+            self._emit_state()
+            self._notification("info", f"Trophy Farm queue ready: {len(queue)} brawler(s) below {target} trophies.")
+        elif not runtime_roster:
             self._notification("warning", "Select at least one brawler first.")
             return
 
