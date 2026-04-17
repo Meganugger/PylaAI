@@ -211,6 +211,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
         def manage_time_tasks(self, frame):
             now = time.time()
             runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+            player_missing_for = max(
+                0.0,
+                now - float(getattr(self.Play, "time_since_player_last_found", now) or now),
+            )
             if (
                 runtime_state == "match"
                 and now - self._last_fast_result_probe >= 0.6
@@ -226,7 +230,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     return
 
             if self.Time_management.state_check():
-                allow_reward_ocr = runtime_state.startswith("end_") or runtime_state == "reward_claim"
+                allow_reward_ocr = (
+                    runtime_state.startswith("end_")
+                    or runtime_state == "reward_claim"
+                    or (runtime_state == "match" and player_missing_for >= 1.0)
+                )
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 if state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
                     self.Play.note_confirmed_match_state(now)
