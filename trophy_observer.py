@@ -85,6 +85,8 @@ class TrophyObserver:
         self.last_match_start_trophies = 0
         self.last_match_end_trophies = 0
         self.history_revision = 0
+        self._webhook_milestone_step = 250
+        self._webhook_highest_milestone_bucket = {}
         self._api_player_brawlers_cache = None
         self._api_player_brawlers_cache_time = 0.0
         self._last_api_lookup_error = ""
@@ -229,6 +231,10 @@ class TrophyObserver:
             except (TypeError, ValueError):
                 start_value = 0
             self._session_start_trophies[key] = start_value
+        if key not in self._webhook_highest_milestone_bucket:
+            self._webhook_highest_milestone_bucket[key] = self._milestone_bucket_for(
+                self._session_start_trophies.get(key, starting_trophies)
+            )
         self._session_end_trophies[key] = self._session_start_trophies.get(key, 0)
 
     def begin_match(self, current_brawler):
@@ -621,6 +627,95 @@ class TrophyObserver:
     def verify_lobby_trophies(self, screenshot, wr=1.0, hr=1.0):
         self._lobby_trophy_verified = True
         return self.current_trophies
+
+    def _milestone_bucket_for(self, trophies):
+        step = max(1, self._safe_int(self._webhook_milestone_step, 250))
+        return max(0, self._safe_int(trophies, 0) // step)
+
+    def build_live_notification_summary(self, current_brawler=None):
+        key = str(current_brawler or self._active_match_brawler or "").lower()
+        if not key:
+            return {}
+
+        current_trophies = self._safe_int(self.current_trophies, 0)
+        self.start_session_brawler(key, current_trophies)
+        trophy_start = self._session_start_trophies.get(key, current_trophies)
+        trophy_end = self._session_end_trophies.get(key, current_trophies)
+        trophy_delta = trophy_end - trophy_start
+
+        b_v = self._history_delta(key, "victory")
+        b_d = self._history_delta(key, "defeat")
+        b_dr = self._history_delta(key, "draw")
+        b_matches = b_v + b_d + b_dr
+        b_winrate = (b_v / b_matches * 100) if b_matches > 0 else 0.0
+
+        session_victories = self._safe_int(self.session_stats.get("victories", 0), 0)
+        session_defeats = self._safe_int(self.session_stats.get("defeats", 0), 0)
+        session_draws = self._safe_int(self.session_stats.get("draws", 0), 0)
+        session_matches = session_victories + session_defeats + session_draws
+        session_winrate = (session_victories / session_matches * 100) if session_matches > 0 else 0.0
+
+        return {
+            "brawler": key,
+            "trophies": current_trophies,
+            "trophy_start": trophy_start,
+            "trophy_end": trophy_end,
+            "session_trophy_delta": trophy_delta,
+            "brawler_matches": b_matches,
+            "brawler_victories": b_v,
+            "brawler_defeats": b_d,
+            "brawler_draws": b_dr,
+            "brawler_winrate": b_winrate,
+            "session_matches": session_matches,
+            "session_victories": session_victories,
+            "session_defeats": session_defeats,
+            "session_draws": session_draws,
+            "session_winrate": session_winrate,
+            "current_wins": self._safe_int(self.current_wins, 0),
+            "win_streak": self._safe_int(self.win_streak, 0),
+            "last_match_result": self.last_match_result,
+            "last_match_trophy_delta": self._safe_int(self.last_match_trophy_delta, 0),
+            "last_match_verified": bool(self.last_match_trophies_verified),
+        }
+
+    def preview_trophy_milestone(self, current_brawler=None):
+        key = str(current_brawler or self._active_match_brawler or "").lower()
+        if not key:
+            return None
+
+        current_trophies = self._safe_int(self.current_trophies, 0)
+        self.start_session_brawler(key, current_trophies)
+        current_bucket = self._milestone_bucket_for(current_trophies)
+        highest_bucket = self._webhook_highest_milestone_bucket.get(
+            key,
+            self._milestone_bucket_for(self._session_start_trophies.get(key, current_trophies)),
+        )
+        if current_bucket <= highest_bucket:
+            return None
+
+        summary = self.build_live_notification_summary(key)
+        summary["milestone_bucket"] = current_bucket
+        summary["milestone_start"] = current_bucket * self._webhook_milestone_step
+        summary["milestone_end"] = ((current_bucket + 1) * self._webhook_milestone_step) - 1
+        return summary
+
+    def commit_trophy_milestone(self, current_brawler, milestone_bucket):
+        key = str(current_brawler or "").lower()
+        if not key:
+            return False
+        bucket = self._safe_int(milestone_bucket, -1)
+        if bucket < 0:
+            return False
+
+        current_highest = self._webhook_highest_milestone_bucket.get(
+            key,
+            self._milestone_bucket_for(self._session_start_trophies.get(key, self.current_trophies)),
+        )
+        if bucket <= current_highest:
+            return False
+
+        self._webhook_highest_milestone_bucket[key] = bucket
+        return True
 
     def _history_delta(self, brawler, key):
         start = self._session_start_history.get(brawler, {}).get(key, 0)
