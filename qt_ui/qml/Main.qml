@@ -16,6 +16,7 @@ ApplicationWindow {
     property var roster: []
     property var brawlers: []
     property var history: []
+    property var farmPreview: []
     property var live: ({})
     property var logs: []
     property int pageIndex: 0
@@ -182,11 +183,40 @@ ApplicationWindow {
     }
     function farmStrategyUiValue(value) {
         const raw = String(value || "lowest_first")
-        if (raw === "highest_winrate")
-            return "highest_first"
-        if (raw === "sequential")
-            return "in_order"
+        if (raw === "highest_first")
+            return "highest_winrate"
+        if (raw === "in_order")
+            return "sequential"
         return raw
+    }
+    function currentFarmStrategyValue() {
+        if (!farmStrategyModel || farmStrategy.currentIndex < 0 || farmStrategy.currentIndex >= farmStrategyModel.count)
+            return "lowest_first"
+        return String(farmStrategyModel.get(farmStrategy.currentIndex).value || "lowest_first")
+    }
+    function currentFarmPayload() {
+        let excluded = []
+        for (let i = 0; i < excludeModel.count; ++i)
+            if (excludeModel.get(i).checked)
+                excluded.push(excludeModel.get(i).name)
+        let questExcluded = []
+        for (let j = 0; j < questExcludeModel.count; ++j)
+            if (questExcludeModel.get(j).checked)
+                questExcluded.push(questExcludeModel.get(j).name)
+        return {
+            "smart_trophy_farm": farmEnabled.checked,
+            "trophy_farm_target": farmTarget.text,
+            "trophy_farm_strategy": currentFarmStrategyValue(),
+            "trophy_farm_excluded": excluded,
+            "quest_farm_enabled": questEnabled.checked,
+            "quest_farm_mode": questMode.currentText,
+            "quest_farm_excluded": questExcluded
+        }
+    }
+    function refreshFarmPreview() {
+        if (!backend)
+            return
+        farmPreview = backend.previewFarmSettings(currentFarmPayload()) || []
     }
     function stabilizeScroll(view) {
         if (!view || !view.contentItem)
@@ -234,6 +264,7 @@ ApplicationWindow {
         roster = (state.roster || []).slice()
         brawlers = (state.brawlers || []).slice()
         history = (state.history || []).slice()
+        farmPreview = (state.farmPreview || []).slice ? (state.farmPreview || []).slice() : (state.farmPreview || [])
         live = state.live || {}
         logs = (state.logs || []).slice()
         rebuildComboModels()
@@ -263,11 +294,8 @@ ApplicationWindow {
         backend.addOrUpdateRosterEntry({"brawler": selectedBrawler, "trophies": trophiesField.text, "wins": winsField.text, "push_until": targetField.text, "type": typeBox.currentText.toLowerCase(), "automatically_pick": autoPick.checked, "win_streak": streakField.text, "manual_trophies": manualTrophies.checked})
     }
     function saveFarm() {
-        let excluded = []
-        for (let i = 0; i < excludeModel.count; ++i) if (excludeModel.get(i).checked) excluded.push(excludeModel.get(i).name)
-        let questExcluded = []
-        for (let j = 0; j < questExcludeModel.count; ++j) if (questExcludeModel.get(j).checked) questExcluded.push(questExcludeModel.get(j).name)
-        backend.saveFarmSettings({"smart_trophy_farm": farmEnabled.checked, "trophy_farm_target": farmTarget.text, "trophy_farm_strategy": farmStrategy.currentText, "trophy_farm_excluded": excluded, "quest_farm_enabled": questEnabled.checked, "quest_farm_mode": questMode.currentText, "quest_farm_excluded": questExcluded})
+        backend.saveFarmSettings(currentFarmPayload())
+        refreshFarmPreview()
     }
     function saveSettings() {
         backend.saveSettings({
@@ -326,7 +354,15 @@ ApplicationWindow {
         crashCheck.text = String(timeCfg.check_if_brawl_stars_crashed || 10)
         farmEnabled.checked = boolFrom(bot.smart_trophy_farm)
         farmTarget.text = String(bot.trophy_farm_target || 500)
-        farmStrategy.currentIndex = Math.max(0, ["lowest_first","highest_first","in_order"].indexOf(farmStrategyUiValue(bot.trophy_farm_strategy || "lowest_first")))
+        let farmStrategyIndex = 0
+        const desiredFarmStrategy = farmStrategyUiValue(bot.trophy_farm_strategy || "lowest_first")
+        for (let strategyIdx = 0; strategyIdx < farmStrategyModel.count; ++strategyIdx) {
+            if (String(farmStrategyModel.get(strategyIdx).value) === desiredFarmStrategy) {
+                farmStrategyIndex = strategyIdx
+                break
+            }
+        }
+        farmStrategy.currentIndex = Math.max(0, farmStrategyIndex)
         questEnabled.checked = boolFrom(bot.quest_farm_enabled)
         questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(bot.quest_farm_mode || "games")))
     }
@@ -335,6 +371,12 @@ ApplicationWindow {
     ListModel { id: questExcludeModel }
     ListModel { id: gamemodeModel }
     ListModel { id: emulatorModel }
+    ListModel {
+        id: farmStrategyModel
+        ListElement { label: "Lowest trophies first"; value: "lowest_first" }
+        ListElement { label: "Highest win rate first"; value: "highest_winrate" }
+        ListElement { label: "Alphabetical"; value: "sequential" }
+    }
 
     function rebuildExcludeModels() {
         const bot = (state && state.bot) ? state.bot : ({})
@@ -346,6 +388,7 @@ ApplicationWindow {
             excludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": trophyExcluded.indexOf(brawlers[i].name) !== -1})
             questExcludeModel.append({"name": brawlers[i].name, "displayName": brawlers[i].displayName, "icon": brawlers[i].icon, "trophies": brawlers[i].trophies, "checked": questExcluded.indexOf(brawlers[i].name) !== -1})
         }
+        refreshFarmPreview()
     }
 
     component AppCard: Rectangle {
@@ -678,7 +721,7 @@ ApplicationWindow {
             if (!editorHasFocus())
                 hydrateEditors()
         }
-        function onHistoryChanged(data) { history = data }
+        function onHistoryChanged(data) { history = data; refreshFarmPreview() }
         function onLiveDataChanged(data) { live = data || {} }
         function onLogsChanged(data) { logs = data || [] }
         function onNotificationRaised(level, message) { notify(level, message) }
@@ -1107,9 +1150,9 @@ ApplicationWindow {
                                         }
                                         RowLayout {
                                             spacing: 12
-                                            AppCheckBox { id: farmEnabled; text: "Enable" }
-                                            AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500" }
-                                            AppComboBox { id: farmStrategy; implicitWidth: 190; model: ["lowest_first","highest_first","in_order"] }
+                                            AppCheckBox { id: farmEnabled; text: "Enable"; onCheckedChanged: refreshFarmPreview() }
+                                            AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500"; onTextChanged: refreshFarmPreview() }
+                                            AppComboBox { id: farmStrategy; implicitWidth: 220; model: farmStrategyModel; textRole: "label"; onCurrentIndexChanged: refreshFarmPreview() }
                                             AppButton { text: "Save Farm"; onClicked: saveFarm() }
                                         }
                                         Label {
@@ -1118,6 +1161,92 @@ ApplicationWindow {
                                             color: farmEnabled.checked ? root.info : root.textDim
                                             font.pixelSize: 13
                                             wrapMode: Text.WordWrap
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            Label {
+                                                text: farmPreview.length + " brawler(s) currently qualify for the build order"
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
+                                            Item { Layout.fillWidth: true }
+                                            Label {
+                                                text: farmPreview.length ? "Preview updates from the current controls." : "Raise the target or remove exclusions to populate the build order."
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
+                                        }
+                                        ListView {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: Math.min(280, Math.max(76, farmPreview.length * 58))
+                                            visible: farmPreview.length > 0
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            boundsMovement: Flickable.StopAtBounds
+                                            ScrollBar.vertical: ScrollBar { }
+                                            model: farmPreview
+                                            delegate: Rectangle {
+                                                width: ListView.view.width
+                                                height: 54
+                                                radius: 14
+                                                color: root.panelAlt
+                                                border.color: root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 12
+                                                    Label {
+                                                        Layout.preferredWidth: 32
+                                                        horizontalAlignment: Text.AlignHCenter
+                                                        text: "#" + modelData.order
+                                                        color: root.textDim
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                    }
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 34
+                                                        Layout.preferredHeight: 34
+                                                        radius: 10
+                                                        color: "#0C0F14"
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                        clip: true
+                                                        Image { anchors.fill: parent; source: modelData.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true }
+                                                        Label { text: modelData.winrate + "% WR | " + modelData.matches + " matches"; color: root.textDim; font.pixelSize: 12 }
+                                                    }
+                                                    Label {
+                                                        Layout.preferredWidth: 120
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: modelData.trophies + " / " + modelData.target
+                                                        color: root.gold
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 54
+                                            visible: farmPreview.length === 0
+                                            radius: 14
+                                            color: root.panelAlt
+                                            border.color: root.border
+                                            border.width: 1
+                                            Label {
+                                                anchors.centerIn: parent
+                                                text: "No brawlers are currently below the target with these settings."
+                                                color: root.textDim
+                                                font.pixelSize: 13
+                                            }
                                         }
                                         RowLayout {
                                             Layout.fillWidth: true
@@ -1133,6 +1262,7 @@ ApplicationWindow {
                                                 onClicked: {
                                                     for (let i = 0; i < excludeModel.count; ++i)
                                                         excludeModel.setProperty(i, "checked", false)
+                                                    refreshFarmPreview()
                                                 }
                                             }
                                         }
@@ -1182,7 +1312,7 @@ ApplicationWindow {
                                                     anchors.fill: parent
                                                     anchors.margins: 12
                                                     spacing: 12
-                                                    AppCheckBox { checked: model.checked; onToggled: excludeModel.setProperty(index, "checked", checked) }
+                                                    AppCheckBox { checked: model.checked; onToggled: { excludeModel.setProperty(index, "checked", checked); refreshFarmPreview() } }
                                                     Rectangle {
                                                         Layout.preferredWidth: 34
                                                         Layout.preferredHeight: 34
