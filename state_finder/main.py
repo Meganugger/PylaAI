@@ -15,6 +15,14 @@ path = r"./state_finder/images_to_detect/"
 end_results_path = os.path.join(path, "end_results")
 images_with_star_drop = []
 end_result_names = ("victory", "defeat", "draw")
+showdown_place_templates = {
+    "1st": ("sd1st.png",),
+    "2nd": ("sd2nd.png",),
+    "3rd": ("sd3rd.png", "sd3rd_alt.png"),
+    "4th": ("sd4th.png",),
+}
+SHOWDOWN_PLACE_THRESHOLD = 0.85
+SHOWDOWN_PLACE_MARGIN = 0.02
 
 for file in os.listdir("./state_finder/images_to_detect"):
     if "star_drop" in file:
@@ -33,9 +41,44 @@ _reward_claim_cache = {
     "detected": False,
     "button_center": None,
 }
+_selected_gamemode_cache = {
+    "checked_at": 0.0,
+    "value": "",
+}
 crop_region = region_data.get("end_result")
 if not crop_region:
     crop_region = load_toml_as_dict("./cfg/lobby_config.toml")['lobby']['trophy_observer']
+
+
+def _selected_gamemode():
+    now = time.time()
+    if now - _selected_gamemode_cache["checked_at"] < 1.0:
+        return _selected_gamemode_cache["value"]
+    try:
+        value = str(load_toml_as_dict("./cfg/bot_config.toml").get("gamemode", "") or "").strip().lower()
+    except Exception:
+        value = ""
+    _selected_gamemode_cache["checked_at"] = now
+    _selected_gamemode_cache["value"] = value
+    return value
+
+
+def _is_showdown_selected():
+    return "showdown" in _selected_gamemode()
+
+
+@lru_cache(maxsize=1)
+def _available_showdown_place_templates():
+    available = {}
+    for place_name, template_files in showdown_place_templates.items():
+        resolved_paths = []
+        for template_file in template_files:
+            template_path = os.path.join(end_results_path, template_file)
+            if os.path.exists(template_path):
+                resolved_paths.append(template_path)
+        if resolved_paths:
+            available[place_name] = tuple(resolved_paths)
+    return available
 
 
 def template_score_in_region(image, template_path, region):
@@ -224,6 +267,23 @@ def get_reward_claim_button_center(screenshot):
 
 def find_game_result(screenshot):
     screenshot_bgr = to_bgr_array(screenshot)
+    if _is_showdown_selected():
+        available_showdown_templates = _available_showdown_place_templates()
+        showdown_scores = {}
+        for place_name, template_paths in available_showdown_templates.items():
+            best_score = 0.0
+            for template_path in template_paths:
+                best_score = max(best_score, template_score_in_region(screenshot_bgr, template_path, crop_region))
+            showdown_scores[place_name] = best_score
+
+        if showdown_scores:
+            best_place = max(showdown_scores, key=showdown_scores.get)
+            best_place_score = showdown_scores[best_place]
+            sorted_place_scores = sorted(showdown_scores.values(), reverse=True)
+            second_best_place = sorted_place_scores[1] if len(sorted_place_scores) > 1 else 0.0
+            if best_place_score >= SHOWDOWN_PLACE_THRESHOLD and (best_place_score - second_best_place) >= SHOWDOWN_PLACE_MARGIN:
+                return best_place
+
     scores = {}
     for result_name in end_result_names:
         template_path = os.path.join(end_results_path, f"{result_name}.png")
