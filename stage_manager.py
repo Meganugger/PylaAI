@@ -131,6 +131,10 @@ class StageManager:
             'end_victory': self.end_game,
             'end_defeat': self.end_game,
             'end_draw': self.end_game,
+            'end_1st': self.end_game,
+            'end_2nd': self.end_game,
+            'end_3rd': self.end_game,
+            'end_4th': self.end_game,
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
             'reward_claim': self.claim_reward,
@@ -1324,7 +1328,7 @@ class StageManager:
         read_match_stats = False
         current_state = get_state(screenshot)
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
-        if known_result in {"victory", "defeat", "draw"}:
+        if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
             current_state = f"end_{known_result}"
 
