@@ -10,6 +10,8 @@ from utils import load_toml_as_dict, save_dict_as_toml, api_base_url, reader
 
 
 class TrophyObserver:
+    _showdown_place_index = {"1st": 0, "2nd": 1, "3rd": 2, "4th": 3}
+
     def __init__(self, brawler_list):
         self.history_file = "./cfg/match_history.toml"
         self.current_trophies = None
@@ -40,6 +42,24 @@ class TrophyObserver:
         self.trophy_win_ranges = [
             (1999, 10), (2499, 8), (2799, 6), (2999, 4), (3099, 2),
             (float("inf"), 1),
+        ]
+        self.showdown_trio_ranges = [
+            (49, (12, 5, 5, 5)),
+            (99, (11, 5, 4, -1)),
+            (199, (11, 5, 3, -1)),
+            (299, (11, 5, 2, -1)),
+            (499, (11, 5, 2, -2)),
+            (599, (11, 5, 1, -2)),
+            (799, (11, 5, 1, -3)),
+            (999, (11, 5, 1, -4)),
+            (1099, (11, 5, 0, -6)),
+            (1199, (11, 5, 0, -7)),
+            (1299, (11, 5, 0, -8)),
+            (1499, (11, 5, 0, -9)),
+            (1799, (11, 5, -5, -10)),
+            (1999, (11, 5, -5, -11)),
+            (2199, (9, 4, -5, -11)),
+            (float("inf"), (9, 4, -5, -11)),
         ]
         self.crop_region = load_toml_as_dict("./cfg/lobby_config.toml")["lobby"]["trophy_observer"]
         self.trophies_multiplier = int(load_toml_as_dict("./cfg/general_config.toml")["trophies_multiplier"])
@@ -76,6 +96,7 @@ class TrophyObserver:
         self._active_match_start_trophies = None
         self._active_match_start_streak = 0
         self.last_match_result = None
+        self.last_match_bucket = None
         self.last_match_trophy_delta = 0
         self.last_match_predicted_trophy_delta = 0
         self.last_match_trophy_adjustment = 0
@@ -103,7 +124,18 @@ class TrophyObserver:
 
     @staticmethod
     def rework_game_result(res_string):
-        res_string = res_string.lower()
+        res_string = str(res_string or "").lower().strip()
+        normalized = "".join(ch for ch in res_string if ch.isalnum())
+        place_aliases = {
+            "1st": {"1st", "ist", "lst"},
+            "2nd": {"2nd", "znd"},
+            "3rd": {"3rd"},
+            "4th": {"4th", "ath"},
+        }
+        for place, aliases in place_aliases.items():
+            if normalized in aliases:
+                return place, 1.0
+
         if res_string in ["victory", "defeat", "draw"]:
             return res_string, 1.0
 
@@ -111,6 +143,10 @@ class TrophyObserver:
             "victory": SequenceMatcher(None, res_string, "victory").ratio(),
             "defeat": SequenceMatcher(None, res_string, "defeat").ratio(),
             "draw": SequenceMatcher(None, res_string, "draw").ratio(),
+            "1st": SequenceMatcher(None, normalized, "1st").ratio(),
+            "2nd": SequenceMatcher(None, normalized, "2nd").ratio(),
+            "3rd": SequenceMatcher(None, normalized, "3rd").ratio(),
+            "4th": SequenceMatcher(None, normalized, "4th").ratio(),
         }
         highest_ratio_string = max(ratios, key=ratios.get)
         return highest_ratio_string, ratios[highest_ratio_string]
@@ -125,6 +161,19 @@ class TrophyObserver:
     @staticmethod
     def _slug_name(value):
         return "".join(ch for ch in str(value or "").lower() if ch.isalnum())
+
+    @staticmethod
+    def _normalize_result_key(game_result):
+        return str(game_result or "").strip().lower()
+
+    @staticmethod
+    def _bucket_for_delta(delta):
+        delta_value = int(delta or 0)
+        if delta_value > 0:
+            return "victory"
+        if delta_value < 0:
+            return "defeat"
+        return "draw"
 
     def _log_api_lookup_issue(self, message):
         now = time.time()
@@ -264,21 +313,24 @@ class TrophyObserver:
         predicted_delta,
         streak_bonus=0,
         verified=False,
+        history_bucket=None,
     ):
         start_value = self._safe_int(start_trophies, 0)
         end_value = self._safe_int(end_trophies, 0)
         predicted_value = self._safe_int(predicted_delta, 0)
         actual_delta = end_value - start_value
         adjustment = actual_delta - predicted_value
+        bucket = self._normalize_result_key(history_bucket or self._bucket_for_delta(predicted_value))
 
         self.last_match_result = game_result
+        self.last_match_bucket = bucket
         self.last_match_start_trophies = start_value
         self.last_match_end_trophies = end_value
         self.last_match_predicted_trophy_delta = predicted_value
         self.last_match_trophy_delta = actual_delta
         self.last_match_trophy_adjustment = adjustment
-        self.last_match_streak_bonus = max(0, self._safe_int(streak_bonus, 0)) if game_result == "victory" else 0
-        self.last_match_underdog_bonus = adjustment if game_result == "victory" and adjustment > 0 else 0
+        self.last_match_streak_bonus = max(0, self._safe_int(streak_bonus, 0)) if bucket == "victory" else 0
+        self.last_match_underdog_bonus = adjustment if bucket == "victory" and adjustment > 0 else 0
         self.last_match_trophies_verified = bool(verified)
 
     @staticmethod
@@ -289,6 +341,76 @@ class TrophyObserver:
             "draw": "draws",
         }
         return mapping.get(str(game_result or "").lower())
+
+    def _showdown_delta_for(self, game_result, trophies=None):
+        place = self._normalize_result_key(game_result)
+        if place not in self._showdown_place_index:
+            return None
+        trophy_value = self._safe_int(trophies, self.current_trophies)
+        place_index = self._showdown_place_index[place]
+        for max_trophies, deltas in self.showdown_trio_ranges:
+            if float(trophy_value) <= float(max_trophies):
+                return self._safe_int(deltas[place_index], 0) * self.trophies_multiplier
+        return 0
+
+    def _predicted_outcome_for_result(self, game_result, start_trophies=None, start_streak=None):
+        normalized = self._normalize_result_key(game_result)
+        trophy_value = self._safe_int(start_trophies, self.current_trophies)
+        streak_before = self._safe_int(start_streak, self.win_streak)
+
+        if normalized == "victory":
+            predicted_delta = self._win_increment_for(trophy_value, streak_before)
+            return {
+                "display_result": normalized,
+                "bucket": "victory",
+                "predicted_delta": predicted_delta,
+                "streak_after": streak_before + 1,
+                "streak_bonus": max(0, min(streak_before, 5)),
+            }
+
+        if normalized == "defeat":
+            predicted_delta = -self._loss_decrement_for(trophy_value)
+            return {
+                "display_result": normalized,
+                "bucket": "defeat",
+                "predicted_delta": predicted_delta,
+                "streak_after": 0,
+                "streak_bonus": 0,
+            }
+
+        if normalized == "draw":
+            return {
+                "display_result": normalized,
+                "bucket": "draw",
+                "predicted_delta": 0,
+                "streak_after": streak_before,
+                "streak_bonus": 0,
+            }
+
+        if normalized in self._showdown_place_index:
+            predicted_delta = self._safe_int(self._showdown_delta_for(normalized, trophy_value), 0)
+            bucket = self._bucket_for_delta(predicted_delta)
+            if bucket == "victory":
+                streak_after = streak_before + 1
+            elif bucket == "defeat":
+                streak_after = 0
+            else:
+                streak_after = streak_before
+            return {
+                "display_result": normalized,
+                "bucket": bucket,
+                "predicted_delta": predicted_delta,
+                "streak_after": streak_after,
+                "streak_bonus": 0,
+            }
+
+        return None
+
+    def get_result_bucket(self, game_result, start_trophies=None, predicted_delta=None):
+        if predicted_delta is not None:
+            return self._bucket_for_delta(self._safe_int(predicted_delta, 0))
+        outcome = self._predicted_outcome_for_result(game_result, start_trophies=start_trophies)
+        return outcome["bucket"] if outcome else None
 
     def _loss_decrement_for(self, trophies):
         trophy_value = self._safe_int(trophies, 0)
@@ -306,9 +428,16 @@ class TrophyObserver:
         return streak_bonus
 
     def _reclassify_verified_result(self, current_brawler, corrected_result, start_value, verified_value):
-        previous_result = str(self.last_match_result or "").lower()
+        previous_result = self._normalize_result_key(self.last_match_result)
+        previous_bucket = self._normalize_result_key(
+            self.last_match_bucket or self.get_result_bucket(
+                previous_result,
+                start_trophies=start_value,
+                predicted_delta=self.last_match_predicted_trophy_delta,
+            )
+        )
         corrected_result = str(corrected_result or "").lower()
-        if not current_brawler or not previous_result or previous_result == corrected_result:
+        if not current_brawler or not previous_bucket or previous_bucket == corrected_result:
             return False
 
         key = str(current_brawler).lower()
@@ -317,14 +446,14 @@ class TrophyObserver:
         if "total" not in self.match_history:
             self.match_history["total"] = {"defeat": 0, "victory": 0, "draw": 0}
 
-        if previous_result in self.match_history[key] and self.match_history[key][previous_result] > 0:
-            self.match_history[key][previous_result] -= 1
-        if previous_result in self.match_history["total"] and self.match_history["total"][previous_result] > 0:
-            self.match_history["total"][previous_result] -= 1
+        if previous_bucket in self.match_history[key] and self.match_history[key][previous_bucket] > 0:
+            self.match_history[key][previous_bucket] -= 1
+        if previous_bucket in self.match_history["total"] and self.match_history["total"][previous_bucket] > 0:
+            self.match_history["total"][previous_bucket] -= 1
         self.match_history[key][corrected_result] = self._safe_int(self.match_history[key].get(corrected_result, 0), 0) + 1
         self.match_history["total"][corrected_result] = self._safe_int(self.match_history["total"].get(corrected_result, 0), 0) + 1
 
-        previous_session_key = self._session_result_key(previous_result)
+        previous_session_key = self._session_result_key(previous_bucket)
         corrected_session_key = self._session_result_key(corrected_result)
         if previous_session_key:
             self.session_stats[previous_session_key] = max(0, self._safe_int(self.session_stats.get(previous_session_key, 0), 0) - 1)
@@ -333,38 +462,32 @@ class TrophyObserver:
 
         start_streak = self._safe_int(self._active_match_start_streak, 0)
         current_wins = self._safe_int(self.current_wins, 0)
-        if previous_result == "victory" and corrected_result != "victory":
+        if previous_bucket == "victory" and corrected_result != "victory":
             current_wins = max(0, current_wins - 1)
-        elif corrected_result == "victory" and previous_result != "victory":
+        elif corrected_result == "victory" and previous_bucket != "victory":
             current_wins += 1
         self.current_wins = current_wins
 
-        if corrected_result == "victory":
-            self.win_streak = start_streak + 1
-            predicted_delta = self._win_increment_for(start_value, start_streak)
-            streak_bonus = max(0, min(start_streak, 5))
-        elif corrected_result == "defeat":
-            self.win_streak = 0
-            predicted_delta = -self._loss_decrement_for(start_value)
-            streak_bonus = 0
-        else:
-            self.win_streak = start_streak
-            predicted_delta = 0
-            streak_bonus = 0
+        corrected_outcome = self._predicted_outcome_for_result(corrected_result, start_value, start_streak)
+        if corrected_outcome is None:
+            return False
 
+        self.win_streak = corrected_outcome["streak_after"]
         self.last_match_result = corrected_result
+        self.last_match_bucket = corrected_result
         self._last_game_result = corrected_result
         self._set_last_match_trophy_summary(
             corrected_result,
             start_value,
             verified_value,
-            predicted_delta,
-            streak_bonus=streak_bonus,
+            corrected_outcome["predicted_delta"],
+            streak_bonus=corrected_outcome["streak_bonus"],
             verified=True,
+            history_bucket=corrected_result,
         )
         self.save_history()
         self.history_revision += 1
-        print(f"[RESULT] corrected result {previous_result} -> {corrected_result} for {key}")
+        print(f"[RESULT] corrected result {previous_bucket} -> {corrected_result} for {key}")
         return True
 
     def reconcile_verified_trophies(self, current_brawler, verified_trophies):
@@ -377,7 +500,8 @@ class TrophyObserver:
         if start_value is None:
             start_value = self.last_match_start_trophies
 
-        corrected_result = str(self.last_match_result or "").lower()
+        display_result = self._normalize_result_key(self.last_match_result)
+        corrected_result = str(self.last_match_bucket or display_result or "").lower()
         if verified_value > start_value:
             corrected_result = "victory"
         elif verified_value < start_value:
@@ -385,20 +509,27 @@ class TrophyObserver:
         elif not corrected_result:
             corrected_result = "draw"
 
-        self._reclassify_verified_result(current_brawler, corrected_result, start_value, verified_value)
+        bucket_changed = self._reclassify_verified_result(current_brawler, corrected_result, start_value, verified_value)
 
         previous_value = self.current_trophies
         if previous_value != verified_value:
             print(f"Trophies changed from {previous_value} to {verified_value}")
         self.current_trophies = verified_value
         self._session_end_trophies[key] = verified_value
+        if bucket_changed:
+            summary_result = corrected_result
+        elif display_result in self._showdown_place_index:
+            summary_result = display_result
+        else:
+            summary_result = corrected_result or display_result
         self._set_last_match_trophy_summary(
-            corrected_result or self.last_match_result,
+            summary_result,
             start_value,
             verified_value,
             self.last_match_predicted_trophy_delta,
             streak_bonus=self.last_match_streak_bonus,
             verified=True,
+            history_bucket=corrected_result,
         )
         if self.last_match_trophy_adjustment != 0:
             self._corrections_log.append({
@@ -458,11 +589,12 @@ class TrophyObserver:
         self.session_stats["total_damage"] += damage
         self.session_stats["total_deaths"] += deaths
 
-        if game_result == "victory":
+        bucket_result = self.get_result_bucket(game_result)
+        if bucket_result == "victory":
             self.session_stats["victories"] += 1
-        elif game_result == "defeat":
+        elif bucket_result == "defeat":
             self.session_stats["defeats"] += 1
-        elif game_result == "draw":
+        elif bucket_result == "draw":
             self.session_stats["draws"] += 1
 
         stats["matches"] += 1
@@ -532,40 +664,39 @@ class TrophyObserver:
 
         print(f"[RESULT] TrophyObserver.add_trophies({game_result}) win_streak={self.win_streak}")
         old = self._safe_int(self.current_trophies, 0)
-        predicted_delta = 0
-        streak_bonus = 0
+        start_streak = self._safe_int(self.win_streak, 0)
+        outcome = self._predicted_outcome_for_result(game_result, start_trophies=old, start_streak=start_streak)
         self._lobby_trophy_verified = False
-        if game_result == "victory":
-            self.win_streak += 1
-            predicted_delta = self._safe_int(self.calc_win_increment(), 0)
-            streak_bonus = max(0, self.win_streak_gain())
-            self.current_trophies = old + predicted_delta
-        elif game_result == "defeat":
-            predicted_delta = -self._safe_int(self.calc_lost_decrement(), 0)
-            self.win_streak = 0
-            self.current_trophies = old + predicted_delta
-        elif game_result == "draw":
-            self.current_trophies = old
-            print("Nothing changed. Draw detected")
-        else:
+        if not outcome:
             print("Catastrophic failure")
+            return False
 
+        self.win_streak = outcome["streak_after"]
+        self.current_trophies = old + outcome["predicted_delta"]
+        if outcome["display_result"] == "draw":
+            print("Nothing changed. Draw detected")
+        elif outcome["display_result"] in self._showdown_place_index:
+            print(
+                f"[RESULT] showdown place {outcome['display_result']} -> "
+                f"delta {outcome['predicted_delta']:+d} ({outcome['bucket']})"
+            )
         match_start_trophies = self.get_active_match_start_trophies(current_brawler)
         if match_start_trophies is None:
             match_start_trophies = old
         self._set_last_match_trophy_summary(
-            game_result,
+            outcome["display_result"],
             match_start_trophies,
             self.current_trophies,
-            predicted_delta,
-            streak_bonus=streak_bonus,
+            outcome["predicted_delta"],
+            streak_bonus=outcome["streak_bonus"],
             verified=False,
+            history_bucket=outcome["bucket"],
         )
         print(f"[RESULT] trophies {old} -> {self.current_trophies}")
         print(f"[RESULT] current wins before increment: {self.current_wins}")
-        self.match_history[current_brawler][game_result] += 1
-        self.match_history["total"][game_result] += 1
-        self._last_game_result = game_result
+        self.match_history[current_brawler][outcome["bucket"]] += 1
+        self.match_history["total"][outcome["bucket"]] += 1
+        self._last_game_result = outcome["bucket"]
 
         self.match_counter += 1
         if self.match_counter % 4 == 0:
@@ -573,11 +704,20 @@ class TrophyObserver:
 
         self.save_history()
         self.history_revision += 1
-        self._finalize_current_match(current_brawler, game_result)
+        self._finalize_current_match(current_brawler, outcome["bucket"])
         return True
 
     def add_win(self, game_result):
-        if game_result == "victory":
+        normalized = self._normalize_result_key(game_result)
+        if normalized == self._normalize_result_key(self.last_match_result) and self.last_match_bucket:
+            bucket = self.last_match_bucket
+        else:
+            bucket = self.get_result_bucket(
+                normalized,
+                start_trophies=self.last_match_start_trophies,
+                predicted_delta=self.last_match_predicted_trophy_delta,
+            )
+        if bucket == "victory":
             self.current_wins = self._safe_int(self.current_wins, 0) + 1
             print(f"[RESULT] current_wins incremented to {self.current_wins}")
 
@@ -601,7 +741,7 @@ class TrophyObserver:
                     print("Couldn't find game result", game_result, ratio)
                 return False
 
-        if game_result not in {"victory", "defeat", "draw"}:
+        if game_result not in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
             return False
         return game_result
 
@@ -674,6 +814,7 @@ class TrophyObserver:
             "current_wins": self._safe_int(self.current_wins, 0),
             "win_streak": self._safe_int(self.win_streak, 0),
             "last_match_result": self.last_match_result,
+            "last_match_bucket": self.last_match_bucket,
             "last_match_trophy_delta": self._safe_int(self.last_match_trophy_delta, 0),
             "last_match_verified": bool(self.last_match_trophies_verified),
         }
