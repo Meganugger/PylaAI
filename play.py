@@ -48,6 +48,10 @@ class Movement:
         self._showdown_enemy_chase_timeout = float(bot_config.get("showdown_enemy_chase_timeout", 2.0))
         self._search_target_hold_time = float(bot_config.get("search_target_hold_time", 3.5))
         self._unstuck_progress_distance = float(bot_config.get("unstuck_progress_distance", 42))
+        self._showdown_fog_pixels_minimum = 500
+        self._showdown_fog_low = np.array((50, 95, 215), dtype=np.uint8)
+        self._showdown_fog_high = np.array((60, 125, 245), dtype=np.uint8)
+        self._showdown_fog_escape_distance = 220.0
         self._movement_anchor_pos = None
         self._movement_anchor_command = ""
 
@@ -70,6 +74,14 @@ class Movement:
         return {"W": "S", "S": "W", "A": "D", "D": "A"}.get(key, "")
 
     @staticmethod
+    def angle_from_direction(dx, dy):
+        return math.degrees(math.atan2(dy, dx)) % 360
+
+    @staticmethod
+    def angle_opposite(angle_degrees):
+        return (angle_degrees + 180.0) % 360.0
+
+    @staticmethod
     def get_enemy_pos(enemy):
         return (enemy[0] + enemy[2]) / 2, (enemy[1] + enemy[3]) / 2
 
@@ -86,6 +98,60 @@ class Movement:
         if not enemy_data:
             return False
         return True
+
+    def detect_showdown_fog_direction(self, frame, player_position):
+        if frame is None or not self.is_showdown_mode:
+            return None
+
+        try:
+            hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+        except Exception:
+            return None
+
+        mask = cv2.inRange(hsv, self._showdown_fog_low, self._showdown_fog_high)
+        fog_pixel_count = int(cv2.countNonZero(mask))
+        if fog_pixel_count < self._showdown_fog_pixels_minimum:
+            return None
+
+        moments = cv2.moments(mask, binaryImage=True)
+        if moments["m00"] == 0:
+            return None
+
+        fog_cx = moments["m10"] / moments["m00"]
+        fog_cy = moments["m01"] / moments["m00"]
+        dx = fog_cx - player_position[0]
+        dy = fog_cy - player_position[1]
+        if math.hypot(dx, dy) < 1.0:
+            return None
+        return self.angle_from_direction(dx, dy)
+
+    def _get_showdown_fog_escape_move(self, player_data, wall_context):
+        if not self.is_showdown_mode:
+            return None
+
+        current_frame = getattr(self, "current_frame", None)
+        if current_frame is None:
+            return None
+
+        player_position = self.get_player_pos(player_data)
+        fog_angle = self.detect_showdown_fog_direction(current_frame, player_position)
+        if fog_angle is None:
+            return None
+
+        escape_angle = self.angle_opposite(fog_angle)
+        escape_radians = math.radians(escape_angle)
+        distance = max(
+            150.0,
+            self._showdown_fog_escape_distance * max(float(self.window_controller.scale_factor or 1.0), 0.75),
+        )
+        width = max(1, int(getattr(self.window_controller, "width", 1920) or 1920))
+        height = max(1, int(getattr(self.window_controller, "height", 1080) or 1080))
+        margin = 24
+        target_pos = (
+            min(width - margin, max(margin, player_position[0] + math.cos(escape_radians) * distance)),
+            min(height - margin, max(margin, player_position[1] + math.sin(escape_radians) * distance)),
+        )
+        return self._get_move_toward(player_position, target_pos, wall_context, allow_detour=True)
 
     @staticmethod
     def get_horizontal_move_key(direction_x, opposite=False):
@@ -500,6 +566,10 @@ class Play(Movement):
     def no_enemy_movement(self, player_data, wall_context):
         player_position = self.get_player_pos(player_data)
         if self.is_showdown_mode:
+            fog_escape_move = self._get_showdown_fog_escape_move(player_data, wall_context)
+            if fog_escape_move:
+                return fog_escape_move
+
             teammate_target = self._get_teammate_centroid()
             if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
                 regroup_move = self._get_move_toward(player_position, teammate_target, wall_context, allow_detour=True)
@@ -1162,6 +1232,7 @@ class Play(Movement):
             self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
             self.time_since_super_checked = current_time
 
+        self.current_frame = frame
         movement = self.loop(brawler, data, current_time, wall_context)
 
         # if data:
