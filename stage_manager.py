@@ -609,14 +609,14 @@ class StageManager:
             self.window_controller.click(*popup_location)
             return
 
-        reward_action = find_reward_claim_action(screenshot)
-        if reward_action:
-            self.window_controller.click(*reward_action)
-            return
-
         fallback_center = get_reward_claim_button_center(screenshot)
         if fallback_center:
             self.window_controller.click(*fallback_center)
+            return
+
+        reward_action = find_reward_claim_action(screenshot)
+        if reward_action:
+            self.window_controller.click(*reward_action)
             return
 
         self.window_controller.press_continue()
