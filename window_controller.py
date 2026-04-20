@@ -1,7 +1,6 @@
 import atexit
 import ctypes
 import math
-import os
 import threading
 import time
 import cv2
@@ -25,7 +24,6 @@ BRAWL_STARS_PACKAGE = load_toml_as_dict("cfg/general_config.toml").get(
     "brawlstars_package",
     "com.supercell.brawlstars"
 )
-BLUESTACKS_CONF = r"C:\ProgramData\BlueStacks_nxt\bluestacks.conf"
 
 key_coords_dict = {
     "H": (1400, 990),
@@ -48,67 +46,6 @@ directions_xy_deltas_dict = {
     "d": (100, 0),
 }
 
-
-def _parse_bluestacks_conf():
-    parsed = {}
-    if not os.path.exists(BLUESTACKS_CONF):
-        return parsed
-    try:
-        with open(BLUESTACKS_CONF, "r", encoding="utf-8") as handle:
-            for line in handle:
-                line = line.strip()
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                parsed[key.strip()] = value.strip().strip('"')
-    except Exception as exc:
-        print(f"WARNING: Could not read bluestacks.conf: {exc}")
-    return parsed
-
-
-def _resolve_bluestacks_instance(config_port):
-    conf = _parse_bluestacks_conf()
-    if not conf:
-        return None, config_port
-
-    instance_name = None
-    for key, value in conf.items():
-        if not (key.startswith("bst.instance.") and key.endswith(".adb_port")):
-            continue
-        if ".status." in key:
-            continue
-        try:
-            if int(value) == int(config_port):
-                instance_name = key.replace("bst.instance.", "").replace(".adb_port", "")
-                break
-        except Exception:
-            continue
-
-    if not instance_name:
-        return None, config_port
-
-    live_port = config_port
-    try:
-        live_port = int(conf.get(f"bst.instance.{instance_name}.status.adb_port", config_port))
-    except Exception:
-        live_port = config_port
-    return instance_name, live_port
-
-
-def _resolve_scrcpy_max_fps(config):
-    raw_value = str(config.get("scrcpy_max_fps", "auto")).strip().lower()
-    if raw_value not in ("", "auto", "none"):
-        try:
-            return max(0, int(raw_value))
-        except ValueError:
-            return 0
-
-    try:
-        instance_count = max(1, int(config.get("instance_count", 1) or 1))
-    except Exception:
-        instance_count = 1
-    return 18 if instance_count > 1 else 0
-
 class WindowController:
     def __init__(self):
         self.scale_factor = None
@@ -118,52 +55,29 @@ class WindowController:
         self.height_ratio = None
         self.joystick_x, self.joystick_y = None, None
         time_config = load_toml_as_dict("cfg/time_tresholds.toml")
-        general_config = load_toml_as_dict("cfg/general_config.toml")
         # --- 2. ADB & Scrcpy Connection ---
         print("Connecting to ADB...")
         try:
-            try:
-                configured_port = int(general_config.get("emulator_port", 5037))
-            except Exception:
-                configured_port = 5037
-            current_emulator = str(general_config.get("current_emulator", "LDPlayer") or "LDPlayer").lower()
-            self._bs_instance = None
-            if "blue" in current_emulator:
-                self._bs_instance, self.port = _resolve_bluestacks_instance(configured_port)
-            else:
-                self.port = configured_port
-
-            target_serial = f"127.0.0.1:{self.port}"
+            # Connect to device (adbutils automatically handles port detection mostly)
+            # but adbutils is usually smarter at finding the open device.
             device_list = adb.device_list()
-            self.device = next((device for device in device_list if device.serial == target_serial), None)
-
-            if self.device is None:
-                try:
-                    adb.connect(target_serial)
-                except Exception:
-                    pass
+            if not device_list:
+                # Try connecting to common ports if empty
+                for port in [5555, load_toml_as_dict("cfg/general_config.toml")["emulator_port"], 16384, 5635] + list(range(5565, 5756, 10)):
+                    try:
+                         adb.connect(f"127.0.0.1:{port}")
+                    except Exception:
+                         pass
                 device_list = adb.device_list()
-                self.device = next((device for device in device_list if device.serial == target_serial), None)
 
-            if self.device is None and len(device_list) == 1:
-                self.device = device_list[0]
-                print(
-                    f"WARNING: Configured emulator port {target_serial} was not found. "
-                    f"Using the only detected device {self.device.serial}."
-                )
+            if not device_list:
+                 raise ConnectionError("No ADB devices found.")
 
-            if self.device is None:
-                raise ConnectionError(f"No ADB device found for configured emulator port {target_serial}.")
-
+            self.device = device_list[0]
             print(f"Connected to device: {self.device.serial}")
 
             self.frame_condition = threading.Condition()
-            scrcpy_kwargs = {"device": self.device, "max_width": 0}
-            scrcpy_max_fps = _resolve_scrcpy_max_fps(general_config)
-            if scrcpy_max_fps > 0:
-                scrcpy_kwargs["max_fps"] = scrcpy_max_fps
-                print(f"Using scrcpy max_fps={scrcpy_max_fps} for multi-instance efficiency")
-            self.scrcpy_client = scrcpy.Client(**scrcpy_kwargs)
+            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
@@ -303,13 +217,29 @@ class WindowController:
     def touch_up(self, x, y, pointer_id=0):
         self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_UP, pointer_id)
 
+    def move_joystick_angle(self, angle_degrees: float, radius: float = 145.0):
+        angle_rad = math.radians(float(angle_degrees) % 360.0)
+        scaled_radius = float(radius) * max(float(self.scale_factor or 1.0), 0.5)
+        target_x = self.joystick_x + math.cos(angle_rad) * scaled_radius
+        target_y = self.joystick_y + math.sin(angle_rad) * scaled_radius
+
+        if not self.are_we_moving:
+            self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = True
+
+        if self.last_joystick_pos != (target_x, target_y):
+            self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
+            self.last_joystick_pos = (target_x, target_y)
+
+    def stop_joystick(self):
+        if self.are_we_moving:
+            self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = False
+            self.last_joystick_pos = (None, None)
+
     def keys_up(self, keys: List[str]):
         if "".join(keys).lower() == "wasd":
-            if self.are_we_moving:
-                # Use PID_JOYSTICK so we don't lift the attack finger
-                self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
-                self.are_we_moving = False
-                self.last_joystick_pos = (None, None)
+            self.stop_joystick()
 
     def keys_down(self, keys: List[str]):
 
