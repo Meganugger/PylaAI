@@ -685,6 +685,17 @@ class Play(Movement):
             if fog_escape_move:
                 return fog_escape_move
 
+            nearest_teammate_target, nearest_teammate_distance = self._get_nearest_teammate_target(player_position)
+            if nearest_teammate_target and nearest_teammate_distance > self._showdown_team_pull_distance:
+                regroup_move = self._get_move_toward(
+                    player_position,
+                    nearest_teammate_target,
+                    wall_context,
+                    allow_detour=True,
+                )
+                if regroup_move:
+                    return regroup_move
+
             teammate_target = self._get_teammate_centroid()
             if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
                 regroup_move = self._get_move_toward(
@@ -917,6 +928,15 @@ class Play(Movement):
         centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
         centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
         return centroid_x, centroid_y
+
+    def _get_nearest_teammate_target(self, player_pos):
+        if not self._teammate_positions:
+            return None, float("inf")
+        nearest_target = min(
+            self._teammate_positions,
+            key=lambda teammate_pos: self.get_distance(teammate_pos, player_pos),
+        )
+        return nearest_target, self.get_distance(nearest_target, player_pos)
 
     def _is_post_burst_defensive(self, current_time):
         return (
@@ -1333,17 +1353,23 @@ class Play(Movement):
         current_time = time.time()
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
+            nearest_teammate_target, nearest_teammate_distance = self._get_nearest_teammate_target(player_pos)
             teammate_target = self._get_teammate_centroid()
             teammate_pull_distance = self._showdown_team_pull_distance if self.is_showdown_mode else 160
+            using_nearest_teammate = bool(self.is_showdown_mode and nearest_teammate_target)
+            team_regroup_target = nearest_teammate_target if using_nearest_teammate else teammate_target
+            team_regroup_distance = nearest_teammate_distance if using_nearest_teammate else (
+                self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
+            )
             if teammate_target and (
                 style.get("prefer_teammates")
                 or self._is_post_burst_defensive(current_time)
                 or self.is_showdown_mode
             ):
-                if self.get_distance(teammate_target, player_pos) > teammate_pull_distance:
+                if team_regroup_target and team_regroup_distance > teammate_pull_distance:
                     team_move = self._get_move_toward(
                         player_pos,
-                        teammate_target,
+                        team_regroup_target,
                         wall_context,
                         allow_detour=self.is_showdown_mode,
                     )
@@ -1377,16 +1403,18 @@ class Play(Movement):
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
         post_burst_defensive = self._is_post_burst_defensive(current_time)
+        nearest_teammate_target, _ = self._get_nearest_teammate_target(player_pos)
         teammate_target = self._get_teammate_centroid()
-        if teammate_target:
-            teammate_distance = self.get_distance(teammate_target, player_pos)
+        cohesion_target = nearest_teammate_target if (self.is_showdown_mode and nearest_teammate_target) else teammate_target
+        if cohesion_target:
+            teammate_distance = self.get_distance(cohesion_target, player_pos)
             if teammate_distance > 100:
                 dist_factor = min(1.0, (teammate_distance - 100) / 300.0)
                 cohesion_strength = style.get("team_cohesion", 0.0) * dist_factor
                 if self.is_showdown_mode:
                     cohesion_strength = max(cohesion_strength, min(0.45, 0.18 + (dist_factor * 0.22)))
-                direction_x = direction_x * (1.0 - cohesion_strength) + (teammate_target[0] - player_pos[0]) * cohesion_strength
-                direction_y = direction_y * (1.0 - cohesion_strength) + (teammate_target[1] - player_pos[1]) * cohesion_strength
+                direction_x = direction_x * (1.0 - cohesion_strength) + (cohesion_target[0] - player_pos[0]) * cohesion_strength
+                direction_y = direction_y * (1.0 - cohesion_strength) + (cohesion_target[1] - player_pos[1]) * cohesion_strength
 
         should_retreat_for_ammo = style["retreat_on_low_ammo"] and (
             self.current_ammo <= 0
@@ -1626,7 +1654,12 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                current_state = get_state(frame)
+                allow_reward_ocr = (
+                    runtime_state == "reward_claim"
+                    or str(runtime_state).startswith("end_")
+                    or player_missing_for >= 1.0
+                )
+                current_state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 if isinstance(current_state, str) and current_state.startswith("end_"):
                     print(f"[RESULT] play state probe detected {current_state}")
                     self._pending_end_result = current_state.split("_", 1)[1]
