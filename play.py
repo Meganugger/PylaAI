@@ -162,6 +162,29 @@ class Movement:
         self._planned_analog_reason = None
         self._committed_analog_reason = None
         self._committed_analog_until = 0.0
+        general_config = load_toml_as_dict("cfg/general_config.toml")
+        self.wall_stuck_enabled = str(bot_config.get("wall_stuck_enabled", "yes")).lower() in ("yes", "true", "1")
+        self.wall_stuck_debug = str(general_config.get("wall_stuck_debug", "no")).lower() in ("yes", "true", "1")
+        self.wall_stuck_ignore_radius = float(bot_config.get("wall_stuck_ignore_radius", 150))
+        self.wall_stuck_sample_interval = float(bot_config.get("wall_stuck_sample_interval", 0.2))
+        self.wall_stuck_shift_threshold = float(bot_config.get("wall_stuck_shift_threshold", 3.0))
+        self.wall_stuck_timeout = float(bot_config.get("wall_stuck_timeout", 3.0))
+        self.wall_stuck_min_walls = int(bot_config.get("wall_stuck_min_walls", 3))
+        self.wall_stuck_state = {
+            "last_sample_time": 0.0,
+            "last_wall_centers": None,
+            "stationary_since": None,
+        }
+        self.escape_retreat_duration = float(bot_config.get("escape_retreat_duration", 0.4))
+        self.escape_arc_duration = float(bot_config.get("escape_arc_duration", 1.2))
+        self.escape_arc_degrees = float(bot_config.get("escape_arc_degrees", 135.0))
+        self.escape_state = {
+            "phase": None,
+            "started_at": 0.0,
+            "retreat_angle": 0.0,
+            "arc_side": 1,
+        }
+        self._next_arc_side = 1
         self.fix_angle_state = {
             "delay_to_trigger": bot_config["unstuck_movement_delay"],
             "duration": bot_config["unstuck_movement_hold_time"],
@@ -433,6 +456,118 @@ class Movement:
             return reversed_movement
 
         return movement
+
+    def _wslog(self, *parts):
+        if self.wall_stuck_debug:
+            print("[WS]", *parts)
+
+    def _wall_centers_filtered(self, walls, player_pos):
+        if not walls:
+            return np.empty((0, 2), dtype=np.float32)
+
+        px, py = player_pos
+        ignore_radius_sq = self.wall_stuck_ignore_radius * self.wall_stuck_ignore_radius
+        centers = []
+        for box in walls:
+            x1, y1, x2, y2 = box[0], box[1], box[2], box[3]
+            cx = (x1 + x2) * 0.5
+            cy = (y1 + y2) * 0.5
+            dx = cx - px
+            dy = cy - py
+            if dx * dx + dy * dy >= ignore_radius_sq:
+                centers.append((cx, cy))
+
+        return np.asarray(centers, dtype=np.float32) if centers else np.empty((0, 2), dtype=np.float32)
+
+    def _avg_wall_shift(self, previous_centers, current_centers):
+        if previous_centers is None or len(previous_centers) < self.wall_stuck_min_walls:
+            return None
+        if len(current_centers) < self.wall_stuck_min_walls:
+            return None
+
+        deltas = previous_centers[:, None, :] - current_centers[None, :, :]
+        distances_sq = (deltas * deltas).sum(axis=2)
+        nearest = np.sqrt(distances_sq.min(axis=1))
+        return float(nearest.mean())
+
+    def detect_wall_stuck(self, walls, player_pos, is_trying_to_move, current_time):
+        if not self.wall_stuck_enabled or player_pos is None:
+            return False
+
+        state = self.wall_stuck_state
+        if current_time - state["last_sample_time"] < self.wall_stuck_sample_interval:
+            if state["stationary_since"] is None or not is_trying_to_move:
+                return False
+            return (current_time - state["stationary_since"]) >= self.wall_stuck_timeout
+
+        current_centers = self._wall_centers_filtered(walls, player_pos)
+        shift = self._avg_wall_shift(state["last_wall_centers"], current_centers)
+        state["last_wall_centers"] = current_centers
+        state["last_sample_time"] = current_time
+
+        if shift is None:
+            state["stationary_since"] = None
+            return False
+
+        if shift < self.wall_stuck_shift_threshold:
+            if state["stationary_since"] is None:
+                state["stationary_since"] = current_time
+            self._wslog(
+                f"walls shift={shift:.2f}px",
+                f"stationary_for={current_time - state['stationary_since']:.2f}s",
+                f"trying_to_move={is_trying_to_move}",
+            )
+        else:
+            if state["stationary_since"] is not None:
+                self._wslog(f"walls moved again: shift={shift:.2f}px")
+            state["stationary_since"] = None
+
+        if state["stationary_since"] is None or not is_trying_to_move:
+            return False
+        return (current_time - state["stationary_since"]) >= self.wall_stuck_timeout
+
+    def _reset_wall_stuck_state(self, current_time):
+        self.wall_stuck_state["stationary_since"] = None
+        self.wall_stuck_state["last_wall_centers"] = None
+        self.wall_stuck_state["last_sample_time"] = current_time
+
+    def start_semicircle_escape(self, angle, current_time):
+        side = self._next_arc_side
+        self._next_arc_side = -side
+        self.escape_state["phase"] = "retreat"
+        self.escape_state["started_at"] = current_time
+        self.escape_state["retreat_angle"] = self.angle_opposite(angle)
+        self.escape_state["arc_side"] = side
+        self._wslog(
+            f"semicircle escape start angle={float(angle):.1f}",
+            f"retreat={self.escape_state['retreat_angle']:.1f}",
+            f"side={'CCW' if side > 0 else 'CW'}",
+        )
+
+    def semicircle_escape_step(self, current_time):
+        phase = self.escape_state["phase"]
+        if phase is None:
+            return None
+
+        elapsed = current_time - self.escape_state["started_at"]
+        if phase == "retreat":
+            if elapsed < self.escape_retreat_duration:
+                return self.escape_state["retreat_angle"]
+            self.escape_state["phase"] = "arc"
+            self.escape_state["started_at"] = current_time
+            self._wslog("semicircle escape retreat done, starting arc")
+            elapsed = 0.0
+            phase = "arc"
+
+        if phase == "arc":
+            if elapsed >= self.escape_arc_duration:
+                self.escape_state["phase"] = None
+                self._wslog("semicircle escape finished")
+                return None
+            sweep = self.escape_arc_degrees * (elapsed / self.escape_arc_duration) * self.escape_state["arc_side"]
+            return (self.escape_state["retreat_angle"] + sweep) % 360.0
+
+        return None
 
 
 class Play(Movement):
@@ -1346,7 +1481,17 @@ class Play(Movement):
             if isinstance(movement, (float, int)):
                 movement = self._stabilize_analog_angle(movement, current_time)
                 movement = self._debounce_angle(movement)
-                movement = self.unstuck_angle_if_needed(movement, current_time, player_pos)
+                escape_angle = self.semicircle_escape_step(current_time)
+                if escape_angle is not None:
+                    movement = escape_angle
+                else:
+                    walls = data.get('wall') or []
+                    if self.detect_wall_stuck(walls, player_pos, True, current_time):
+                        self.start_semicircle_escape(movement, current_time)
+                        self._reset_wall_stuck_state(current_time)
+                        movement = self.semicircle_escape_step(current_time) or movement
+                    else:
+                        movement = self.unstuck_angle_if_needed(movement, current_time, player_pos)
             else:
                 self._planned_analog_reason = None
                 movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
@@ -1847,6 +1992,8 @@ class Play(Movement):
                     self.note_confirmed_match_state(current_time)
         if not data:
             self._reset_match_state_guard()
+            self._reset_wall_stuck_state(current_time)
+            self.escape_state["phase"] = None
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
