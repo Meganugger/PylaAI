@@ -115,6 +115,20 @@ class Movement:
         self._showdown_fog_low = np.array((50, 95, 215), dtype=np.uint8)
         self._showdown_fog_high = np.array((60, 125, 245), dtype=np.uint8)
         self._showdown_fog_escape_distance = 220.0
+        self._showdown_fog_flee_distance = float(bot_config.get("showdown_fog_flee_distance", 130))
+        self._showdown_fog_min_blob_pixels = int(bot_config.get("showdown_fog_min_blob_pixels", 300))
+        self._showdown_fog_min_pixels_in_radius = int(bot_config.get("showdown_fog_min_pixels_in_radius", 50))
+        self._showdown_fog_check_every_n_frames = max(
+            1,
+            int(bot_config.get("showdown_fog_check_every_n_frames", 3)),
+        )
+        self._showdown_fog_check_counter = 0
+        self._showdown_fog_cached_angle = None
+        self._showdown_fog_mask_cache_key = None
+        self._showdown_fog_mask_cache_value = None
+        self._showdown_teammate_hysteresis = float(bot_config.get("showdown_teammate_hysteresis", 0.20))
+        self._showdown_locked_teammate = None
+        self._showdown_locked_teammate_distance = float("inf")
         self._movement_anchor_pos = None
         self._movement_anchor_command = ""
         self._movement_anchor_angle = None
@@ -186,34 +200,92 @@ class Movement:
             return False
         return True
 
-    def detect_showdown_fog_direction(self, frame, player_position):
+    def _build_showdown_fog_mask(self, frame, player_position):
         if frame is None or not self.is_showdown_mode:
             return None
 
+        roi_radius = int(max(48.0, self._showdown_fog_flee_distance))
+        cache_key = (
+            id(frame),
+            int(player_position[0]),
+            int(player_position[1]),
+            roi_radius,
+        )
+        if self._showdown_fog_mask_cache_key == cache_key:
+            return self._showdown_fog_mask_cache_value
+
+        frame_height, frame_width = frame.shape[:2]
+        px, py = int(player_position[0]), int(player_position[1])
+        x0 = max(0, px - roi_radius)
+        y0 = max(0, py - roi_radius)
+        x1 = min(frame_width, px + roi_radius + 1)
+        y1 = min(frame_height, py + roi_radius + 1)
+        if x0 >= x1 or y0 >= y1:
+            self._showdown_fog_mask_cache_key = cache_key
+            self._showdown_fog_mask_cache_value = None
+            return None
+
         try:
-            hsv = cv2.cvtColor(frame, cv2.COLOR_RGB2HSV)
+            hsv = cv2.cvtColor(frame[y0:y1, x0:x1], cv2.COLOR_BGR2HSV)
         except Exception:
+            self._showdown_fog_mask_cache_key = cache_key
+            self._showdown_fog_mask_cache_value = None
             return None
 
         mask = cv2.inRange(hsv, self._showdown_fog_low, self._showdown_fog_high)
-        fog_pixel_count = int(cv2.countNonZero(mask))
-        if fog_pixel_count < self._showdown_fog_pixels_minimum:
+        if int(cv2.countNonZero(mask)) < self._showdown_fog_pixels_minimum:
+            self._showdown_fog_mask_cache_key = cache_key
+            self._showdown_fog_mask_cache_value = None
             return None
 
-        moments = cv2.moments(mask, binaryImage=True)
-        if moments["m00"] == 0:
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+        component_count, labels, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+        if component_count <= 1:
+            self._showdown_fog_mask_cache_key = cache_key
+            self._showdown_fog_mask_cache_value = None
             return None
 
-        fog_cx = moments["m10"] / moments["m00"]
-        fog_cy = moments["m01"] / moments["m00"]
-        dx = fog_cx - player_position[0]
-        dy = fog_cy - player_position[1]
-        if math.hypot(dx, dy) < 1.0:
+        trusted_mask = np.zeros_like(mask)
+        kept_any = False
+        for label_idx in range(1, component_count):
+            if stats[label_idx, cv2.CC_STAT_AREA] >= self._showdown_fog_min_blob_pixels:
+                trusted_mask[labels == label_idx] = 255
+                kept_any = True
+
+        result = (trusted_mask, (x0, y0)) if kept_any and cv2.countNonZero(trusted_mask) > 0 else None
+        self._showdown_fog_mask_cache_key = cache_key
+        self._showdown_fog_mask_cache_value = result
+        return result
+
+    def _detect_showdown_fog_escape_angle(self, frame, player_position):
+        built = self._build_showdown_fog_mask(frame, player_position)
+        if built is None:
             return None
-        return self.angle_from_direction(dx, dy)
+
+        mask, (origin_x, origin_y) = built
+        ys, xs = np.nonzero(mask)
+        if xs.size == 0:
+            return None
+
+        px, py = int(player_position[0]), int(player_position[1])
+        dx_all = (xs + origin_x) - px
+        dy_all = (ys + origin_y) - py
+        dist_sq = dx_all * dx_all + dy_all * dy_all
+        inside = dist_sq <= (self._showdown_fog_flee_distance * self._showdown_fog_flee_distance)
+        if int(inside.sum()) < self._showdown_fog_min_pixels_in_radius:
+            return None
+
+        centroid_dx = float(dx_all[inside].mean())
+        centroid_dy = float(dy_all[inside].mean())
+        if math.hypot(centroid_dx, centroid_dy) < 1.0:
+            return None
+        fog_angle = self.angle_from_direction(centroid_dx, centroid_dy)
+        return self.angle_opposite(fog_angle)
 
     def _get_showdown_fog_escape_move(self, player_data, wall_context):
         if not self.is_showdown_mode:
+            self._showdown_fog_cached_angle = None
             return None
 
         current_frame = getattr(self, "current_frame", None)
@@ -221,11 +293,18 @@ class Movement:
             return None
 
         player_position = self.get_player_pos(player_data)
-        fog_angle = self.detect_showdown_fog_direction(current_frame, player_position)
-        if fog_angle is None:
+        self._showdown_fog_check_counter += 1
+        if (
+            self._showdown_fog_cached_angle is None
+            or self._showdown_fog_check_counter >= self._showdown_fog_check_every_n_frames
+        ):
+            self._showdown_fog_cached_angle = self._detect_showdown_fog_escape_angle(current_frame, player_position)
+            self._showdown_fog_check_counter = 0
+
+        escape_angle = self._showdown_fog_cached_angle
+        if escape_angle is None:
             return None
 
-        escape_angle = self.angle_opposite(fog_angle)
         escape_radians = math.radians(escape_angle)
         distance = max(
             150.0,
@@ -685,18 +764,18 @@ class Play(Movement):
             if fog_escape_move:
                 return fog_escape_move
 
-            nearest_teammate_target, nearest_teammate_distance = self._get_nearest_teammate_target(player_position)
-            if nearest_teammate_target and nearest_teammate_distance > self._showdown_team_pull_distance:
+            regroup_target, regroup_distance = self._get_showdown_regroup_target(player_position)
+            if regroup_target and regroup_distance > self._showdown_team_pull_distance:
                 regroup_move = self._get_move_toward(
                     player_position,
-                    nearest_teammate_target,
+                    regroup_target,
                     wall_context,
                     allow_detour=True,
                 )
                 if regroup_move:
                     return regroup_move
 
-            teammate_target = self._get_teammate_centroid()
+            teammate_target = None if regroup_target else self._get_teammate_centroid()
             if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
                 regroup_move = self._get_move_toward(
                     player_position,
@@ -937,6 +1016,33 @@ class Play(Movement):
             key=lambda teammate_pos: self.get_distance(teammate_pos, player_pos),
         )
         return nearest_target, self.get_distance(nearest_target, player_pos)
+
+    def _reset_showdown_teammate_lock(self):
+        self._showdown_locked_teammate = None
+        self._showdown_locked_teammate_distance = float("inf")
+
+    def _get_showdown_regroup_target(self, player_pos):
+        if not self._teammate_positions:
+            self._reset_showdown_teammate_lock()
+            return None, float("inf")
+
+        nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
+        selected_target = nearest_target
+        selected_distance = nearest_distance
+
+        if self._showdown_locked_teammate is not None:
+            locked_target = min(
+                self._teammate_positions,
+                key=lambda teammate_pos: self.get_distance(teammate_pos, self._showdown_locked_teammate),
+            )
+            locked_distance = self.get_distance(locked_target, player_pos)
+            if nearest_distance >= locked_distance * (1.0 - self._showdown_teammate_hysteresis):
+                selected_target = locked_target
+                selected_distance = locked_distance
+
+        self._showdown_locked_teammate = selected_target
+        self._showdown_locked_teammate_distance = selected_distance
+        return selected_target, selected_distance
 
     def _is_post_burst_defensive(self, current_time):
         return (
@@ -1353,15 +1459,18 @@ class Play(Movement):
         current_time = time.time()
         self._update_ammo(current_time, brawler)
         if not self.is_there_enemy(enemy_data):
-            nearest_teammate_target, nearest_teammate_distance = self._get_nearest_teammate_target(player_pos)
-            teammate_target = self._get_teammate_centroid()
-            teammate_pull_distance = self._showdown_team_pull_distance if self.is_showdown_mode else 160
-            using_nearest_teammate = bool(self.is_showdown_mode and nearest_teammate_target)
-            team_regroup_target = nearest_teammate_target if using_nearest_teammate else teammate_target
-            team_regroup_distance = nearest_teammate_distance if using_nearest_teammate else (
-                self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
-            )
-            if teammate_target and (
+            if self.is_showdown_mode:
+                team_regroup_target, team_regroup_distance = self._get_showdown_regroup_target(player_pos)
+                teammate_target = team_regroup_target
+                teammate_pull_distance = self._showdown_team_pull_distance
+            else:
+                teammate_target = self._get_teammate_centroid()
+                team_regroup_target = teammate_target
+                team_regroup_distance = (
+                    self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
+                )
+                teammate_pull_distance = 160
+            if team_regroup_target and (
                 style.get("prefer_teammates")
                 or self._is_post_burst_defensive(current_time)
                 or self.is_showdown_mode
@@ -1403,9 +1512,10 @@ class Play(Movement):
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
         post_burst_defensive = self._is_post_burst_defensive(current_time)
-        nearest_teammate_target, _ = self._get_nearest_teammate_target(player_pos)
-        teammate_target = self._get_teammate_centroid()
-        cohesion_target = nearest_teammate_target if (self.is_showdown_mode and nearest_teammate_target) else teammate_target
+        if self.is_showdown_mode:
+            cohesion_target, _ = self._get_showdown_regroup_target(player_pos)
+        else:
+            cohesion_target = self._get_teammate_centroid()
         if cohesion_target:
             teammate_distance = self.get_distance(cohesion_target, player_pos)
             if teammate_distance > 100:
@@ -1700,6 +1810,8 @@ class Play(Movement):
         wall_context = self.get_wall_context(data['wall'])
         teammates = data.get('teammate') or []
         self._teammate_positions = [self.get_enemy_pos(teammate) for teammate in teammates]
+        if not self._teammate_positions:
+            self._reset_showdown_teammate_lock()
         enemies = data.get('enemy') or []
         if enemies:
             self._update_enemy_memory(enemies)

@@ -7,6 +7,7 @@ from state_finder.main import get_state
 from utils import extract_text_and_positions, count_hsv_pixels, load_toml_as_dict, find_template_center
 
 debug = load_toml_as_dict("cfg/general_config.toml")['super_debug'] == "yes"
+GRAY_PIXELS_THRESHOLD = int(load_toml_as_dict("./cfg/bot_config.toml").get("idle_pixels_minimum", 1000))
 
 OCR_BRAWLER_ALIASES = {
     'shey': 'shelly',
@@ -26,17 +27,18 @@ class LobbyAutomation:
     def check_for_idle(self, frame):
         wr = self.window_controller.width_ratio
         hr = self.window_controller.height_ratio
-        x1, y1 = int(400 * wr), int(380 * hr)
-        x2, y2 = int(1500 * wr), int(700 * hr)
+        # Tight ROI over the reconnect dialog body to avoid gameplay pixels.
+        x1, y1 = int(700 * wr), int(470 * hr)
+        x2, y2 = int(1220 * wr), int(620 * hr)
         if isinstance(frame, np.ndarray):
             screenshot = frame[y1:y2, x1:x2]
         else:
             screenshot = frame.crop((x1, y1, x2, y2))
-        gray_pixels = count_hsv_pixels(screenshot, (0, 0, 55), (10, 15, 77))
-        if debug and (gray_pixels > 1000 or time.time() - self._last_idle_debug_time >= 5.0):
-            print("gray pixels (if > 1000 then bot will try to unidle) :", gray_pixels)
+        gray_pixels = count_hsv_pixels(screenshot, (0, 0, 18), (10, 20, 100))
+        if debug and (gray_pixels > GRAY_PIXELS_THRESHOLD or time.time() - self._last_idle_debug_time >= 5.0):
+            print(f"gray pixels (if > {GRAY_PIXELS_THRESHOLD} then bot will try to unidle) :", gray_pixels)
             self._last_idle_debug_time = time.time()
-        if gray_pixels > 1000:
+        if gray_pixels > GRAY_PIXELS_THRESHOLD:
             self.window_controller.click(int(535 * wr), int(615 * hr))
 
     @staticmethod
