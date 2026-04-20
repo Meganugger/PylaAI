@@ -1,6 +1,7 @@
 import atexit
 import ctypes
 import math
+import socket
 import threading
 import time
 import cv2
@@ -46,6 +47,64 @@ directions_xy_deltas_dict = {
     "d": (100, 0),
 }
 
+EMULATOR_PORTS = {
+    "BlueStacks": [5555, 5556, 5557, 5565],
+    "LDPlayer": [5555, 5557, 5559, 5554],
+    "MEmu": [21503, 21513, 21523, 5555],
+    "MuMu": [16384, 16416, 16448, 7555, 5558, 5557, 5556, 5555, 5554],
+    "Others": [5555, 5558, 7555, 16384, 16416, 16448, 21503, 5635],
+}
+
+
+def _normalize_emulator_name(name):
+    normalized = str(name or "").strip().lower()
+    if "blue" in normalized:
+        return "BlueStacks"
+    if "ld" in normalized:
+        return "LDPlayer"
+    if "memu" in normalized:
+        return "MEmu"
+    if "mumu" in normalized:
+        return "MuMu"
+    return "Others"
+
+
+def _unique_ports(ports):
+    unique = []
+    for port in ports:
+        try:
+            port = int(port)
+        except (TypeError, ValueError):
+            continue
+        if port == 5037:
+            continue
+        if port not in unique:
+            unique.append(port)
+    return unique
+
+
+def _is_port_open(host, port, timeout=0.05):
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.settimeout(timeout)
+            return sock.connect_ex((host, int(port))) == 0
+    except OSError:
+        return False
+
+
+def _serial_port(serial):
+    if serial.startswith("emulator-"):
+        try:
+            return int(serial.rsplit("-", 1)[1])
+        except ValueError:
+            return None
+    if ":" in serial:
+        try:
+            return int(serial.rsplit(":", 1)[1])
+        except ValueError:
+            return None
+    return None
+
 class WindowController:
     def __init__(self):
         self.scale_factor = None
@@ -58,23 +117,64 @@ class WindowController:
         # --- 2. ADB & Scrcpy Connection ---
         print("Connecting to ADB...")
         try:
-            # Connect to device (adbutils automatically handles port detection mostly)
-            # but adbutils is usually smarter at finding the open device.
-            device_list = adb.device_list()
-            if not device_list:
-                # Try connecting to common ports if empty
-                for port in [5555, load_toml_as_dict("cfg/general_config.toml")["emulator_port"], 16384, 5635] + list(range(5565, 5756, 10)):
+            def list_online_devices():
+                devices = []
+                for dev in adb.device_list():
                     try:
-                         adb.connect(f"127.0.0.1:{port}")
+                        state = dev.get_state()
                     except Exception:
-                         pass
-                device_list = adb.device_list()
+                        state = "unknown"
+                    if state == "device":
+                        devices.append(dev)
+                    else:
+                        print(f"Skipping ADB device {dev.serial} (state: {state})")
+                return devices
+
+            def prefer_selected_devices(devices, selected_emulator, configured_port):
+                preferred_ports = set(
+                    _unique_ports([configured_port] + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"]))
+                )
+                preferred_serials = {f"127.0.0.1:{port}" for port in preferred_ports}
+                return [
+                    dev for dev in devices
+                    if _serial_port(dev.serial) in preferred_ports or dev.serial in preferred_serials
+                ]
+
+            general_config = load_toml_as_dict("cfg/general_config.toml")
+            selected_emulator = _normalize_emulator_name(general_config.get("current_emulator", "Others"))
+            configured_port = general_config.get("emulator_port", 0)
+            candidate_ports = _unique_ports(
+                [configured_port]
+                + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"])
+                + EMULATOR_PORTS["Others"]
+                + list(range(5565, 5756, 10))
+            )
+
+            device_list = list_online_devices()
+            preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
+
+            should_probe_ports = not device_list or (selected_emulator != "Others" and not preferred_devices)
+            if should_probe_ports:
+                open_ports = [port for port in candidate_ports if _is_port_open("127.0.0.1", port)]
+                for port in open_ports:
+                    try:
+                        adb.connect(f"127.0.0.1:{port}")
+                    except Exception:
+                        pass
+                device_list = list_online_devices()
+                preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
 
             if not device_list:
-                 raise ConnectionError("No ADB devices found.")
+                tried_ports = ", ".join(str(port) for port in candidate_ports)
+                raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
 
-            self.device = device_list[0]
-            print(f"Connected to device: {self.device.serial}")
+            self.device = preferred_devices[0] if preferred_devices else device_list[0]
+            if selected_emulator != "Others" and not preferred_devices:
+                print(
+                    f"Could not identify a {selected_emulator} device by port; "
+                    f"using first online ADB device instead."
+                )
+            print(f"Connected to {selected_emulator}: {self.device.serial}")
 
             self.frame_condition = threading.Condition()
             self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)

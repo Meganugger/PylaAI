@@ -1,4 +1,4 @@
-import inspect
+﻿import inspect
 import json
 import os
 import re
@@ -49,7 +49,7 @@ GAMEMODES = [
     {"value": "other", "label": "Other"},
 ]
 
-EMULATORS = ["LDPlayer", "BlueStacks", "MEmu", "Others"]
+EMULATORS = ["LDPlayer", "BlueStacks", "MEmu", "MuMu", "Others"]
 
 
 class QtBridge(QObject):
