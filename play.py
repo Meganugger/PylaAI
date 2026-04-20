@@ -4714,6 +4714,9 @@ class Play(Movement):
                 self.time_since_last_proceeding = current_time
                 return
         data = self.get_main_data(frame)
+        raw_supporting_entities = 0
+        if isinstance(data, dict):
+            raw_supporting_entities = len(data.get('enemy') or []) + len(data.get('teammate') or [])
         if data:
             self.time_since_player_last_found = time.time()
             if runtime_state != "match":
@@ -5007,12 +5010,22 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                allow_reward_ocr = (
-                    runtime_state == "reward_claim"
-                    or str(runtime_state).startswith("end_")
-                    or time_since_player >= 1.0
+                current_state = get_state(frame)
+                likely_post_match_reward = (
+                    time_since_player >= 2.5
+                    and raw_supporting_entities <= 0
+                    and (current_time - self.time_since_detections.get('enemy', 0)) >= 1.5
                 )
-                current_state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
+                allow_reward_ocr = (
+                    current_state == "match"
+                    and (
+                        runtime_state == "reward_claim"
+                        or str(runtime_state).startswith("end_")
+                        or likely_post_match_reward
+                    )
+                )
+                if allow_reward_ocr:
+                    current_state = get_state(frame, allow_reward_ocr=True)
                 if isinstance(current_state, str) and current_state.startswith("end_"):
                     print(f"[RESULT] play state probe detected {current_state}")
                     self._pending_end_result = current_state.split("_", 1)[1]
