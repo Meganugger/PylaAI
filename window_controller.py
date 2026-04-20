@@ -217,13 +217,29 @@ class WindowController:
     def touch_up(self, x, y, pointer_id=0):
         self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_UP, pointer_id)
 
+    def move_joystick_angle(self, angle_degrees: float, radius: float = 145.0):
+        angle_rad = math.radians(float(angle_degrees) % 360.0)
+        scaled_radius = float(radius) * max(float(self.scale_factor or 1.0), 0.5)
+        target_x = self.joystick_x + math.cos(angle_rad) * scaled_radius
+        target_y = self.joystick_y + math.sin(angle_rad) * scaled_radius
+
+        if not self.are_we_moving:
+            self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = True
+
+        if self.last_joystick_pos != (target_x, target_y):
+            self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
+            self.last_joystick_pos = (target_x, target_y)
+
+    def stop_joystick(self):
+        if self.are_we_moving:
+            self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
+            self.are_we_moving = False
+            self.last_joystick_pos = (None, None)
+
     def keys_up(self, keys: List[str]):
         if "".join(keys).lower() == "wasd":
-            if self.are_we_moving:
-                # Use PID_JOYSTICK so we don't lift the attack finger
-                self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
-                self.are_we_moving = False
-                self.last_joystick_pos = (None, None)
+            self.stop_joystick()
 
     def keys_down(self, keys: List[str]):
 

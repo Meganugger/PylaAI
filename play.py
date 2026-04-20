@@ -117,6 +117,18 @@ class Movement:
         self._showdown_fog_escape_distance = 220.0
         self._movement_anchor_pos = None
         self._movement_anchor_command = ""
+        self._movement_anchor_angle = None
+        self._movement_anchor_angle_pos = None
+        self._analog_movement_radius = float(bot_config.get("analog_movement_radius", 145.0))
+        self._analog_turn_threshold = float(bot_config.get("analog_turn_threshold", 12.0))
+        self._analog_strafe_offset = float(bot_config.get("analog_strafe_offset", 24.0))
+        self.fix_angle_state = {
+            "delay_to_trigger": bot_config["unstuck_movement_delay"],
+            "duration": bot_config["unstuck_movement_hold_time"],
+            "toggled": False,
+            "started_at": time.time(),
+            "fixed_angle": 0.0,
+        }
 
     @staticmethod
     def _normalize_gamemode_name(gamemode):
@@ -132,17 +144,17 @@ class Movement:
         normalized = cls._normalize_gamemode_name(gamemode)
         return "showdown" in normalized or normalized in {"brawlball", "brawl ball", "brawll ball"}
 
+    @classmethod
+    def _is_brawl_ball_mode(cls, gamemode):
+        normalized = cls._normalize_gamemode_name(gamemode)
+        return normalized in {"brawlball", "brawl ball", "brawll ball"}
+
+    def _uses_analog_movement(self):
+        return self.is_showdown_mode or self._is_brawl_ball_mode(self.selected_gamemode)
+
     @staticmethod
     def _opposite_key(key):
         return {"W": "S", "S": "W", "A": "D", "D": "A"}.get(key, "")
-
-    @staticmethod
-    def angle_from_direction(dx, dy):
-        return math.degrees(math.atan2(dy, dx)) % 360
-
-    @staticmethod
-    def angle_opposite(angle_degrees):
-        return (angle_degrees + 180.0) % 360.0
 
     @staticmethod
     def get_enemy_pos(enemy):
@@ -155,6 +167,18 @@ class Movement:
     @staticmethod
     def get_distance(enemy_coords, player_coords):
         return math.hypot(enemy_coords[0] - player_coords[0], enemy_coords[1] - player_coords[1])
+
+    @staticmethod
+    def angle_from_direction(dx, dy):
+        return math.degrees(math.atan2(dy, dx)) % 360
+
+    @staticmethod
+    def angle_opposite(angle_degrees):
+        return (angle_degrees + 180.0) % 360.0
+
+    @staticmethod
+    def _angle_difference(first_angle, second_angle):
+        return abs((float(first_angle) - float(second_angle) + 180.0) % 360.0 - 180.0)
 
     @staticmethod
     def is_there_enemy(enemy_data):
@@ -687,6 +711,10 @@ class Play(Movement):
             if search_move:
                 return search_move
 
+        if self._uses_analog_movement():
+            desired_angle = 270.0 if self.game_mode == 3 else 0.0
+            return self._find_best_angle(player_position, desired_angle, wall_context)
+
         preferred_movement = 'W' if self.game_mode == 3 else 'D'  # Adjust based on game mode
 
         if not self.is_path_blocked(player_position, preferred_movement, wall_context):
@@ -753,11 +781,44 @@ class Play(Movement):
     def _get_move_toward(self, player_pos, target_pos, wall_context, allow_detour=False):
         direction_x = target_pos[0] - player_pos[0]
         direction_y = target_pos[1] - player_pos[1]
+        if self._uses_analog_movement():
+            desired_angle = self.angle_from_direction(direction_x, direction_y)
+            if allow_detour:
+                return self._find_best_angle(player_pos, desired_angle, wall_context)
+            return desired_angle
         moves = self._build_target_move_candidates(direction_x, direction_y, allow_detour=allow_detour)
         for move in moves:
             if move and not self.is_path_blocked(player_pos, move, wall_context):
                 return move
         return None
+
+    def _is_path_blocked_angle(self, player_pos, angle_degrees, wall_context, distance=None):
+        if distance is None:
+            distance = self.TILE_SIZE * self.window_controller.scale_factor
+        angle_rad = math.radians(float(angle_degrees) % 360.0)
+        for probe_distance in (distance * 0.5, distance):
+            new_pos = (
+                player_pos[0] + math.cos(angle_rad) * probe_distance,
+                player_pos[1] + math.sin(angle_rad) * probe_distance,
+            )
+            if self.walls_are_in_line_of_sight(player_pos, new_pos, wall_context):
+                return True
+        return False
+
+    def _find_best_angle(self, player_pos, desired_angle, wall_context, sweep_range=165, step=10):
+        if not self.should_detect_walls or not wall_context.get("rectangles"):
+            return float(desired_angle) % 360.0
+
+        if not self._is_path_blocked_angle(player_pos, desired_angle, wall_context):
+            return float(desired_angle) % 360.0
+
+        for offset in range(step, sweep_range + 1, step):
+            for sign in (1, -1):
+                candidate = (float(desired_angle) + sign * offset) % 360.0
+                if not self._is_path_blocked_angle(player_pos, candidate, wall_context):
+                    return candidate
+
+        return float(desired_angle) % 360.0
 
     def is_enemy_hittable(self, player_pos, enemy_pos, wall_context, skill_type):
         if self.can_attack_through_walls(self.current_brawler, skill_type, self.brawlers_info):
@@ -992,6 +1053,11 @@ class Play(Movement):
                 self.time_since_detections[key] = time.time()
 
     def do_movement(self, movement):
+        if isinstance(movement, (float, int)):
+            self.window_controller.move_joystick_angle(float(movement), radius=self._analog_movement_radius)
+            self.keys_hold = []
+            return
+
         movement = movement.lower()
         keys_to_keyDown = []
         keys_to_keyUp = []
@@ -1008,6 +1074,61 @@ class Play(Movement):
 
         self.keys_hold = keys_to_keyDown
 
+    def _debounce_angle(self, angle):
+        if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
+            self.last_movement = float(angle)
+            self.last_movement_time = time.time()
+            return float(angle)
+
+        if self._angle_difference(angle, self.last_movement) > self._analog_turn_threshold:
+            self.last_movement = float(angle)
+            self.last_movement_time = time.time()
+
+        return float(self.last_movement)
+
+    def unstuck_angle_if_needed(self, angle, current_time=None, player_pos=None):
+        if current_time is None:
+            current_time = time.time()
+        angle = float(angle) % 360.0
+        state = self.fix_angle_state
+
+        if state["toggled"]:
+            if current_time - state["started_at"] > state["duration"]:
+                state["toggled"] = False
+                self._movement_anchor_angle = angle
+                self._movement_anchor_angle_pos = player_pos
+                self.time_since_different_movement = current_time
+            else:
+                return float(state["fixed_angle"])
+
+        if (
+            self._movement_anchor_angle is None
+            or self._angle_difference(angle, self._movement_anchor_angle) > 18.0
+        ):
+            self._movement_anchor_angle = angle
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        if (
+            player_pos is not None
+            and self._movement_anchor_angle_pos is not None
+            and self.get_distance(self._movement_anchor_angle_pos, player_pos) >= self._unstuck_progress_distance
+        ):
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        if current_time - self.time_since_different_movement > state["delay_to_trigger"]:
+            offset = random.choice((125.0, -125.0))
+            fixed_angle = (angle + offset) % 360.0
+            state["fixed_angle"] = fixed_angle
+            state["toggled"] = True
+            state["started_at"] = current_time
+            return fixed_angle
+
+        return angle
+
     def get_brawler_range(self, brawler):
         if self.brawler_ranges is None:
             self.brawler_ranges = self.load_brawler_ranges(self.brawlers_info)
@@ -1023,9 +1144,34 @@ class Play(Movement):
         )
         current_time = time.time()
         if current_time - self.time_since_movement > self.minimum_movement_delay:
-            movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
+            if isinstance(movement, (float, int)):
+                movement = self._debounce_angle(movement)
+                movement = self.unstuck_angle_if_needed(movement, current_time, player_pos)
+            else:
+                movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
             self.do_movement(movement)
             self.time_since_movement = time.time()
+        return movement
+
+    def _add_strafe_angle(self, angle, current_time, style):
+        if style["dodge_chance"] <= 0:
+            return angle
+
+        if current_time - self.strafe_switch_time >= self.strafe_interval:
+            self.strafe_direction *= -1
+            self.strafe_switch_time = current_time
+
+        return (float(angle) + (self.strafe_direction * self._analog_strafe_offset)) % 360.0
+
+    def _get_analog_engagement_move(self, player_pos, direction_x, direction_y, wall_context, retreat, current_time, style, should_strafe=False):
+        desired_angle = self.angle_from_direction(direction_x, direction_y)
+        if retreat:
+            desired_angle = self.angle_opposite(desired_angle)
+
+        movement = self._find_best_angle(player_pos, desired_angle, wall_context)
+        if should_strafe:
+            movement = self._add_strafe_angle(movement, current_time, style)
+            movement = self._find_best_angle(player_pos, movement, wall_context)
         return movement
 
     def scale_region(self, region):
@@ -1255,53 +1401,65 @@ class Play(Movement):
             "n_teammates": len(self._teammate_positions),
         })
 
-        # Determine initial movement direction
-        if should_retreat_for_ammo:
-            move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
-            move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
-        elif enemy_distance > effective_safe_range:  # Move towards the enemy
-            move_horizontal = self.get_horizontal_move_key(direction_x)
-            move_vertical = self.get_vertical_move_key(direction_y)
-        else:  # Move away from the enemy
-            move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
-            move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
-
-        movement_options = self._build_target_move_candidates(
-            direction_x,
-            direction_y,
-            allow_detour=self.should_detect_walls,
-        )
-
-        # Check for walls and adjust movement
-        for move in movement_options:
-            if not self.is_path_blocked(player_pos, move, wall_context):
-                movement = move
-                break
+        if self._uses_analog_movement():
+            movement = self._get_analog_engagement_move(
+                player_pos,
+                direction_x,
+                direction_y,
+                wall_context,
+                retreat=should_retreat_for_ammo or enemy_distance <= effective_safe_range,
+                current_time=current_time,
+                style=style,
+                should_strafe=enemy_distance <= attack_range * 1.2 and self.current_ammo > 0,
+            )
         else:
-            print("default paths are blocked")
-            # If all preferred directions are blocked, try other directions
-            alternative_moves = ['W', 'A', 'S', 'D']
-            random.shuffle(alternative_moves)
-            for move in alternative_moves:
+            # Determine initial movement direction
+            if should_retreat_for_ammo:
+                move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
+                move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
+            elif enemy_distance > effective_safe_range:  # Move towards the enemy
+                move_horizontal = self.get_horizontal_move_key(direction_x)
+                move_vertical = self.get_vertical_move_key(direction_y)
+            else:  # Move away from the enemy
+                move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
+                move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
+
+            movement_options = self._build_target_move_candidates(
+                direction_x,
+                direction_y,
+                allow_detour=self.should_detect_walls,
+            )
+
+            # Check for walls and adjust movement
+            for move in movement_options:
                 if not self.is_path_blocked(player_pos, move, wall_context):
                     movement = move
                     break
             else:
-                # if no movement is available, we still try to go in the best direction
-                # because it's better than doing nothing
-                movement = move_horizontal + move_vertical
+                print("default paths are blocked")
+                # If all preferred directions are blocked, try other directions
+                alternative_moves = ['W', 'A', 'S', 'D']
+                random.shuffle(alternative_moves)
+                for move in alternative_moves:
+                    if not self.is_path_blocked(player_pos, move, wall_context):
+                        movement = move
+                        break
+                else:
+                    # if no movement is available, we still try to go in the best direction
+                    # because it's better than doing nothing
+                    movement = move_horizontal + move_vertical
 
-        if enemy_distance <= attack_range * 1.2 and self.current_ammo > 0:
-            movement = self._add_strafe(movement, direction_x, direction_y, current_time, style)
+            if enemy_distance <= attack_range * 1.2 and self.current_ammo > 0:
+                movement = self._add_strafe(movement, direction_x, direction_y, current_time, style)
 
-        if movement != self.last_movement:
-            if current_time - self.last_movement_time >= self.minimum_movement_delay:
-                self.last_movement = movement
-                self.last_movement_time = current_time
+            if movement != self.last_movement:
+                if current_time - self.last_movement_time >= self.minimum_movement_delay:
+                    self.last_movement = movement
+                    self.last_movement_time = current_time
+                else:
+                    movement = self.last_movement  # Continue previous movement
             else:
-                movement = self.last_movement  # Continue previous movement
-        else:
-            self.last_movement_time = current_time  # Reset timer if movement didn't change
+                self.last_movement_time = current_time  # Reset timer if movement didn't change
 
         burst_active = False
         if self.target_info["hittable"] and enemy_distance <= attack_range:
