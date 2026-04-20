@@ -779,6 +779,21 @@ class Movement:
             return True  # Finishing blow
         return False
 
+    @staticmethod
+    def _is_close_range_brawler(brawler_info, safe_range, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        return attack_range <= 260 or (safe_range <= 10 and playstyle in {"tank", "assassin"})
+
+    @staticmethod
+    def _get_contact_attack_threshold(brawler_info, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        contact_ratio = 0.62
+        if playstyle == "tank":
+            contact_ratio = 0.70
+        elif playstyle == "assassin":
+            contact_ratio = 0.66
+        return max(95, int(attack_range * contact_ratio))
+
     def _spend_ammo(self):
         """Track that we fired a shot."""
         self._ammo = max(0, self._ammo - 1)
@@ -3666,6 +3681,8 @@ class Play(Movement):
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
+        close_range_brawler = self._is_close_range_brawler(brawler_info, safe_range, attack_range)
+        contact_attack_threshold = self._get_contact_attack_threshold(brawler_info, attack_range)
 
         # --- LOAD PLAYSTYLE CONFIG ---
         playstyle = brawler_info.get('playstyle', 'fighter')
@@ -4439,6 +4456,9 @@ class Play(Movement):
             self._combo_type = None
 
         enemy_hittable_attack = self.is_enemy_hittable(player_pos, enemy_coords, walls, "attack")
+        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
+        if close_range_contact:
+            enemy_hittable_attack = True
 
         # SAFETY: Skip ALL attack logic if enemy is behind a wall
         if not enemy_hittable_attack:
@@ -4503,6 +4523,8 @@ class Play(Movement):
             # Mid-close (< 70% attack_range): moderately faster
             elif enemy_distance < attack_range * 0.7:
                 attack_interval *= 0.6  # 40% faster at mid-close range
+            if close_range_contact:
+                attack_interval = min(attack_interval, 0.08)
 
         # Attack when in REAL range and hittable - with ammo conservation
         # Use predictive aim: if enemy is moving fast, require them to be closer (higher hit chance)
@@ -4555,6 +4577,8 @@ class Play(Movement):
                         # Our target is NOT the closest - auto-aim will fire at wrong enemy
                         if enemy_distance > closest_dist + 30:  # 30px tolerance
                             autoaim_would_miss = True
+                    if close_range_contact:
+                        autoaim_would_miss = False
                     # Close range: fire at ANY ammo (no conservation - dump everything)
                     # Throwers also fire at 1 ammo. Only conserve at longer ranges.
                     # BURST MODE: always fire - no conservation whatsoever
