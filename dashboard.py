@@ -1,4 +1,4 @@
-"""
+﻿"""
 PylaAI Dashboard - Unified Bot Interface
 ==========================================
 Single-window application with sidebar navigation.
@@ -78,7 +78,7 @@ GAMEMODES = {
     "other": ("Other", 3),
 }
 
-EMULATORS = ["BlueStacks", "LDPlayer", "MEmu", "Others"]
+EMULATORS = ["BlueStacks", "LDPlayer", "MEmu", "MuMu", "Others"]
 
 
 class Dashboard(ctk.CTk):
@@ -366,7 +366,7 @@ class Dashboard(ctk.CTk):
         rows = self._collect_visible_brawlers()
         visible_unlocked = [r for r in rows if r.get("unlocked", True)]
         if not visible_unlocked:
-            self._status_label.configure(text="⚠ No visible unlocked brawlers", text_color=GOLD)
+            self._status_label.configure(text="âš  No visible unlocked brawlers", text_color=GOLD)
             return
 
         mode = self._selection_mode_var.get() if hasattr(self, "_selection_mode_var") else "Multi"
@@ -406,13 +406,13 @@ class Dashboard(ctk.CTk):
 
         self._refresh_brawler_grid()
         self._update_sidebar_brawler()
-        self._status_label.configure(text=f"✔ Selected {len(new_entries)} visible brawler(s)", text_color=GREEN)
+        self._status_label.configure(text=f"âœ” Selected {len(new_entries)} visible brawler(s)", text_color=GREEN)
 
     def _clear_brawler_selection(self):
         self.brawlers_data = []
         self._refresh_brawler_grid()
         self._update_sidebar_brawler()
-        self._status_label.configure(text="✔ Brawler selection cleared", text_color=GREEN)
+        self._status_label.configure(text="âœ” Brawler selection cleared", text_color=GREEN)
 
     def _load_excluded_brawlers(self):
         """Load excluded brawlers from bot_config."""
@@ -1019,7 +1019,7 @@ class Dashboard(ctk.CTk):
             ).pack(side="left", padx=S(12), pady=S(8))
             ctk.CTkLabel(
                 row,
-                text=f"{v}W / {d}L / {dr}D  •  {total} matches",
+                text=f"{v}W / {d}L / {dr}D  â€¢  {total} matches",
                 font=(FONT_FAMILY_ALT, S(11)),
                 text_color=TXT,
             ).pack(side="left", padx=S(8))
@@ -1155,17 +1155,17 @@ class Dashboard(ctk.CTk):
         def open_discord():
             try:
                 webbrowser.open(self._credits_discord_url)
-                self._status_label.configure(text="✔ Opened Discord link", text_color=GREEN)
+                self._status_label.configure(text="âœ” Opened Discord link", text_color=GREEN)
             except Exception:
-                self._status_label.configure(text="⚠ Could not open Discord link", text_color=RED)
+                self._status_label.configure(text="âš  Could not open Discord link", text_color=RED)
 
         def copy_discord():
             try:
                 self.clipboard_clear()
                 self.clipboard_append(self._credits_discord_url)
-                self._status_label.configure(text="✔ Discord link copied", text_color=GREEN)
+                self._status_label.configure(text="âœ” Discord link copied", text_color=GREEN)
             except Exception:
-                self._status_label.configure(text="⚠ Could not copy Discord link", text_color=RED)
+                self._status_label.configure(text="âš  Could not copy Discord link", text_color=RED)
 
         ctk.CTkButton(btn_row, text="Open Discord",
                       fg_color=BLUE, hover_color=CYAN, text_color=BG,
@@ -1852,7 +1852,7 @@ class Dashboard(ctk.CTk):
         mode_txt = "Single" if getattr(self, "_selection_mode_var", None) and self._selection_mode_var.get() == "Single" else "Multi"
         if hasattr(self, "_sel_count_label"):
             self._sel_count_label.configure(
-                text=(f"{n} selected" if n != 1 else "1 selected") + f"  •  {mode_txt}",
+                text=(f"{n} selected" if n != 1 else "1 selected") + f"  â€¢  {mode_txt}",
                 text_color=ACCENT if n > 0 else DIM)
 
     def _render_brawler_grid_chunk(self, cols=6, has_scan=False):
@@ -3311,7 +3311,7 @@ class Dashboard(ctk.CTk):
         kpi_row.pack(fill="x", padx=S(12), pady=(S(1), S(4)))
         kpi_row.grid_columnconfigure((0, 1, 2, 3, 4), weight=1)
 
-        def make_kpi(col, title, value="—", color=DIM):
+        def make_kpi(col, title, value="â€”", color=DIM):
             card = ctk.CTkFrame(kpi_row, fg_color=SECTION, corner_radius=S(8), height=S(54))
             card.grid(row=0, column=col, padx=S(3), pady=S(2), sticky="nsew")
             card.pack_propagate(False)
@@ -3327,7 +3327,7 @@ class Dashboard(ctk.CTk):
         self._live_kpi_kda = make_kpi(0, "KDA", "0.00", DIM)
         self._live_kpi_dpm = make_kpi(1, "DMG / MIN", "0", DIM)
         self._live_kpi_win_pace = make_kpi(2, "WINS / H", "0.0", DIM)
-        self._live_kpi_target_gap = make_kpi(3, "TO TARGET", "—", DIM)
+        self._live_kpi_target_gap = make_kpi(3, "TO TARGET", "â€”", DIM)
         self._live_kpi_feed = make_kpi(4, "LIVE FEED", "waiting", GOLD)
 
         # cOMBAT (full width)
@@ -3604,7 +3604,7 @@ class Dashboard(ctk.CTk):
         if not d:
             if self.bot_running and self._current_page == "live":
                 _s = self._set
-                _s(self._live_status, "ls_t", text="● RUNNING (waiting data)", text_color=GOLD)
+                _s(self._live_status, "ls_t", text="â— RUNNING (waiting data)", text_color=GOLD)
             return
 
         _s = self._set  # local alias for speed
@@ -3734,7 +3734,7 @@ class Dashboard(ctk.CTk):
             self._live_trophy_bar.set(0)
             _s(self._live_trophy_pct, "tp", text="", text_color=DIM)
             _s(self._live_trophy_bar, "tb_pc", progress_color=GOLD)
-            _s(self._live_kpi_target_gap, "kpi_gap", text="—", text_color=DIM)
+            _s(self._live_kpi_target_gap, "kpi_gap", text="â€”", text_color=DIM)
 
         last_result = str(d.get("last_result", "") or "").lower()
         last_delta = d.get("last_trophy_delta")
