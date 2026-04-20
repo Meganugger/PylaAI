@@ -1332,6 +1332,21 @@ class Play(Movement):
 
         return combined_walls
 
+    @staticmethod
+    def _is_close_range_brawler(brawler_info, safe_range, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        return attack_range <= 260 or (safe_range <= 10 and playstyle in {"tank", "assassin"})
+
+    @staticmethod
+    def _get_contact_attack_threshold(brawler_info, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        contact_ratio = 0.62
+        if playstyle == "tank":
+            contact_ratio = 0.70
+        elif playstyle == "assassin":
+            contact_ratio = 0.66
+        return min(attack_range * 0.95, max(78.0, attack_range * contact_ratio))
+
     def _update_enemy_memory(self, enemies):
         now = time.time()
         for enemy in enemies:
@@ -1532,6 +1547,8 @@ class Play(Movement):
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
+        close_range_brawler = self._is_close_range_brawler(brawler_info, safe_range, attack_range)
+        contact_attack_threshold = self._get_contact_attack_threshold(brawler_info, attack_range)
 
         player_pos = self.get_player_pos(player_data)
         showdown_fog_escape = None
@@ -1575,6 +1592,9 @@ class Play(Movement):
         if enemy_coords is None:
             return self.no_enemy_movement(player_data, wall_context)
         enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
+        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
+        if close_range_contact:
+            enemy_hittable = True
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
 
@@ -1683,6 +1703,8 @@ class Play(Movement):
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
+            if close_range_contact:
+                enemy_hittable = True
             # print("enemy hittable", enemy_hittable, "enemy_distance", enemy_distance)
             if enemy_hittable:
                 self.attack()
