@@ -1357,6 +1357,21 @@ class Play(Movement):
             return enemy_distance < min(safe_range * 0.9, attack_range * 0.55)
         return False
 
+    @staticmethod
+    def _is_close_range_brawler(brawler_info, safe_range, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        return attack_range <= 260 or (safe_range <= 10 and playstyle in {"tank", "assassin"})
+
+    @staticmethod
+    def _get_contact_attack_threshold(brawler_info, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        contact_ratio = 0.62
+        if playstyle == "tank":
+            contact_ratio = 0.70
+        elif playstyle == "assassin":
+            contact_ratio = 0.66
+        return min(attack_range * 0.95, max(78.0, attack_range * contact_ratio))
+
     def _get_search_targets(self):
         width = self.window_controller.width
         height = self.window_controller.height
@@ -1740,6 +1755,8 @@ class Play(Movement):
         style = self._get_playstyle(brawler)
         effective_safe_range = int(safe_range * style["approach_factor"])
         effective_attack_range = attack_range * style["range_mult"]
+        close_range_brawler = self._is_close_range_brawler(brawler_info, safe_range, attack_range)
+        contact_attack_threshold = self._get_contact_attack_threshold(brawler_info, attack_range)
 
         player_pos = self.get_player_pos(player_data)
         current_time = time.time()
@@ -1798,6 +1815,9 @@ class Play(Movement):
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
         post_burst_defensive = self._is_post_burst_defensive(current_time)
+        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
+        if close_range_contact:
+            target_hittable = True
 
         if self.is_showdown_mode:
             cohesion_target = None
@@ -1941,7 +1961,9 @@ class Play(Movement):
             effective_attack_range,
             burst_active,
         )
-        should_fire = self._should_fire(enemy_distance, safe_range, effective_attack_range, burst_active)
+        should_fire = self._should_fire(enemy_distance, safe_range, effective_attack_range, burst_active) or (
+            close_range_contact and self.current_ammo > 0
+        )
         can_attack_now = (
             enemy_distance <= effective_attack_range
             and self.current_ammo > 0
@@ -1958,7 +1980,7 @@ class Play(Movement):
                 self.use_hypercharge()
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
-        if can_attack_now and self.target_info["hittable"]:
+        if can_attack_now and (self.target_info["hittable"] or close_range_contact):
             self.attack()
             self._consume_ammo(current_time)
             self.time_since_last_attack = current_time
