@@ -1534,6 +1534,9 @@ class Play(Movement):
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
 
         player_pos = self.get_player_pos(player_data)
+        showdown_fog_escape = None
+        if self.is_showdown_mode:
+            showdown_fog_escape = self._get_showdown_fog_escape_move(player_data, wall_context)
         if not self.is_there_enemy(enemy_data):
             if self.is_showdown_mode:
                 return self.no_enemy_movement(player_data, wall_context)
@@ -1574,15 +1577,6 @@ class Play(Movement):
         enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
-
-        if self.is_showdown_mode and not enemy_hittable:
-            fallback_move, fallback_reason = self._get_showdown_support_move(
-                player_pos,
-                wall_context,
-                allow_memory_chase=False,
-            )
-            if fallback_move:
-                return self._plan_analog_reason(fallback_move, fallback_reason)
 
         if self.is_showdown_mode:
             cohesion_target = None
@@ -1627,9 +1621,13 @@ class Play(Movement):
                     and enemy_distance <= attack_range * 1.05
                 ),
             )
+            movement_reason = "retreat" if enemy_distance <= safe_range else "engage"
+            if self.is_showdown_mode and showdown_fog_escape is not None:
+                movement = showdown_fog_escape
+                movement_reason = "fog_escape"
             movement = self._plan_analog_reason(
                 movement,
-                "retreat" if enemy_distance <= safe_range else "engage",
+                movement_reason,
             )
         else:
             # Determine initial movement direction
