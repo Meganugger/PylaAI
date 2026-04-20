@@ -940,6 +940,47 @@ class Play(Movement):
                 return True
         return False
 
+    def _get_wall_escape_angle(self, player_pos, desired_angle, wall_context):
+        wall_rects = wall_context.get("rectangles") or []
+        if not wall_rects:
+            return None
+
+        desired_angle = float(desired_angle) % 360.0
+        desired_rad = math.radians(desired_angle)
+        desired_dx = math.cos(desired_rad)
+        desired_dy = math.sin(desired_rad)
+        radius = max(self.TILE_SIZE * max(float(self.window_controller.scale_factor or 1.0), 0.75) * 2.4, 120.0)
+
+        weighted_dx = 0.0
+        weighted_dy = 0.0
+        total_weight = 0.0
+
+        for x1, y1, x2, y2 in wall_rects:
+            center_x = (x1 + x2) * 0.5
+            center_y = (y1 + y2) * 0.5
+            wall_dx = center_x - player_pos[0]
+            wall_dy = center_y - player_pos[1]
+            wall_distance = math.hypot(wall_dx, wall_dy)
+            if wall_distance < 1.0 or wall_distance > radius:
+                continue
+
+            forward_alignment = (wall_dx * desired_dx + wall_dy * desired_dy) / wall_distance
+            if forward_alignment < -0.25:
+                continue
+
+            distance_weight = max(0.0, (radius - wall_distance) / radius)
+            alignment_weight = max(0.15, forward_alignment + 0.35)
+            weight = distance_weight * alignment_weight
+            weighted_dx += wall_dx * weight
+            weighted_dy += wall_dy * weight
+            total_weight += weight
+
+        if total_weight <= 0.0:
+            return None
+
+        blocked_angle = self.angle_from_direction(weighted_dx / total_weight, weighted_dy / total_weight)
+        return self.angle_opposite(blocked_angle)
+
     def _find_best_angle(self, player_pos, desired_angle, wall_context, sweep_range=165, step=10):
         if not self.should_detect_walls or not wall_context.get("rectangles"):
             return float(desired_angle) % 360.0
@@ -952,6 +993,18 @@ class Play(Movement):
                 candidate = (float(desired_angle) + sign * offset) % 360.0
                 if not self._is_path_blocked_angle(player_pos, candidate, wall_context):
                     return candidate
+
+        escape_angle = self._get_wall_escape_angle(player_pos, desired_angle, wall_context)
+        if escape_angle is not None:
+            for offset in range(0, 181, step):
+                candidates = [float(escape_angle) % 360.0] if offset == 0 else [
+                    (float(escape_angle) + offset) % 360.0,
+                    (float(escape_angle) - offset) % 360.0,
+                ]
+                for candidate in candidates:
+                    if not self._is_path_blocked_angle(player_pos, candidate, wall_context):
+                        return candidate
+            return float(escape_angle) % 360.0
 
         return float(desired_angle) % 360.0
 
