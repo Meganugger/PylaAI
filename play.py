@@ -70,6 +70,7 @@ class Movement:
         self._showdown_locked_teammate = None
         self._showdown_locked_teammate_distance = float("inf")
         self._showdown_regroup_active = False
+        self._showdown_roam_spin_angle = 270.0
         self._movement_anchor_pos = None
         self._movement_anchor_command = ""
         self._movement_anchor_angle = None
@@ -835,29 +836,13 @@ class Play(Movement):
             fog_escape_move = self._get_showdown_fog_escape_move(player_data, wall_context)
             if fog_escape_move:
                 return self._plan_analog_reason(fog_escape_move, "fog_escape")
-
-            regroup_target, regroup_distance = self._get_showdown_regroup_target(player_position)
-            should_regroup = regroup_target and self._should_hold_showdown_regroup(regroup_distance)
-            if should_regroup:
-                regroup_move = self._get_move_toward(player_position, regroup_target, wall_context, allow_detour=True)
-                if regroup_move:
-                    return self._plan_analog_reason(regroup_move, "team_regroup")
-
-            teammate_target = None if regroup_target else self._get_teammate_centroid()
-            if teammate_target and self.get_distance(teammate_target, player_position) > self._showdown_regroup_distance:
-                regroup_move = self._get_move_toward(player_position, teammate_target, wall_context, allow_detour=True)
-                if regroup_move:
-                    return self._plan_analog_reason(regroup_move, "team_regroup")
-
-            last_enemy_pos = self._get_last_known_enemy_pos()
-            if last_enemy_pos is not None and (time.time() - self._last_enemy_seen_at) <= self._showdown_enemy_chase_timeout:
-                chase_move = self._get_move_toward(player_position, last_enemy_pos, wall_context, allow_detour=True)
-                if chase_move:
-                    return self._plan_analog_reason(chase_move, "memory_chase")
-
-            search_move = self._get_search_movement(player_position, wall_context)
-            if search_move:
-                return self._plan_analog_reason(search_move, "search")
+            support_move, support_reason = self._get_showdown_support_move(
+                player_position,
+                wall_context,
+                allow_memory_chase=True,
+            )
+            if support_move:
+                return self._plan_analog_reason(support_move, support_reason)
 
         if self._uses_analog_movement():
             desired_angle = 270.0 if self.game_mode == 3 else 0.0
@@ -1368,6 +1353,49 @@ class Play(Movement):
             self._showdown_regroup_active = teammate_distance > start_distance
         return self._showdown_regroup_active
 
+    def _get_showdown_follow_move(self, player_pos, wall_context):
+        teammate_target, teammate_distance = self._get_showdown_regroup_target(player_pos)
+        if teammate_target is None:
+            return None, float("inf")
+
+        follow_deadzone = max(72.0, min(110.0, self._showdown_team_pull_distance * 0.55))
+        if teammate_distance <= follow_deadzone:
+            return None, teammate_distance
+
+        teammate_move = self._get_move_toward(
+            player_pos,
+            teammate_target,
+            wall_context,
+            allow_detour=True,
+        )
+        return teammate_move, teammate_distance
+
+    def _get_showdown_roam_move(self, player_pos, wall_context):
+        self._showdown_roam_spin_angle = (self._showdown_roam_spin_angle + 15.0) % 360.0
+        return self._find_best_angle(player_pos, self._showdown_roam_spin_angle, wall_context)
+
+    def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True):
+        teammate_move, teammate_distance = self._get_showdown_follow_move(player_pos, wall_context)
+        if teammate_move is not None:
+            return teammate_move, "team_regroup"
+
+        if allow_memory_chase and teammate_distance == float("inf"):
+            last_enemy_pos = self._get_last_known_enemy_pos()
+            if last_enemy_pos is not None and (time.time() - self._last_enemy_seen_at) <= self._showdown_enemy_chase_timeout:
+                chase_move = self._get_move_toward(
+                    player_pos,
+                    last_enemy_pos,
+                    wall_context,
+                    allow_detour=True,
+                )
+                if chase_move:
+                    return chase_move, "memory_chase"
+
+        roam_move = self._get_showdown_roam_move(player_pos, wall_context)
+        if roam_move is not None:
+            return roam_move, "roam"
+        return None, None
+
     def _plan_analog_reason(self, movement, reason):
         if isinstance(movement, (float, int)):
             self._planned_analog_reason = reason
@@ -1455,20 +1483,19 @@ class Play(Movement):
         player_pos = self.get_player_pos(player_data)
         if not self.is_there_enemy(enemy_data):
             if self.is_showdown_mode:
-                team_regroup_target, team_regroup_distance = self._get_showdown_regroup_target(player_pos)
-                should_team_regroup = team_regroup_target and self._should_hold_showdown_regroup(team_regroup_distance)
-            else:
-                team_regroup_target = self._get_teammate_centroid()
-                team_regroup_distance = (
-                    self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
-                )
-                should_team_regroup = team_regroup_target and team_regroup_distance > 160
+                return self.no_enemy_movement(player_data, wall_context)
+
+            team_regroup_target = self._get_teammate_centroid()
+            team_regroup_distance = (
+                self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
+            )
+            should_team_regroup = team_regroup_target and team_regroup_distance > 160
             if should_team_regroup:
                 team_move = self._get_move_toward(
                     player_pos,
                     team_regroup_target,
                     wall_context,
-                    allow_detour=self.is_showdown_mode,
+                    allow_detour=False,
                 )
                 if team_move:
                     return self._plan_analog_reason(team_move, "team_regroup")
@@ -1491,11 +1518,21 @@ class Play(Movement):
         enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, wall_context, "attack")
         if enemy_coords is None:
             return self.no_enemy_movement(player_data, wall_context)
+        enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
 
+        if self.is_showdown_mode and not enemy_hittable:
+            fallback_move, fallback_reason = self._get_showdown_support_move(
+                player_pos,
+                wall_context,
+                allow_memory_chase=False,
+            )
+            if fallback_move:
+                return self._plan_analog_reason(fallback_move, fallback_reason)
+
         if self.is_showdown_mode:
-            cohesion_target, _ = self._get_showdown_regroup_target(player_pos)
+            cohesion_target = None
         else:
             cohesion_target = self._get_teammate_centroid()
         if cohesion_target:
@@ -1531,6 +1568,8 @@ class Play(Movement):
                 retreat=enemy_distance <= safe_range,
                 current_time=current_time,
                 should_strafe=(
+                    not self.is_showdown_mode
+                    and
                     enemy_distance > safe_range * 0.8
                     and enemy_distance <= attack_range * 1.05
                 ),
