@@ -1744,6 +1744,9 @@ class Play(Movement):
         player_pos = self.get_player_pos(player_data)
         current_time = time.time()
         self._update_ammo(current_time, brawler)
+        showdown_fog_escape = None
+        if self.is_showdown_mode:
+            showdown_fog_escape = self._get_showdown_fog_escape_move(player_data, wall_context)
         if not self.is_there_enemy(enemy_data):
             if self.is_showdown_mode:
                 return self.no_enemy_movement(player_data, wall_context)
@@ -1795,14 +1798,6 @@ class Play(Movement):
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
         post_burst_defensive = self._is_post_burst_defensive(current_time)
-        if self.is_showdown_mode and not target_hittable:
-            fallback_move, fallback_reason = self._get_showdown_support_move(
-                player_pos,
-                wall_context,
-                allow_memory_chase=False,
-            )
-            if fallback_move:
-                return self._plan_analog_reason(fallback_move, fallback_reason)
 
         if self.is_showdown_mode:
             cohesion_target = None
@@ -1845,12 +1840,15 @@ class Play(Movement):
         })
 
         if self._uses_analog_movement():
+            showdown_retreat = self.is_showdown_mode and enemy_distance <= safe_range
             movement = self._get_analog_engagement_move(
                 player_pos,
                 direction_x,
                 direction_y,
                 wall_context,
-                retreat=should_retreat_for_ammo or enemy_distance <= effective_safe_range,
+                retreat=showdown_retreat or should_retreat_for_ammo or (
+                    not self.is_showdown_mode and enemy_distance <= effective_safe_range
+                ),
                 current_time=current_time,
                 style=style,
                 should_strafe=(
@@ -1863,9 +1861,15 @@ class Play(Movement):
                     and self.current_ammo > 0
                 ),
             )
+            movement_reason = "retreat" if showdown_retreat or should_retreat_for_ammo or (
+                not self.is_showdown_mode and enemy_distance <= effective_safe_range
+            ) else "engage"
+            if self.is_showdown_mode and showdown_fog_escape is not None:
+                movement = showdown_fog_escape
+                movement_reason = "fog_escape"
             movement = self._plan_analog_reason(
                 movement,
-                "retreat" if should_retreat_for_ammo or enemy_distance <= effective_safe_range else "engage",
+                movement_reason,
             )
         else:
             # Determine initial movement direction
