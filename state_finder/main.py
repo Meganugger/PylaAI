@@ -32,6 +32,7 @@ region_data = load_toml_as_dict("./cfg/lobby_config.toml")['template_matching']
 region_data.setdefault("reward_claim_corner", [0, 0, 190, 120])
 region_data.setdefault("reward_claim_button", [620, 860, 680, 180])
 region_data.setdefault("reward_claim_title", [420, 120, 1080, 220])
+region_data.setdefault("trophies_screen", [1545, 915, 365, 168])
 debug = load_toml_as_dict("./cfg/general_config.toml").get("super_debug", "no") == "yes"
 _last_state_debug_value = None
 _last_state_debug_time = 0.0
@@ -307,6 +308,8 @@ def get_in_game_state(image):
         return "shop"
     if is_in_offer_popup(image):
         return "popup"
+    if is_in_trophy_reward(image):
+        return "trophy_reward"
     if is_in_reward_claim(image):
         return "reward_claim"
     if is_in_lobby(image):
@@ -341,6 +344,10 @@ def is_in_reward_claim(image) -> bool:
         return True
     detected, _button_center = _is_mastery_reward_screen(image)
     return detected
+
+
+def is_in_trophy_reward(image) -> bool:
+    return is_template_in_region(image, path + 'trophies_screen.png', region_data["trophies_screen"])
 
 
 def is_in_lobby(image) -> bool:
