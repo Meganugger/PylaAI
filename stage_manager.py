@@ -80,6 +80,12 @@ class StageManager:
         self._last_api_lobby_sync_attempt_at = 0.0
         self._lobby_ocr_warmup_started = False
         self._pending_webhook_milestone_summary = None
+        self._lobby_visible_since = 0.0
+        self._last_start_press_at = 0.0
+        self._start_press_attempts = 0
+        self._start_wait_logged_at = 0.0
+        self._lobby_start_settle_delay = 0.45
+        self._lobby_start_retry_delay = 1.35
 
     def _is_easyocr_ready(self):
         try:
@@ -107,6 +113,46 @@ class StageManager:
             name="easyocr-lobby-sync-warmup",
             daemon=True,
         ).start()
+
+    def _note_lobby_visible(self, now=None):
+        if now is None:
+            now = time.time()
+        if not self._lobby_visible_since:
+            self._lobby_visible_since = now
+
+    def _reset_lobby_start_tracking(self):
+        self._lobby_visible_since = 0.0
+        self._last_start_press_at = 0.0
+        self._start_press_attempts = 0
+        self._start_wait_logged_at = 0.0
+
+    def _try_press_lobby_start(self):
+        now = time.time()
+        self._note_lobby_visible(now)
+        lobby_visible_for = now - self._lobby_visible_since
+
+        if lobby_visible_for < self._lobby_start_settle_delay:
+            if now - self._start_wait_logged_at >= 0.75:
+                print(
+                    f"[START] waiting for lobby UI to settle before pressing Q "
+                    f"({lobby_visible_for:.2f}s)"
+                )
+                self._start_wait_logged_at = now
+            return False
+
+        if self._last_start_press_at and (now - self._last_start_press_at) < self._lobby_start_retry_delay:
+            return False
+
+        self.window_controller.keys_up(list("wasd"))
+        self.window_controller.press_key("Q")
+        self._last_start_press_at = now
+        self._start_press_attempts += 1
+        self._start_wait_logged_at = 0.0
+        if self._start_press_attempts == 1:
+            print("[RESULT] Pressed Q to start a match")
+        else:
+            print(f"[RESULT] Lobby still visible; retrying Q press ({self._start_press_attempts})")
+        return True
 
     @staticmethod
     def _coerce_int(value, default=0):
@@ -239,6 +285,7 @@ class StageManager:
         self._pending_verified_result = None
         self._api_lobby_sync_attempts = 0
         self._last_api_lobby_sync_attempt_at = 0.0
+        self._reset_lobby_start_tracking()
         if self.brawlers_pick_data:
             self.Trophy_observer.begin_match(self.brawlers_pick_data[0]['brawler'])
         return True
@@ -574,10 +621,7 @@ class StageManager:
             else:
                 print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
 
-        # q btn is over the start btn
-        self.window_controller.keys_up(list("wasd"))
-        self.window_controller.press_key("Q")
-        print("[RESULT] Pressed Q to start a match")
+        self._try_press_lobby_start()
 
     def click_brawl_stars(self, frame):
         if isinstance(frame, np.ndarray):
@@ -736,6 +780,10 @@ class StageManager:
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]
             state = "end"
+        if state == "lobby":
+            self._note_lobby_visible()
+        else:
+            self._reset_lobby_start_tracking()
         if state == "lobby" and not self.lobby_start_enabled:
             return
 
