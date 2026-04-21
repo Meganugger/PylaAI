@@ -638,6 +638,10 @@ class Play(Movement):
         }
         self.wall_history = []
         self.wall_history_length = 3  # Number of frames to keep walls
+        self.wall_box_min_size = float(bot_config.get("wall_box_min_size", 20))
+        self.wall_box_merge_iou = float(bot_config.get("wall_box_merge_iou", 0.25))
+        self.wall_box_merge_center_distance = float(bot_config.get("wall_box_merge_center_distance", 35))
+        self.wall_history_min_hits = max(1, int(bot_config.get("wall_history_min_hits", 1)))
         self.wall_context = {
             "signature": None,
             "rectangles": [],
@@ -1683,11 +1687,75 @@ class Play(Movement):
         tile_data = self.Detect_tile_detector.detect_objects(frame, conf_tresh=self.wall_detection_confidence)
         return tile_data
 
+    @staticmethod
+    def _normalize_box(raw_box):
+        x1, y1, x2, y2 = map(float, raw_box[:4])
+        if x1 > x2:
+            x1, x2 = x2, x1
+        if y1 > y2:
+            y1, y2 = y2, y1
+        return [int(x1), int(y1), int(x2), int(y2)]
+
+    @staticmethod
+    def _box_iou(a, b):
+        ix1 = max(a[0], b[0])
+        iy1 = max(a[1], b[1])
+        ix2 = min(a[2], b[2])
+        iy2 = min(a[3], b[3])
+        if ix1 >= ix2 or iy1 >= iy2:
+            return 0.0
+        intersection = (ix2 - ix1) * (iy2 - iy1)
+        area_a = max(1, (a[2] - a[0]) * (a[3] - a[1]))
+        area_b = max(1, (b[2] - b[0]) * (b[3] - b[1]))
+        union = area_a + area_b - intersection
+        return intersection / union if union > 0 else 0.0
+
+    @staticmethod
+    def _box_center_distance(a, b):
+        acx, acy = (a[0] + a[2]) * 0.5, (a[1] + a[3]) * 0.5
+        bcx, bcy = (b[0] + b[2]) * 0.5, (b[1] + b[3]) * 0.5
+        return math.hypot(acx - bcx, acy - bcy)
+
+    def _merge_wall_boxes(self, boxes, min_hits=1):
+        clusters = []
+        for raw_box in boxes:
+            box = self._normalize_box(raw_box)
+            width = box[2] - box[0]
+            height = box[3] - box[1]
+            if width < self.wall_box_min_size or height < self.wall_box_min_size:
+                continue
+
+            matched = None
+            for cluster in clusters:
+                if (
+                    self._box_iou(cluster["box"], box) >= self.wall_box_merge_iou
+                    or self._box_center_distance(cluster["box"], box) <= self.wall_box_merge_center_distance
+                ):
+                    matched = cluster
+                    break
+
+            if matched is None:
+                clusters.append({"box": box, "hits": 1})
+                continue
+
+            old = matched["box"]
+            hits = matched["hits"]
+            matched["box"] = [
+                int((old[0] * hits + box[0]) / (hits + 1)),
+                int((old[1] * hits + box[1]) / (hits + 1)),
+                int((old[2] * hits + box[2]) / (hits + 1)),
+                int((old[3] * hits + box[3]) / (hits + 1)),
+            ]
+            matched["hits"] = hits + 1
+
+        return [cluster["box"] for cluster in clusters if cluster["hits"] >= min_hits]
+
     def process_tile_data(self, tile_data):
         walls = []
         for class_name, boxes in tile_data.items():
             if not self._is_non_blocking_tile_class(class_name):
                 walls.extend(boxes)
+        walls = self._merge_wall_boxes(walls)
 
         # Add walls to history
         self.wall_history.append(walls)
@@ -1699,18 +1767,16 @@ class Play(Movement):
         return combined_walls
 
     def combine_walls_from_history(self):
-        wall_counts = {}
-        for walls in self.wall_history:
-            for wall in walls:
-                wall_key = tuple(wall)
-                wall_counts[wall_key] = wall_counts.get(wall_key, 0) + 1
+        if not self.wall_history:
+            return []
 
-        threshold = 1
-
-        combined_walls = [list(wall) for wall, count in wall_counts.items() if count >= threshold]
-        # print(f"Combined walls: {combined_walls}")
-
-        return combined_walls
+        current_walls = self.wall_history[-1]
+        historical_walls = [wall for walls in self.wall_history for wall in walls]
+        stable_history = self._merge_wall_boxes(
+            historical_walls,
+            min_hits=max(2, self.wall_history_min_hits),
+        )
+        return self._merge_wall_boxes(current_walls + stable_history)
 
     def _update_ammo(self, current_time, brawler):
         reload_speed = float(self.brawlers_info.get(brawler, {}).get("reload_speed", 1.5))
