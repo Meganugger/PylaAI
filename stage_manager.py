@@ -670,11 +670,29 @@ class StageManager:
 
         self.window_controller.press_continue()
 
+    def _resolve_end_transition_state(self, screenshot, previous_state, end_started_at, end_attempts):
+        state_without_ocr = get_state(screenshot, allow_reward_ocr=False)
+        if state_without_ocr != "match":
+            return state_without_ocr
+
+        self._ensure_lobby_ocr_warmup(delay_seconds=0.35)
+        allow_reward_ocr = (
+            self._is_easyocr_ready()
+            and (end_attempts >= 1 or (time.time() - end_started_at) >= 0.9)
+        )
+        if allow_reward_ocr:
+            state_with_ocr = get_state(screenshot, allow_reward_ocr=True)
+            if state_with_ocr != "match":
+                return state_with_ocr
+
+        return previous_state
+
     def end_game(self, frame=None, known_result=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
 
         found_game_result = False
-        current_state = get_state(screenshot, allow_reward_ocr=True)
+        end_started_at = time.time()
+        current_state = get_state(screenshot, allow_reward_ocr=False)
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
         if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
@@ -692,14 +710,24 @@ class StageManager:
                 self.claim_reward(screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = self._resolve_end_transition_state(
+                    screenshot,
+                    current_state,
+                    end_started_at,
+                    end_attempts,
+                )
                 end_attempts += 1
                 continue
             if current_state == "star_drop":
                 self.click_star_drop()
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = self._resolve_end_transition_state(
+                    screenshot,
+                    current_state,
+                    end_started_at,
+                    end_attempts,
+                )
                 end_attempts += 1
                 continue
             state_result = None
@@ -757,7 +785,12 @@ class StageManager:
             if debug: print("Game has ended, pressing Q")
             time.sleep(0.35)
             screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot, allow_reward_ocr=True)
+            current_state = self._resolve_end_transition_state(
+                screenshot,
+                current_state,
+                end_started_at,
+                end_attempts,
+            )
             end_attempts += 1
         if end_attempts >= max_end_attempts:
             print("End game screen stuck for too long, forcing continue")
