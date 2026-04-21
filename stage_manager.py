@@ -45,6 +45,7 @@ class StageManager:
             'brawler_selection': self.quit_shop,
             'popup': self.close_pop_up,
             'reward_claim': self.claim_reward,
+            'trophy_reward': self.claim_reward,
             'match': lambda: 0,
             'end': self.end_game,
             'end_victory': self.end_game,
@@ -612,11 +613,15 @@ class StageManager:
         fallback_center = get_reward_claim_button_center(screenshot)
         if fallback_center:
             self.window_controller.click(*fallback_center)
+            time.sleep(0.08)
+            self.window_controller.press_continue(include_fallback_clicks=False)
             return
 
         reward_action = find_reward_claim_action(screenshot)
         if reward_action:
             self.window_controller.click(*reward_action)
+            time.sleep(0.08)
+            self.window_controller.press_continue(include_fallback_clicks=False)
             return
 
         self.window_controller.press_continue()
@@ -632,7 +637,27 @@ class StageManager:
             current_state = f"end_{known_result}"
         max_end_attempts = 30
         end_attempts = 0
-        while str(current_state).startswith("end") and end_attempts < max_end_attempts:
+        while (
+            (
+                str(current_state).startswith("end")
+                or current_state in {"reward_claim", "trophy_reward", "star_drop"}
+            )
+            and end_attempts < max_end_attempts
+        ):
+            if current_state in {"reward_claim", "trophy_reward"}:
+                self.claim_reward(screenshot)
+                time.sleep(0.2)
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot, allow_reward_ocr=True)
+                end_attempts += 1
+                continue
+            if current_state == "star_drop":
+                self.click_star_drop()
+                time.sleep(0.2)
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot, allow_reward_ocr=True)
+                end_attempts += 1
+                continue
             state_result = None
             if isinstance(current_state, str) and current_state.startswith("end_"):
                 state_result = current_state.split("_", 1)[1]
@@ -686,7 +711,7 @@ class StageManager:
                         sys.exit(0)
             self.window_controller.press_continue()
             if debug: print("Game has ended, pressing Q")
-            time.sleep(1)
+            time.sleep(0.35)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot, allow_reward_ocr=True)
             end_attempts += 1
