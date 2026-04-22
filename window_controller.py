@@ -359,7 +359,7 @@ class WindowController:
             self.touch_move(self.joystick_x + delta_x, self.joystick_y + delta_y, pointer_id=self.PID_JOYSTICK)
             self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
 
-    def click(self, x: int, y: int, delay=0.05, already_include_ratio=True):
+    def click(self, x: int, y: int, delay=0.005, already_include_ratio=True):
         if not already_include_ratio:
             x = x * self.width_ratio
             y = y * self.height_ratio
@@ -368,7 +368,7 @@ class WindowController:
         time.sleep(delay)
         self.touch_up(x, y, pointer_id=self.PID_ATTACK)
 
-    def press_key(self, key, delay=0.05):
+    def press_key(self, key, delay=0.005):
         if key not in key_coords_dict:
             return
         x, y = key_coords_dict[key]
@@ -377,7 +377,7 @@ class WindowController:
         self.click(target_x, target_y, delay)
 
     def press_continue(self, hold_seconds=0.0, include_fallback_clicks=True):
-        delay = float(hold_seconds) if hold_seconds and hold_seconds > 0 else 0.05
+        delay = float(hold_seconds) if hold_seconds and hold_seconds > 0 else 0.005
         self.press_key("Q", delay)
         if not include_fallback_clicks:
             return
