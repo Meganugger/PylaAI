@@ -371,6 +371,29 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     c += 1
                     continue
 
+                loop_now = time.time()
+                self.Play._last_start_request_time = float(
+                    getattr(self.Stage_manager, "_last_start_press_at", 0.0) or 0.0
+                )
+                recent_start_request = getattr(
+                    self.Play,
+                    "has_recent_start_request",
+                    lambda *_args, **_kwargs: False,
+                )(loop_now)
+                recent_match_context = getattr(
+                    self.Play,
+                    "has_recent_match_context",
+                    lambda *_args, **_kwargs: False,
+                )(loop_now)
+                play_allowed = (
+                    self.current_state == "match"
+                    or recent_match_context
+                    or recent_start_request
+                )
+                if not play_allowed:
+                    c += 1
+                    continue
+
                 brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                 if self.Play.current_brawler != brawler:
                     self.Play.current_brawler = brawler
