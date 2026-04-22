@@ -128,6 +128,14 @@ class StageManager:
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
 
+    def _restart_lobby_settle_window(self, now=None):
+        if now is None:
+            now = time.time()
+        self._lobby_visible_since = now
+        self._last_start_press_at = 0.0
+        self._start_press_attempts = 0
+        self._start_wait_logged_at = 0.0
+
     def _delay_lobby_start(self, seconds, reason=""):
         now = time.time()
         self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
@@ -572,6 +580,7 @@ class StageManager:
                 self._match_in_progress = False
                 self._lobby_sync_started_at = 0.0
                 self._pending_verified_result = None
+                self._restart_lobby_settle_window()
             if not synced:
                 if self._pending_verified_result:
                     print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
@@ -580,12 +589,14 @@ class StageManager:
                 self._awaiting_lobby_result_sync = False
                 self._match_in_progress = False
                 self._lobby_sync_started_at = 0.0
+                self._restart_lobby_settle_window()
         elif self._awaiting_lobby_result_sync:
             print("[RESULT] lobby reached after direct result commit; skipping OCR fallback")
             self._awaiting_lobby_result_sync = False
             self._match_in_progress = False
             self._lobby_sync_started_at = 0.0
             self._pending_verified_result = None
+            self._restart_lobby_settle_window()
         self._flush_webhook_milestone(data)
         type_of_push, value, push_current_brawler_till = self._resolve_push_progress()
 
