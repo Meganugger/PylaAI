@@ -332,14 +332,14 @@ class Movement:
         return True
 
     def use_hypercharge(self):
-        if not self._can_issue_live_input():
+        if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
         print("Using hypercharge")
         self.window_controller.press_key("H")
         return True
 
     def use_gadget(self):
-        if not self._can_issue_live_input():
+        if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
         if getattr(self, "gadget_cooldown", 0) > 0:
             current_time = time.time()
@@ -351,7 +351,7 @@ class Movement:
         return True
 
     def use_super(self):
-        if not self._can_issue_live_input():
+        if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
         if getattr(self, "super_cooldown", 0) > 0:
             current_time = time.time()
@@ -627,6 +627,18 @@ class Play(Movement):
         self.last_gadget_time = 0.0
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
+        self.entity_detection_retry_interval = float(
+            bot_config.get("entity_detection_retry_interval", 0.18)
+        )
+        self.recent_player_restore_max_age = float(
+            bot_config.get("recent_player_restore_max_age", 0.45)
+        )
+        self.recent_player_restore_support_age = float(
+            bot_config.get("recent_player_restore_support_age", 0.25)
+        )
+        self.recent_player_restore_solo_age = float(
+            bot_config.get("recent_player_restore_solo_age", 0.14)
+        )
         self._runtime_state = "starting"
         self._last_state_probe_runtime = ""
         self._last_state_probe_result = ""
@@ -643,7 +655,10 @@ class Play(Movement):
         self._last_valid_player_bbox = None
         self._last_valid_player_seen_at = 0.0
         self._last_retry_player_log_time = 0.0
+        self._last_retry_detection_time = 0.0
         self._last_start_request_time = 0.0
+        self._last_live_player_source = "base"
+        self._allow_skill_inputs = True
         self._teammate_positions = []
         self._last_known_enemies = []
         self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
@@ -796,18 +811,19 @@ class Play(Movement):
             return data
 
         player_age = current_time - self._last_valid_player_seen_at
-        if player_age > 0.8:
+        if player_age > self.recent_player_restore_max_age:
             return data
 
         supporting_entities = self._entity_count(data, "enemy") + self._entity_count(data, "teammate")
-        has_recent_match = (
-            runtime_state == "match"
-            and (current_time - self._last_confirmed_match_time) <= 1.0
-        )
+        has_recent_match = runtime_state == "match" and self.has_recent_match_context(current_time)
         allow_restore = False
-        if supporting_entities > 0 and has_recent_match:
+        if (
+            supporting_entities > 0
+            and has_recent_match
+            and player_age <= self.recent_player_restore_support_age
+        ):
             allow_restore = True
-        elif has_recent_match and player_age <= 0.35:
+        elif has_recent_match and player_age <= self.recent_player_restore_solo_age:
             allow_restore = True
 
         if not allow_restore:
@@ -815,6 +831,7 @@ class Play(Movement):
 
         restored = dict(data)
         restored["player"] = [list(self._last_valid_player_bbox)]
+        restored["_player_source"] = "restored"
         if debug and (current_time - self._last_no_player_log_time >= 1.5):
             print(
                 "[MATCH] reusing recent player detection "
@@ -1171,23 +1188,35 @@ class Play(Movement):
         if current_time is None:
             current_time = time.time()
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
+        if data.get("player"):
+            data["_player_source"] = "base"
+            return self.stabilize_entity_roles(frame, data)
+
+        supporting_entities = (
+            self._entity_count(data, "enemy")
+            + self._entity_count(data, "teammate")
+        )
         allow_retry = (
             self.entity_detection_retry_confidence < self.entity_detection_confidence
             and (
-                runtime_state == "match"
+                supporting_entities > 0
+                or runtime_state == "match"
                 or self.has_recent_match_context(current_time)
             )
         )
         if not data.get("player") and allow_retry:
-            retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
-            if retry_data.get("player"):
-                if debug and (current_time - self._last_retry_player_log_time) >= 2.0:
-                    print(
-                        "[DBG] player recovered with lower entity threshold "
-                        f"{self.entity_detection_retry_confidence:.2f}"
-                    )
-                    self._last_retry_player_log_time = current_time
-                data = retry_data
+            if (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
+                self._last_retry_detection_time = current_time
+                retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+                if retry_data.get("player"):
+                    if debug and (current_time - self._last_retry_player_log_time) >= 2.0:
+                        print(
+                            "[DBG] player recovered with lower entity threshold "
+                            f"{self.entity_detection_retry_confidence:.2f}"
+                        )
+                        self._last_retry_player_log_time = current_time
+                    retry_data["_player_source"] = "retry"
+                    data = retry_data
         return self.stabilize_entity_roles(frame, data)
 
     def is_path_blocked(self, player_pos, move_direction, wall_context, distance=None):  # Increased distance
@@ -1961,6 +1990,12 @@ class Play(Movement):
         data = self.validate_game_data(data)
         self.track_no_detections(data)
         if data:
+            player_source = str(data.get("_player_source", "base") or "base")
+            self._last_live_player_source = player_source
+            self._allow_skill_inputs = (
+                player_source == "base"
+                or (player_source == "retry" and raw_supporting_entities > 0)
+            )
             self._remember_player_detection(data, current_time)
             if (
                 self._is_plausible_player_detection(data)
@@ -2008,6 +2043,7 @@ class Play(Movement):
                     self._reset_match_state_guard()
                     self._runtime_state = "match"
         if not data:
+            self._allow_skill_inputs = False
             self._reset_match_state_guard()
             self._reset_wall_stuck_state(current_time)
             self.escape_state["phase"] = None
@@ -2078,18 +2114,24 @@ class Play(Movement):
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
         hud_hsv = None
         hud_origin = (0, 0)
-        if should_check_hypercharge or should_check_gadget or should_check_super:
+        if self._allow_skill_inputs and (should_check_hypercharge or should_check_gadget or should_check_super):
             hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
-        if should_check_hypercharge:
+        if self._allow_skill_inputs and should_check_hypercharge:
             self.is_hypercharge_ready = self.check_if_hypercharge_ready(hud_hsv, hud_origin)
             self.time_since_hypercharge_checked = current_time
-        if should_check_gadget:
+        else:
+            self.is_hypercharge_ready = False
+        if self._allow_skill_inputs and should_check_gadget:
             self.is_gadget_ready = self.check_if_gadget_ready(hud_hsv, hud_origin)
             self.time_since_gadget_checked = current_time
-        if should_check_super:
+        else:
+            self.is_gadget_ready = False
+        if self._allow_skill_inputs and should_check_super:
             self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
             self.time_since_super_checked = current_time
+        else:
+            self.is_super_ready = False
 
         self.current_frame = frame
         movement = self.loop(brawler, data, current_time, wall_context)

@@ -307,7 +307,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager.set_lobby_start_enabled(False)
 
         def main(self): #this is for timer to stop after time
-            s_time = time.time()
+            s_time = time.monotonic()
             c = 0
             while True:
                 if self._stop_event.is_set():
@@ -332,21 +332,29 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         cprint("stopping bot fully", "#AAE5A4")
                         break
 
-                if abs(s_time - time.time()) > 1:
-                    elapsed = time.time() - s_time
+                ips_now = time.monotonic()
+                if ips_now - s_time > 1:
+                    elapsed = ips_now - s_time
                     if elapsed > 0:
                         self.current_ips = c / elapsed
                         if debug:
                             print(f"{self.current_ips:.2f} IPS")
-                    s_time = time.time()
+                    s_time = ips_now
                     c = 0
 
                 wait_started_at = time.perf_counter()
                 frame_timeout = 15.0 if self.last_processed_frame_time <= 0 else 1.0
-                frame, frame_time = self.window_controller.get_current_frame(
-                    copy_frame=False,
-                    timeout=frame_timeout,
-                )
+                if self.last_processed_frame_time > 0:
+                    frame, frame_time = self.window_controller.wait_for_next_frame(
+                        last_frame_time=self.last_processed_frame_time,
+                        timeout=frame_timeout,
+                        copy_frame=False,
+                    )
+                else:
+                    frame, frame_time = self.window_controller.get_current_frame(
+                        copy_frame=False,
+                        timeout=frame_timeout,
+                    )
                 record_timing("frame_fetch", time.perf_counter() - wait_started_at, print_every=120)
                 if frame is None:
                     self.Play.window_controller.keys_up(list("wasd"))
