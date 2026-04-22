@@ -1145,7 +1145,7 @@ class Play(Movement):
         if not data.get("player") and self.entity_detection_retry_confidence < self.entity_detection_confidence:
             retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
             if retry_data.get("player"):
-                if visual_debug:
+                if debug:
                     print(
                         "[DBG] player recovered with lower entity threshold "
                         f"{self.entity_detection_retry_confidence:.2f}"
