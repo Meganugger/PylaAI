@@ -382,6 +382,8 @@ class Movement:
         return "S" if direction_y > 0 else "W"
 
     def attack(self):
+        if not self._can_issue_live_input():
+            return False
         if getattr(self, "attack_cooldown", 0) > 0:
             current_time = time.time()
             if current_time - self.last_attack_time < self.attack_cooldown:
@@ -391,11 +393,16 @@ class Movement:
         return True
 
     def use_hypercharge(self):
+        if not self._can_issue_live_input():
+            return False
         if debug:
             print("Using hypercharge")
         self.window_controller.press_key("H")
+        return True
 
     def use_gadget(self):
+        if not self._can_issue_live_input():
+            return False
         if getattr(self, "gadget_cooldown", 0) > 0:
             current_time = time.time()
             if current_time - self.last_gadget_time < self.gadget_cooldown:
@@ -407,6 +414,8 @@ class Movement:
         return True
 
     def use_super(self):
+        if not self._can_issue_live_input():
+            return False
         if getattr(self, "super_cooldown", 0) > 0:
             current_time = time.time()
             if current_time - self.last_super_time < self.super_cooldown:
@@ -726,6 +735,8 @@ class Play(Movement):
         self._last_match_evidence_time = 0.0
         self._last_valid_player_bbox = None
         self._last_valid_player_seen_at = 0.0
+        self._last_retry_player_log_time = 0.0
+        self._last_start_request_time = 0.0
 
     @staticmethod
     def _entity_count(data, key):
@@ -753,6 +764,17 @@ class Play(Movement):
         if now - self._last_match_evidence_time > 0.45:
             return False
         return True
+
+    def has_recent_start_request(self, current_time=None):
+        now = current_time if current_time is not None else time.time()
+        last_start_request = float(getattr(self, "_last_start_request_time", 0.0) or 0.0)
+        return last_start_request > 0.0 and (now - last_start_request) <= 6.0
+
+    def _can_issue_live_input(self, current_time=None):
+        runtime_state = str(getattr(self, "_runtime_state", "") or "")
+        if runtime_state == "match":
+            return True
+        return self.has_recent_match_context(current_time)
 
     def _is_plausible_player_detection(self, data):
         players = (data or {}).get("player") or []
@@ -792,13 +814,18 @@ class Play(Movement):
             self._reset_match_state_guard()
             return False
 
+        if not self.has_recent_start_request(current_time):
+            self._reset_match_state_guard()
+            return False
+
         if current_time - self._last_state_guard_detection_time > 1.0:
             self._state_guard_detected_frames = 0
 
         self._last_state_guard_detection_time = current_time
         self._state_guard_detected_frames += 1
 
-        if supporting_entities > 0:
+        required_support_frames = 2 if checked_state in {"lobby", "starting"} else 1
+        if supporting_entities > 0 and self._state_guard_detected_frames >= required_support_frames:
             if debug:
                 print(
                     "[MATCH] promoting to match from gameplay detections "
@@ -806,7 +833,7 @@ class Play(Movement):
                 )
             return True
 
-        required_frames = 4 if checked_state == "lobby" else 3
+        required_frames = 5 if checked_state == "lobby" else 4
         if checked_state in {"", "lobby", "starting"} and self._state_guard_detected_frames >= required_frames:
             if debug:
                 print(
@@ -1516,16 +1543,26 @@ class Play(Movement):
             data["enemy"].extend(rejected_players)
         return data
 
-    def get_main_data(self, frame):
+    def get_main_data(self, frame, runtime_state="", current_time=None):
+        if current_time is None:
+            current_time = time.time()
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
-        if not data.get("player") and self.entity_detection_retry_confidence < self.entity_detection_confidence:
+        allow_retry = (
+            self.entity_detection_retry_confidence < self.entity_detection_confidence
+            and (
+                runtime_state == "match"
+                or self.has_recent_match_context(current_time)
+            )
+        )
+        if not data.get("player") and allow_retry:
             retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
             if retry_data.get("player"):
-                if debug:
+                if debug and (current_time - self._last_retry_player_log_time) >= 2.0:
                     print(
                         "[DBG] player recovered with lower entity threshold "
                         f"{self.entity_detection_retry_confidence:.2f}"
                     )
+                    self._last_retry_player_log_time = current_time
                 data = retry_data
         return self.stabilize_entity_roles(frame, data)
 
@@ -2188,7 +2225,7 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
                 self.time_since_last_proceeding = current_time
                 return
-        data = self.get_main_data(frame) or {}
+        data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
         raw_supporting_entities = (
             self._entity_count(data, "enemy")
             + self._entity_count(data, "teammate")
@@ -2281,17 +2318,11 @@ class Play(Movement):
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
                 current_state = get_state(frame)
-                likely_post_match_reward = (
-                    player_missing_for >= 2.5
-                    and raw_supporting_entities <= 0
-                    and (current_time - self._last_match_evidence_time) >= 1.5
-                )
                 allow_reward_ocr = (
                     current_state == "match"
                     and (
                         runtime_state == "reward_claim"
                         or str(runtime_state).startswith("end_")
-                        or likely_post_match_reward
                     )
                 )
                 if allow_reward_ocr:
