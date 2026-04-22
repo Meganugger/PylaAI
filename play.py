@@ -382,7 +382,13 @@ class Movement:
         return "S" if direction_y > 0 else "W"
 
     def attack(self):
+        if getattr(self, "attack_cooldown", 0) > 0:
+            current_time = time.time()
+            if current_time - self.last_attack_time < self.attack_cooldown:
+                return False
+            self.last_attack_time = current_time
         self.window_controller.press_key("M")
+        return True
 
     def use_hypercharge(self):
         if debug:
@@ -390,14 +396,26 @@ class Movement:
         self.window_controller.press_key("H")
 
     def use_gadget(self):
+        if getattr(self, "gadget_cooldown", 0) > 0:
+            current_time = time.time()
+            if current_time - self.last_gadget_time < self.gadget_cooldown:
+                return False
+            self.last_gadget_time = current_time
         if debug:
             print("Using gadget")
         self.window_controller.press_key("G")
+        return True
 
     def use_super(self):
+        if getattr(self, "super_cooldown", 0) > 0:
+            current_time = time.time()
+            if current_time - self.last_super_time < self.super_cooldown:
+                return False
+            self.last_super_time = current_time
         if debug:
             print("Using super")
         self.window_controller.press_key("E")
+        return True
 
     @staticmethod
     def get_random_attack_key():
@@ -678,6 +696,21 @@ class Play(Movement):
         self.super_pixels_minimum = bot_config["super_pixels_minimum"]
         self.wall_detection_confidence = bot_config["wall_detection_confidence"]
         self.entity_detection_confidence = bot_config["entity_detection_confidence"]
+        self.entity_detection_retry_confidence = float(
+            bot_config.get(
+                "entity_detection_retry_confidence",
+                max(0.35, float(self.entity_detection_confidence) - 0.20),
+            )
+        )
+        self.player_center_bias_radius = float(bot_config.get("player_center_bias_radius", 420))
+        self.player_green_pixel_weight = float(bot_config.get("player_green_pixel_weight", 0.03))
+        self.player_red_pixel_penalty = float(bot_config.get("player_red_pixel_penalty", 0.05))
+        self.attack_cooldown = float(bot_config.get("attack_cooldown", 0.16))
+        self.last_attack_time = 0.0
+        self.gadget_cooldown = float(bot_config.get("gadget_cooldown", 1.0))
+        self.last_gadget_time = 0.0
+        self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
+        self.last_super_time = 0.0
         self._runtime_state = "starting"
         self._last_state_probe_runtime = ""
         self._last_state_probe_result = ""
@@ -1424,9 +1457,77 @@ class Play(Movement):
 
         return self._get_move_toward(player_pos, target, wall_context, allow_detour=self.is_showdown_mode)
 
+    @staticmethod
+    def _count_mask_pixels(hsv_roi, lower, upper):
+        if hsv_roi.size == 0:
+            return 0
+        mask = cv2.inRange(hsv_roi, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8))
+        return int(cv2.countNonZero(mask))
+
+    def _entity_team_color_scores(self, frame, box):
+        frame_height, frame_width = frame.shape[:2]
+        x1, y1, x2, y2 = map(int, self._normalize_box(box))
+        pad_x = max(18, int((x2 - x1) * 0.45))
+        pad_y = max(24, int((y2 - y1) * 0.75))
+        rx1 = max(0, x1 - pad_x)
+        ry1 = max(0, y1 - pad_y)
+        rx2 = min(frame_width, x2 + pad_x)
+        ry2 = min(frame_height, y2 + pad_y)
+        roi = frame[ry1:ry2, rx1:rx2]
+        if roi.size == 0:
+            return 0, 0
+        hsv = cv2.cvtColor(roi, cv2.COLOR_BGR2HSV)
+        green = self._count_mask_pixels(hsv, (35, 80, 80), (85, 255, 255))
+        red = (
+            self._count_mask_pixels(hsv, (0, 80, 80), (14, 255, 255))
+            + self._count_mask_pixels(hsv, (170, 80, 80), (179, 255, 255))
+        )
+        return green, red
+
+    def select_own_player_box(self, frame, player_boxes):
+        if not player_boxes:
+            return None, []
+        frame_height, frame_width = frame.shape[:2]
+        screen_center = (frame_width * 0.5, frame_height * 0.54)
+        radius = max(
+            1.0,
+            self.player_center_bias_radius * max(float(self.window_controller.scale_factor or 1.0), 0.5),
+        )
+        scored = []
+        for box in player_boxes:
+            cx, cy = self.get_player_pos(box)
+            center_dist = math.hypot(cx - screen_center[0], cy - screen_center[1])
+            center_score = max(0.0, 1.0 - center_dist / radius)
+            green, red = self._entity_team_color_scores(frame, box)
+            color_score = green * self.player_green_pixel_weight - red * self.player_red_pixel_penalty
+            scored.append((center_score + color_score, center_dist, box))
+        scored.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+        own_box = scored[0][2]
+        rejected = [item[2] for item in scored[1:]]
+        return own_box, rejected
+
+    def stabilize_entity_roles(self, frame, data):
+        players = data.get("player") or []
+        own_box, rejected_players = self.select_own_player_box(frame, players)
+        if own_box is not None:
+            data["player"] = [own_box]
+        if rejected_players:
+            data.setdefault("enemy", [])
+            data["enemy"].extend(rejected_players)
+        return data
+
     def get_main_data(self, frame):
         data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
-        return data
+        if not data.get("player") and self.entity_detection_retry_confidence < self.entity_detection_confidence:
+            retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+            if retry_data.get("player"):
+                if visual_debug:
+                    print(
+                        "[DBG] player recovered with lower entity threshold "
+                        f"{self.entity_detection_retry_confidence:.2f}"
+                    )
+                data = retry_data
+        return self.stabilize_entity_roles(frame, data)
 
     def is_path_blocked(self, player_pos, move_direction, wall_context, distance=None):  # Increased distance
         if distance is None:
@@ -1446,7 +1547,7 @@ class Play(Movement):
     @staticmethod
     def validate_game_data(data):
         incomplete = False
-        if "player" not in data.keys():
+        if not data.get("player"):
             incomplete = True  # This is required so track_no_detections can also keep track if enemy is missing
 
         if "enemy" not in data.keys():
