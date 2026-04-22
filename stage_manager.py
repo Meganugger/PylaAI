@@ -86,6 +86,8 @@ class StageManager:
         self._start_wait_logged_at = 0.0
         self._lobby_start_settle_delay = 0.45
         self._lobby_start_retry_delay = 1.35
+        self._lobby_start_blocked_until = 0.0
+        self._lobby_start_block_reason = ""
 
     def _is_easyocr_ready(self):
         try:
@@ -126,10 +128,27 @@ class StageManager:
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
 
+    def _delay_lobby_start(self, seconds, reason=""):
+        now = time.time()
+        self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
+        self._lobby_start_block_reason = reason or self._lobby_start_block_reason
+        self._start_wait_logged_at = 0.0
+
     def _try_press_lobby_start(self):
         now = time.time()
         self._note_lobby_visible(now)
         lobby_visible_for = now - self._lobby_visible_since
+
+        if now < self._lobby_start_blocked_until:
+            if now - self._start_wait_logged_at >= 0.75:
+                remaining = self._lobby_start_blocked_until - now
+                reason = f" after {self._lobby_start_block_reason}" if self._lobby_start_block_reason else ""
+                print(
+                    f"[START] delaying lobby Q press{reason} "
+                    f"({remaining:.2f}s remaining)"
+                )
+                self._start_wait_logged_at = now
+            return False
 
         if lobby_visible_for < self._lobby_start_settle_delay:
             if now - self._start_wait_logged_at >= 0.75:
@@ -148,6 +167,7 @@ class StageManager:
         self._last_start_press_at = now
         self._start_press_attempts += 1
         self._start_wait_logged_at = 0.0
+        self._lobby_start_block_reason = ""
         if self._start_press_attempts == 1:
             print("[RESULT] Pressed Q to start a match")
         else:
@@ -813,6 +833,8 @@ class StageManager:
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]
             state = "end"
+        if state == "brawler_selection":
+            self._delay_lobby_start(1.25, "unexpected brawler selection")
         if state == "lobby":
             self._note_lobby_visible()
         else:
