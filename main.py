@@ -1,35 +1,16 @@
-import json
 import asyncio
-import os
 import sys
 import threading
 import time
-
-from instance_support import (
-    apply_bootstrap_environment,
-    get_brawler_data_path,
-    parse_bootstrap_args,
-    setup_instances,
-)
-
-BOOTSTRAP_ARGS = parse_bootstrap_args()
-apply_bootstrap_environment(BOOTSTRAP_ARGS)
-
-if BOOTSTRAP_ARGS.setup_instances is not None:
-    configured_instances = setup_instances(BOOTSTRAP_ARGS.setup_instances)
-    print("")
-    print("Multi-instance setup complete.")
-    for entry in configured_instances:
-        print(
-            f"  Instance {entry['instance']}: port {entry['port']} "
-            f"-> start_{entry['instance']}.bat"
-        )
-    sys.exit(0)
 
 from runtime_threads import apply_process_thread_limits
 
 apply_process_thread_limits()
 
+from gui.hub import Hub
+from gui.login import login
+from gui.main import App
+from gui.select_brawler import SelectBrawler
 from lobby_automation import LobbyAutomation
 from play import Play
 from stage_manager import StageManager
@@ -119,9 +100,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._last_roster_signature = None
             self._last_roster_push_time = 0.0
             self._last_live_exception_time = 0.0
-            self._live_push_interval = 0.5
-            self._live_stats_push_interval = 0.5
-            self._roster_push_interval = 3.0
+            self._live_push_interval = 0.25
+            self._live_stats_push_interval = 0.25
+            self._roster_push_interval = 2.0
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
@@ -217,7 +198,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             )
             if (
                 runtime_state == "match"
-                and now - self._last_fast_result_probe >= 0.6
+                and player_missing_for >= 0.6
+                and now - self._last_fast_result_probe >= 1.0
             ):
                 self._last_fast_result_probe = now
                 fast_result = find_game_result(frame)
@@ -447,7 +429,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         or getattr(self.Play, "_damage_dealt", 0)
                         or 0
                     )
-                    now = time.time()
                     live_trophies = coerce_int(
                         tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
                         0,
@@ -467,6 +448,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             active_entry["wins"] = live_wins
                         if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
                             active_entry["win_streak"] = live_streak
+                    now = time.time()
                     if (
                         hasattr(tobs, "update_live_match_stats")
                         and (now - self._last_live_stats_push) >= self._live_stats_push_interval
@@ -604,48 +586,17 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
     main.main()
 
 
-def _load_saved_roster_for_autostart():
-    roster_path = get_brawler_data_path()
-    if not os.path.exists(roster_path):
-        return []
-    try:
-        with open(roster_path, "r", encoding="utf-8") as handle:
-            data = json.load(handle)
-        return data if isinstance(data, list) else []
-    except Exception as exc:
-        print(f"Could not load saved roster from {roster_path}: {exc}")
-        return []
+all_brawlers = get_brawler_list()
+ensure_state_icons_present()
+if api_base_url != "localhost":
+    update_missing_brawlers_info(all_brawlers)
 
+    check_version()
+    update_wall_model_classes()
+    if not current_wall_model_is_latest():
+        print("New Wall detection model found, downloading... (this might take a few minutes depending on your internet speed)")
+        get_latest_wall_model_file()
 
-def _prepare_runtime_assets():
-    all_brawlers = get_brawler_list()
-    ensure_state_icons_present()
-    if api_base_url != "localhost":
-        update_missing_brawlers_info(all_brawlers)
-        check_version()
-        update_wall_model_classes()
-        if not current_wall_model_is_latest():
-            print("New Wall detection model found, downloading... (this might take a few minutes depending on your internet speed)")
-            get_latest_wall_model_file()
-    return all_brawlers
-
-
-all_brawlers = _prepare_runtime_assets()
-
-if BOOTSTRAP_ARGS.autostart:
-    roster = _load_saved_roster_for_autostart()
-    if not roster:
-        print(
-            "Autostart could not begin because no saved roster was found for this instance. "
-            "Open the UI once, save a roster, then try again."
-        )
-        sys.exit(1)
-    pyla_main(roster)
-else:
-    from gui.hub import Hub
-    from gui.login import login
-    from gui.main import App
-    from gui.select_brawler import SelectBrawler
-
-    app = App(login, SelectBrawler, pyla_main, all_brawlers, Hub)
-    app.start(pyla_version, get_latest_version)
+# Use the smaller ratio to maintain aspect ratio
+app = App(login, SelectBrawler, pyla_main, all_brawlers, Hub)
+app.start(pyla_version, get_latest_version)

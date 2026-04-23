@@ -95,7 +95,9 @@ class Movement:
         self.super_treshold = time_config["super"]
         self.gadget_treshold = time_config["gadget"]
         self.hypercharge_treshold = time_config["hypercharge"]
-        self.walls_treshold = time_config["wall_detection"]
+        configured_wall_detection = float(time_config["wall_detection"])
+        analog_wall_floor = 0.25 if self._uses_analog_movement() else 0.20
+        self.walls_treshold = max(configured_wall_detection, analog_wall_floor)
         self.keep_walls_in_memory = self.walls_treshold <= 1
         self.last_walls_data = []
         self.keys_hold = []
@@ -2260,16 +2262,6 @@ class Play(Movement):
             self._last_burst_end_time = 0.0
         current_time = time.time()
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
-        if runtime_state == "match" and (current_time - self._last_end_result_probe_time) >= 0.8:
-            self._last_end_result_probe_time = current_time
-            game_result = find_game_result(frame)
-            if game_result:
-                print(f"[RESULT] play fast probe detected {game_result}")
-                self._pending_end_result = game_result
-                self._runtime_state = f"end_{game_result}"
-                self.window_controller.keys_up(list("wasd"))
-                self.time_since_last_proceeding = current_time
-                return
         data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
         raw_supporting_entities = (
             self._entity_count(data, "enemy")
@@ -2353,8 +2345,9 @@ class Play(Movement):
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
-                and player_missing_for >= 0.25
-                and (current_time - self._last_end_result_probe_time) >= 0.5
+                and player_missing_for >= 0.6
+                and raw_supporting_entities <= 0
+                and (current_time - self._last_end_result_probe_time) >= 1.0
             ):
                 self._last_end_result_probe_time = current_time
                 game_result = find_game_result(frame)
@@ -2398,7 +2391,7 @@ class Play(Movement):
                     if debug and (current_time - self._last_no_player_log_time >= 2.0):
                         print("haven't detected the player in a while proceeding")
                         self._last_no_player_log_time = current_time
-                    self.window_controller.press_continue()
+                    self.window_controller.press_key("Q")
                     self.time_since_last_proceeding = time.time()
             return
         self.time_since_last_proceeding = time.time()
