@@ -4727,16 +4727,6 @@ class Play(Movement):
         current_time = time.time()
         self._current_frame = frame  # Store for BT subsystems
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
-        if runtime_state == "match" and (current_time - self._last_end_result_probe_time) >= 0.8:
-            self._last_end_result_probe_time = current_time
-            game_result = find_game_result(frame)
-            if game_result:
-                print(f"[RESULT] play fast probe detected {game_result}")
-                self._pending_end_result = game_result
-                self._runtime_state = f"end_{game_result}"
-                self.window_controller.keys_up(list("wasd"))
-                self.time_since_last_proceeding = current_time
-                return
         data = self.get_main_data(frame)
         raw_supporting_entities = 0
         if isinstance(data, dict):
@@ -5009,8 +4999,9 @@ class Play(Movement):
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
-                and player_missing_for >= 0.25
-                and (current_time - self._last_end_result_probe_time) >= 0.5
+                and player_missing_for >= 0.6
+                and raw_supporting_entities <= 0
+                and (current_time - self._last_end_result_probe_time) >= 1.0
             ):
                 self._last_end_result_probe_time = current_time
                 game_result = find_game_result(frame)
@@ -5069,7 +5060,7 @@ class Play(Movement):
                     if debug and (current_time - self._last_no_player_log_time >= 2.0):
                         print("haven't detected the player in a while proceeding")
                         self._last_no_player_log_time = current_time
-                    self.window_controller.press_continue()
+                    self.window_controller.press_key("Q")
                     self.time_since_last_proceeding = time.time()
             # Show debug overlay even when no player detected
             self._show_debug_overlay(frame, {}, "NO PLAYER", brawler,
