@@ -11,6 +11,69 @@ from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
 brawl_stars_width, brawl_stars_height = 1920, 1080
 debug = load_toml_as_dict("cfg/general_config.toml").get("super_debug", "no") == "yes"
 
+PLAYSTYLE_CONFIG = {
+    "fighter": {
+        "range_mult": 1.0,
+        "approach_factor": 1.1,
+        "attack_interval": 0.12,
+        "team_cohesion": 0.30,
+        "dodge_chance": 0.45,
+        "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
+    },
+    "sniper": {
+        "range_mult": 1.0,
+        "approach_factor": 0.55,
+        "attack_interval": 0.15,
+        "team_cohesion": 0.20,
+        "dodge_chance": 0.60,
+        "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
+    },
+    "tank": {
+        "range_mult": 1.0,
+        "approach_factor": 1.5,
+        "attack_interval": 0.10,
+        "team_cohesion": 0.35,
+        "dodge_chance": 0.15,
+        "retreat_on_low_ammo": False,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
+    },
+    "assassin": {
+        "range_mult": 1.0,
+        "approach_factor": 1.3,
+        "attack_interval": 0.10,
+        "team_cohesion": 0.12,
+        "dodge_chance": 0.70,
+        "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": False,
+    },
+    "thrower": {
+        "range_mult": 1.0,
+        "approach_factor": 0.75,
+        "attack_interval": 0.10,
+        "team_cohesion": 0.35,
+        "dodge_chance": 0.55,
+        "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
+    },
+    "support": {
+        "range_mult": 1.0,
+        "approach_factor": 0.75,
+        "attack_interval": 0.14,
+        "team_cohesion": 0.50,
+        "dodge_chance": 0.40,
+        "retreat_on_low_ammo": True,
+        "aggressive_no_enemy": True,
+        "prefer_teammates": True,
+    },
+}
+
 class Movement:
 
     def __init__(self, window_controller):
@@ -78,10 +141,7 @@ class Movement:
         self._analog_movement_radius = float(bot_config.get("analog_movement_radius", 145.0))
         self._analog_turn_threshold = float(bot_config.get("analog_turn_threshold", 12.0))
         self._analog_turn_emergency_threshold = float(bot_config.get("analog_turn_emergency_threshold", 82.0))
-        self._analog_strafe_offset = float(bot_config.get("analog_strafe_offset", 22.0))
-        self._analog_strafe_interval = float(bot_config.get("analog_strafe_interval", 0.28))
-        self._analog_strafe_direction = 1
-        self._analog_strafe_switch_time = time.time()
+        self._analog_strafe_offset = float(bot_config.get("analog_strafe_offset", 24.0))
         self._analog_goal_hold_times = {
             "fog_escape": float(bot_config.get("analog_fog_hold_time", 0.06)),
             "retreat": float(bot_config.get("analog_retreat_hold_time", 0.12)),
@@ -161,18 +221,6 @@ class Movement:
         return {"W": "S", "S": "W", "A": "D", "D": "A"}.get(key, "")
 
     @staticmethod
-    def angle_from_direction(dx, dy):
-        return math.degrees(math.atan2(dy, dx)) % 360
-
-    @staticmethod
-    def angle_opposite(angle_degrees):
-        return (angle_degrees + 180.0) % 360.0
-
-    @staticmethod
-    def _angle_difference(first_angle, second_angle):
-        return abs((float(first_angle) - float(second_angle) + 180.0) % 360.0 - 180.0)
-
-    @staticmethod
     def get_enemy_pos(enemy):
         return (enemy[0] + enemy[2]) / 2, (enemy[1] + enemy[3]) / 2
 
@@ -183,6 +231,18 @@ class Movement:
     @staticmethod
     def get_distance(enemy_coords, player_coords):
         return math.hypot(enemy_coords[0] - player_coords[0], enemy_coords[1] - player_coords[1])
+
+    @staticmethod
+    def angle_from_direction(dx, dy):
+        return math.degrees(math.atan2(dy, dx)) % 360
+
+    @staticmethod
+    def angle_opposite(angle_degrees):
+        return (angle_degrees + 180.0) % 360.0
+
+    @staticmethod
+    def _angle_difference(first_angle, second_angle):
+        return abs((float(first_angle) - float(second_angle) + 180.0) % 360.0 - 180.0)
 
     @staticmethod
     def is_there_enemy(enemy_data):
@@ -270,7 +330,8 @@ class Movement:
         centroid_dy = float(dy_all[inside].mean())
         if math.hypot(centroid_dx, centroid_dy) < 1.0:
             return None
-        return self.angle_opposite(self.angle_from_direction(centroid_dx, centroid_dy))
+        fog_angle = self.angle_from_direction(centroid_dx, centroid_dy)
+        return self.angle_opposite(fog_angle)
 
     def _get_showdown_fog_escape_move(self, player_data, wall_context):
         if not self.is_showdown_mode:
@@ -323,7 +384,7 @@ class Movement:
     def attack(self):
         if not self._can_issue_live_input():
             return False
-        if getattr(self, "attack_cooldown", 0) > 0:
+        if self.attack_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_attack_time < self.attack_cooldown:
                 return False
@@ -334,31 +395,34 @@ class Movement:
     def use_hypercharge(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
-        print("Using hypercharge")
+        if debug:
+            print("Using hypercharge")
         self.window_controller.press_key("H")
         return True
 
     def use_gadget(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
-        if getattr(self, "gadget_cooldown", 0) > 0:
+        if self.gadget_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_gadget_time < self.gadget_cooldown:
                 return False
             self.last_gadget_time = current_time
-        print("Using gadget")
+        if debug:
+            print("Using gadget")
         self.window_controller.press_key("G")
         return True
 
     def use_super(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
-        if getattr(self, "super_cooldown", 0) > 0:
+        if self.super_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_super_time < self.super_cooldown:
                 return False
             self.last_super_time = current_time
-        print("Using super")
+        if debug:
+            print("Using super")
         self.window_controller.press_key("E")
         return True
 
@@ -570,6 +634,35 @@ class Play(Movement):
 
         self.last_movement = ''
         self.last_movement_time = time.time()
+        self.time_since_last_attack = 0.0
+        self.max_ammo = 3
+        self.current_ammo = self.max_ammo
+        self.shot_timestamps = []
+        self._ammo_conserve_threshold = int(bot_config.get("ammo_conserve_threshold", 1))
+        self._burst_mode = False
+        self._burst_start_time = 0.0
+        self._last_burst_end_time = 0.0
+        self._burst_defensive_duration = float(bot_config.get("burst_defensive_duration", 2.5))
+        self._burst_attack_interval = float(bot_config.get("burst_attack_interval", 0.07))
+        self.strafe_direction = 1
+        self.strafe_switch_time = time.time()
+        self.strafe_interval = float(bot_config.get("strafe_interval", 0.25))
+        self._teammate_positions = []
+        self._last_known_enemies = []
+        self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
+        self._no_enemy_duration = 0.0
+        self._last_enemy_seen_at = time.time()
+        self._search_target_idx = 0
+        self._search_target_switch_time = 0.0
+        self.target_info = {
+            "name": None,
+            "distance": 0,
+            "hp": -1,
+            "hittable": False,
+            "bbox": None,
+            "n_enemies": 0,
+            "n_teammates": 0,
+        }
         self.wall_history = []
         self.wall_history_length = 3  # Number of frames to keep walls
         self.wall_box_min_size = float(bot_config.get("wall_box_min_size", 20))
@@ -628,7 +721,10 @@ class Play(Movement):
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
         self.entity_detection_retry_interval = float(
-            bot_config.get("entity_detection_retry_interval", 0.18)
+            bot_config.get("entity_detection_retry_interval", 0.30)
+        )
+        self.entity_detection_retry_missing_delay = float(
+            bot_config.get("entity_detection_retry_missing_delay", 0.22)
         )
         self.recent_player_restore_max_age = float(
             bot_config.get("recent_player_restore_max_age", 0.45)
@@ -659,34 +755,6 @@ class Play(Movement):
         self._last_start_request_time = 0.0
         self._last_live_player_source = "base"
         self._allow_skill_inputs = True
-        self._teammate_positions = []
-        self._last_known_enemies = []
-        self._enemy_memory_duration = float(bot_config.get("enemy_memory_duration", 2.0))
-        self._last_enemy_seen_at = time.time()
-        self._search_target_idx = 0
-        self._search_target_switch_time = 0.0
-
-    def load_brawler_ranges(self, brawlers_info=None):
-        if not brawlers_info:
-            brawlers_info = load_brawlers_info()
-        screen_size_ratio = self.window_controller.scale_factor
-        ranges = {}
-        for brawler, info in brawlers_info.items():
-            attack_range = info['attack_range']
-            safe_range = info['safe_range']
-            super_range = info['super_range']
-            v = [safe_range, attack_range, super_range]
-            ranges[brawler] = [int(v[0] * screen_size_ratio), int(v[1] * screen_size_ratio), int(v[2] * screen_size_ratio)]
-        return ranges
-
-    @staticmethod
-    def can_attack_through_walls(brawler, skill_type, brawlers_info=None):
-        if not brawlers_info: brawlers_info = load_brawlers_info()
-        if skill_type == "attack":
-            return brawlers_info[brawler]['ignore_walls_for_attacks']
-        elif skill_type == "super":
-            return brawlers_info[brawler]['ignore_walls_for_supers']
-        raise ValueError("skill_type must be either 'attack' or 'super'")
 
     @staticmethod
     def _entity_count(data, key):
@@ -730,10 +798,12 @@ class Play(Movement):
         players = (data or {}).get("player") or []
         if not players:
             return False
+
         try:
             x1, y1, x2, y2 = [float(value) for value in players[0][:4]]
         except Exception:
             return False
+
         width = abs(x2 - x1)
         height = abs(y2 - y1)
         area = width * height
@@ -839,6 +909,28 @@ class Play(Movement):
             )
             self._last_no_player_log_time = current_time
         return restored
+
+    def load_brawler_ranges(self, brawlers_info=None):
+        if not brawlers_info:
+            brawlers_info = load_brawlers_info()
+        screen_size_ratio = self.window_controller.scale_factor
+        ranges = {}
+        for brawler, info in brawlers_info.items():
+            attack_range = info['attack_range']
+            safe_range = info['safe_range']
+            super_range = info['super_range']
+            v = [safe_range, attack_range, super_range]
+            ranges[brawler] = [int(v[0] * screen_size_ratio), int(v[1] * screen_size_ratio), int(v[2] * screen_size_ratio)]
+        return ranges
+
+    @staticmethod
+    def can_attack_through_walls(brawler, skill_type, brawlers_info=None):
+        if not brawlers_info: brawlers_info = load_brawlers_info()
+        if skill_type == "attack":
+            return brawlers_info[brawler]['ignore_walls_for_attacks']
+        elif skill_type == "super":
+            return brawlers_info[brawler]['ignore_walls_for_supers']
+        raise ValueError("skill_type must be either 'attack' or 'super'")
 
 
     def get_wall_context(self, walls):
@@ -1003,7 +1095,8 @@ class Play(Movement):
             if allow_detour:
                 return self._find_best_angle(player_pos, desired_angle, wall_context)
             return desired_angle
-        for move in self._build_target_move_candidates(direction_x, direction_y, allow_detour=allow_detour):
+        moves = self._build_target_move_candidates(direction_x, direction_y, allow_detour=allow_detour)
+        for move in moves:
             if move and not self.is_path_blocked(player_pos, move, wall_context):
                 return move
         return None
@@ -1125,6 +1218,292 @@ class Play(Movement):
 
         return None, None
 
+    def find_best_target(self, enemy_data, player_coords, wall_context, skill_type, attack_range):
+        best_target = None
+        best_score = float("-inf")
+        previous_bbox = self.target_info.get("bbox")
+        previous_pos = self.get_enemy_pos(previous_bbox) if previous_bbox else None
+
+        for enemy in enemy_data:
+            enemy_pos = self.get_enemy_pos(enemy)
+            distance = self.get_distance(enemy_pos, player_coords)
+            hittable = self.is_enemy_hittable(player_coords, enemy_pos, wall_context, skill_type)
+            bbox_w = max(1, enemy[2] - enemy[0])
+            bbox_h = max(1, enemy[3] - enemy[1])
+            size_factor = bbox_w * bbox_h
+
+            score = 0.0
+            score -= distance * 0.3
+            score += 200 if hittable else -350
+            if distance <= attack_range:
+                score += 100
+            score -= size_factor * 0.001
+
+            if previous_pos and self.get_distance(enemy_pos, previous_pos) < 80:
+                score += 120
+
+            for teammate_pos in self._teammate_positions:
+                teammate_distance = self.get_distance(enemy_pos, teammate_pos)
+                if teammate_distance < attack_range * 0.8:
+                    score += 100
+                elif teammate_distance < attack_range * 1.2:
+                    score += 50
+
+            if score > best_score:
+                best_score = score
+                best_target = (enemy_pos, distance, enemy, hittable)
+
+        return best_target if best_target else (None, None, None, False)
+
+    def _update_enemy_memory(self, enemies):
+        now = time.time()
+        for enemy in enemies:
+            enemy_pos = self.get_enemy_pos(enemy)
+            self._last_known_enemies.append((enemy_pos[0], enemy_pos[1], now))
+
+        self._last_known_enemies = [
+            (x, y, seen_at)
+            for x, y, seen_at in self._last_known_enemies
+            if now - seen_at < self._enemy_memory_duration
+        ]
+
+    def _get_last_known_enemy_pos(self):
+        if not self._last_known_enemies:
+            return None
+        newest = max(self._last_known_enemies, key=lambda entry: entry[2])
+        return newest[0], newest[1]
+
+    def _get_teammate_centroid(self):
+        if not self._teammate_positions:
+            return None
+        centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
+        centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
+        return centroid_x, centroid_y
+
+    def _get_nearest_teammate_target(self, player_pos):
+        if not self._teammate_positions:
+            return None, float("inf")
+        nearest_target = min(
+            self._teammate_positions,
+            key=lambda teammate_pos: self.get_distance(teammate_pos, player_pos),
+        )
+        return nearest_target, self.get_distance(nearest_target, player_pos)
+
+    def _reset_showdown_teammate_lock(self):
+        self._showdown_locked_teammate = None
+        self._showdown_locked_teammate_distance = float("inf")
+        self._showdown_regroup_active = False
+
+    def _get_showdown_regroup_target(self, player_pos):
+        if not self._teammate_positions:
+            self._reset_showdown_teammate_lock()
+            return None, float("inf")
+
+        nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
+        selected_target = nearest_target
+        selected_distance = nearest_distance
+
+        if self._showdown_locked_teammate is not None:
+            locked_target = min(
+                self._teammate_positions,
+                key=lambda teammate_pos: self.get_distance(teammate_pos, self._showdown_locked_teammate),
+            )
+            locked_distance = self.get_distance(locked_target, player_pos)
+            if nearest_distance >= locked_distance * (1.0 - self._showdown_teammate_hysteresis):
+                selected_target = locked_target
+                selected_distance = locked_distance
+
+        self._showdown_locked_teammate = selected_target
+        self._showdown_locked_teammate_distance = selected_distance
+        return selected_target, selected_distance
+
+    def _should_hold_showdown_regroup(self, teammate_distance):
+        if teammate_distance == float("inf"):
+            self._showdown_regroup_active = False
+            return False
+
+        start_distance = max(self._showdown_team_pull_distance, self._showdown_regroup_release_distance + 10.0)
+        if self._showdown_regroup_active:
+            self._showdown_regroup_active = teammate_distance > self._showdown_regroup_release_distance
+        else:
+            self._showdown_regroup_active = teammate_distance > start_distance
+        return self._showdown_regroup_active
+
+    def _get_showdown_follow_move(self, player_pos, wall_context):
+        teammate_target, teammate_distance = self._get_showdown_regroup_target(player_pos)
+        if teammate_target is None:
+            return None, float("inf")
+
+        follow_deadzone = max(72.0, min(110.0, self._showdown_team_pull_distance * 0.55))
+        if teammate_distance <= follow_deadzone:
+            return None, teammate_distance
+
+        teammate_move = self._get_move_toward(
+            player_pos,
+            teammate_target,
+            wall_context,
+            allow_detour=True,
+        )
+        return teammate_move, teammate_distance
+
+    def _get_showdown_roam_move(self, player_pos, wall_context):
+        self._showdown_roam_spin_angle = (self._showdown_roam_spin_angle + 15.0) % 360.0
+        return self._find_best_angle(player_pos, self._showdown_roam_spin_angle, wall_context)
+
+    def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True):
+        teammate_move, teammate_distance = self._get_showdown_follow_move(player_pos, wall_context)
+        if teammate_move is not None:
+            return teammate_move, "team_regroup"
+
+        if allow_memory_chase and teammate_distance == float("inf"):
+            last_enemy_pos = self._get_last_known_enemy_pos()
+            if last_enemy_pos is not None and (time.time() - self._last_enemy_seen_at) <= self._showdown_enemy_chase_timeout:
+                chase_move = self._get_move_toward(
+                    player_pos,
+                    last_enemy_pos,
+                    wall_context,
+                    allow_detour=True,
+                )
+                if chase_move:
+                    return chase_move, "memory_chase"
+
+        roam_move = self._get_showdown_roam_move(player_pos, wall_context)
+        if roam_move is not None:
+            return roam_move, "roam"
+        return None, None
+
+    def _plan_analog_reason(self, movement, reason):
+        if isinstance(movement, (float, int)):
+            self._planned_analog_reason = reason
+        return movement
+
+    def _stabilize_analog_angle(self, angle, current_time):
+        angle = float(angle) % 360.0
+        reason = self._planned_analog_reason or "engage"
+        self._planned_analog_reason = None
+
+        if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
+            self._committed_analog_reason = reason
+            self._committed_analog_until = current_time + self._analog_goal_hold_times.get(reason, 0.16)
+            return angle
+
+        angle_delta = self._angle_difference(angle, self.last_movement)
+        current_reason = self._committed_analog_reason or reason
+        current_priority = self._analog_goal_priorities.get(current_reason, 0)
+        next_priority = self._analog_goal_priorities.get(reason, 0)
+
+        if current_time < self._committed_analog_until:
+            if next_priority < current_priority and angle_delta < self._analog_turn_emergency_threshold:
+                return float(self.last_movement)
+            if next_priority == current_priority and angle_delta < self._analog_turn_emergency_threshold:
+                return float(self.last_movement)
+
+        self._committed_analog_reason = reason
+        self._committed_analog_until = current_time + self._analog_goal_hold_times.get(reason, 0.16)
+        return angle
+
+    def _is_post_burst_defensive(self, current_time):
+        return (
+            self._last_burst_end_time > 0.0
+            and not self._burst_mode
+            and (current_time - self._last_burst_end_time) < self._burst_defensive_duration
+        )
+
+    def _get_attack_interval(self, style, brawler_info, enemy_distance, safe_range, attack_range, burst_active):
+        if burst_active:
+            return self._burst_attack_interval
+
+        attack_interval = style["attack_interval"]
+        attack_damage = int(brawler_info.get("attack_damage", 0))
+        projectile_count = int(brawler_info.get("projectile_count", 1))
+
+        if attack_damage >= 2500 and projectile_count <= 1:
+            attack_interval *= 1.1
+        elif attack_damage < 1200:
+            attack_interval *= 0.82
+
+        if projectile_count >= 4:
+            attack_interval *= 0.90
+
+        if enemy_distance < safe_range:
+            attack_interval *= 0.78
+        elif enemy_distance < attack_range * 0.7:
+            attack_interval *= 0.90
+
+        return max(0.06, attack_interval)
+
+    def _should_fire(self, enemy_distance, safe_range, attack_range, burst_active):
+        if burst_active:
+            return self.current_ammo > 0
+        if self.current_ammo > self._ammo_conserve_threshold:
+            return True
+        if self.current_ammo == self._ammo_conserve_threshold:
+            return enemy_distance < min(safe_range * 0.9, attack_range * 0.55)
+        return False
+
+    @staticmethod
+    def _is_close_range_brawler(brawler_info, safe_range, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        return attack_range <= 260 or (safe_range <= 10 and playstyle in {"tank", "assassin"})
+
+    @staticmethod
+    def _get_contact_attack_threshold(brawler_info, attack_range):
+        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
+        contact_ratio = 0.62
+        if playstyle == "tank":
+            contact_ratio = 0.70
+        elif playstyle == "assassin":
+            contact_ratio = 0.66
+        return min(attack_range * 0.95, max(78.0, attack_range * contact_ratio))
+
+    def _get_search_targets(self):
+        width = self.window_controller.width
+        height = self.window_controller.height
+        if self.is_showdown_mode:
+            return [
+                (width * 0.50, height * 0.28),
+                (width * 0.32, height * 0.38),
+                (width * 0.68, height * 0.38),
+                (width * 0.40, height * 0.56),
+                (width * 0.60, height * 0.56),
+                (width * 0.50, height * 0.68),
+            ]
+        if self.game_mode == 3:
+            return [
+                (width * 0.5, height * 0.22),
+                (width * 0.3, height * 0.28),
+                (width * 0.7, height * 0.28),
+            ]
+        return [
+            (width * 0.78, height * 0.5),
+            (width * 0.72, height * 0.3),
+            (width * 0.72, height * 0.7),
+        ]
+
+    def _get_search_movement(self, player_pos, wall_context):
+        targets = self._get_search_targets()
+        if not targets:
+            return None
+
+        now = time.time()
+        if self._search_target_switch_time == 0.0:
+            self._search_target_idx = min(
+                range(len(targets)),
+                key=lambda idx: self.get_distance(targets[idx], player_pos),
+            )
+            self._search_target_switch_time = now
+        idx = self._search_target_idx % len(targets)
+        target = targets[idx]
+        target_distance = self.get_distance(target, player_pos)
+        stale_target = (now - self._search_target_switch_time) > self._search_target_hold_time
+
+        if target_distance < 90 or stale_target:
+            self._search_target_idx = (self._search_target_idx + 1) % len(targets)
+            self._search_target_switch_time = now
+            target = targets[self._search_target_idx]
+
+        return self._get_move_toward(player_pos, target, wall_context, allow_detour=self.is_showdown_mode)
+
     @staticmethod
     def _count_mask_pixels(hsv_roi, lower, upper):
         if hsv_roi.size == 0:
@@ -1196,8 +1575,21 @@ class Play(Movement):
             self._entity_count(data, "enemy")
             + self._entity_count(data, "teammate")
         )
+        player_missing_for = current_time - float(getattr(self, "time_since_player_last_found", 0.0) or 0.0)
+        recent_player_age = current_time - float(getattr(self, "_last_valid_player_seen_at", 0.0) or 0.0)
+        restore_window = max(
+            float(getattr(self, "recent_player_restore_support_age", 0.0) or 0.0),
+            float(getattr(self, "recent_player_restore_solo_age", 0.0) or 0.0),
+        )
+        restore_should_cover_gap = (
+            bool(getattr(self, "_last_valid_player_bbox", None))
+            and recent_player_age <= restore_window
+            and self.has_recent_match_context(current_time)
+        )
         allow_retry = (
             self.entity_detection_retry_confidence < self.entity_detection_confidence
+            and player_missing_for >= self.entity_detection_retry_missing_delay
+            and not restore_should_cover_gap
             and (
                 supporting_entities > 0
                 or runtime_state == "match"
@@ -1207,9 +1599,12 @@ class Play(Movement):
         if not data.get("player") and allow_retry:
             if (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
                 self._last_retry_detection_time = current_time
-                retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+                retry_data = self.Detect_main_info.detect_objects(
+                    frame,
+                    conf_tresh=self.entity_detection_retry_confidence,
+                )
                 if retry_data.get("player"):
-                    if debug and (current_time - self._last_retry_player_log_time) >= 2.0:
+                    if debug and (current_time - self._last_retry_player_log_time) >= 5.0:
                         print(
                             "[DBG] player recovered with lower entity threshold "
                             f"{self.entity_detection_retry_confidence:.2f}"
@@ -1375,20 +1770,24 @@ class Play(Movement):
             self.time_since_movement = time.time()
         return movement
 
-    def _add_strafe_angle(self, angle, current_time):
-        if current_time - self._analog_strafe_switch_time >= self._analog_strafe_interval:
-            self._analog_strafe_direction *= -1
-            self._analog_strafe_switch_time = current_time
-        return (float(angle) + (self._analog_strafe_direction * self._analog_strafe_offset)) % 360.0
+    def _add_strafe_angle(self, angle, current_time, style):
+        if style["dodge_chance"] <= 0:
+            return angle
 
-    def _get_analog_engagement_move(self, player_pos, direction_x, direction_y, wall_context, retreat, current_time, should_strafe=False):
+        if current_time - self.strafe_switch_time >= self.strafe_interval:
+            self.strafe_direction *= -1
+            self.strafe_switch_time = current_time
+
+        return (float(angle) + (self.strafe_direction * self._analog_strafe_offset)) % 360.0
+
+    def _get_analog_engagement_move(self, player_pos, direction_x, direction_y, wall_context, retreat, current_time, style, should_strafe=False):
         desired_angle = self.angle_from_direction(direction_x, direction_y)
         if retreat:
             desired_angle = self.angle_opposite(desired_angle)
 
         movement = self._find_best_angle(player_pos, desired_angle, wall_context)
         if should_strafe:
-            movement = self._add_strafe_angle(movement, current_time)
+            movement = self._add_strafe_angle(movement, current_time, style)
             movement = self._find_best_angle(player_pos, movement, wall_context)
         return movement
 
@@ -1565,225 +1964,55 @@ class Play(Movement):
         )
         return self._merge_wall_boxes(current_walls + stable_history)
 
-    @staticmethod
-    def _is_close_range_brawler(brawler_info, safe_range, attack_range):
-        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
-        return attack_range <= 260 or (safe_range <= 10 and playstyle in {"tank", "assassin"})
-
-    @staticmethod
-    def _get_contact_attack_threshold(brawler_info, attack_range):
-        playstyle = str((brawler_info or {}).get("playstyle", "")).lower()
-        contact_ratio = 0.62
-        if playstyle == "tank":
-            contact_ratio = 0.70
-        elif playstyle == "assassin":
-            contact_ratio = 0.66
-        return min(attack_range * 0.95, max(78.0, attack_range * contact_ratio))
-
-    def _update_enemy_memory(self, enemies):
-        now = time.time()
-        for enemy in enemies:
-            enemy_pos = self.get_enemy_pos(enemy)
-            self._last_known_enemies.append((enemy_pos[0], enemy_pos[1], now))
-
-        self._last_known_enemies = [
-            (x, y, seen_at)
-            for x, y, seen_at in self._last_known_enemies
-            if now - seen_at < self._enemy_memory_duration
+    def _update_ammo(self, current_time, brawler):
+        reload_speed = float(self.brawlers_info.get(brawler, {}).get("reload_speed", 1.5))
+        self.shot_timestamps = [
+            timestamp for timestamp in self.shot_timestamps
+            if current_time - timestamp < reload_speed
         ]
+        self.current_ammo = max(0, self.max_ammo - len(self.shot_timestamps))
 
-    def _get_last_known_enemy_pos(self):
-        if not self._last_known_enemies:
-            return None
-        newest = max(self._last_known_enemies, key=lambda entry: entry[2])
-        return newest[0], newest[1]
+    def _consume_ammo(self, current_time):
+        self.shot_timestamps.append(current_time)
+        self.current_ammo = max(0, self.max_ammo - len(self.shot_timestamps))
 
-    def _get_teammate_centroid(self):
-        if not self._teammate_positions:
-            return None
-        centroid_x = sum(position[0] for position in self._teammate_positions) / len(self._teammate_positions)
-        centroid_y = sum(position[1] for position in self._teammate_positions) / len(self._teammate_positions)
-        return centroid_x, centroid_y
+    def _get_playstyle(self, brawler):
+        playstyle = self.brawlers_info.get(brawler, {}).get("playstyle", "fighter")
+        return PLAYSTYLE_CONFIG.get(playstyle, PLAYSTYLE_CONFIG["fighter"])
 
-    def _get_nearest_teammate_target(self, player_pos):
-        if not self._teammate_positions:
-            return None, float("inf")
-        nearest_target = min(
-            self._teammate_positions,
-            key=lambda teammate_pos: self.get_distance(teammate_pos, player_pos),
-        )
-        return nearest_target, self.get_distance(nearest_target, player_pos)
+    def _add_strafe(self, movement, direction_x, direction_y, current_time, style):
+        if style["dodge_chance"] <= 0:
+            return movement
 
-    def _reset_showdown_teammate_lock(self):
-        self._showdown_locked_teammate = None
-        self._showdown_locked_teammate_distance = float("inf")
-        self._showdown_regroup_active = False
+        if current_time - self.strafe_switch_time >= self.strafe_interval:
+            self.strafe_direction *= -1
+            self.strafe_switch_time = current_time
 
-    def _get_showdown_regroup_target(self, player_pos):
-        if not self._teammate_positions:
-            self._reset_showdown_teammate_lock()
-            return None, float("inf")
-
-        nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
-        selected_target = nearest_target
-        selected_distance = nearest_distance
-
-        if self._showdown_locked_teammate is not None:
-            locked_target = min(
-                self._teammate_positions,
-                key=lambda teammate_pos: self.get_distance(teammate_pos, self._showdown_locked_teammate),
-            )
-            locked_distance = self.get_distance(locked_target, player_pos)
-            if nearest_distance >= locked_distance * (1.0 - self._showdown_teammate_hysteresis):
-                selected_target = locked_target
-                selected_distance = locked_distance
-
-        self._showdown_locked_teammate = selected_target
-        self._showdown_locked_teammate_distance = selected_distance
-        return selected_target, selected_distance
-
-    def _should_hold_showdown_regroup(self, teammate_distance):
-        if teammate_distance == float("inf"):
-            self._showdown_regroup_active = False
-            return False
-
-        start_distance = max(self._showdown_team_pull_distance, self._showdown_regroup_release_distance + 10.0)
-        if self._showdown_regroup_active:
-            self._showdown_regroup_active = teammate_distance > self._showdown_regroup_release_distance
+        if abs(direction_x) > abs(direction_y):
+            strafe_key = "W" if self.strafe_direction > 0 else "S"
         else:
-            self._showdown_regroup_active = teammate_distance > start_distance
-        return self._showdown_regroup_active
+            strafe_key = "A" if self.strafe_direction > 0 else "D"
 
-    def _get_showdown_follow_move(self, player_pos, wall_context):
-        teammate_target, teammate_distance = self._get_showdown_regroup_target(player_pos)
-        if teammate_target is None:
-            return None, float("inf")
-
-        follow_deadzone = max(72.0, min(110.0, self._showdown_team_pull_distance * 0.55))
-        if teammate_distance <= follow_deadzone:
-            return None, teammate_distance
-
-        teammate_move = self._get_move_toward(
-            player_pos,
-            teammate_target,
-            wall_context,
-            allow_detour=True,
-        )
-        return teammate_move, teammate_distance
-
-    def _get_showdown_roam_move(self, player_pos, wall_context):
-        self._showdown_roam_spin_angle = (self._showdown_roam_spin_angle + 15.0) % 360.0
-        return self._find_best_angle(player_pos, self._showdown_roam_spin_angle, wall_context)
-
-    def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True):
-        teammate_move, teammate_distance = self._get_showdown_follow_move(player_pos, wall_context)
-        if teammate_move is not None:
-            return teammate_move, "team_regroup"
-
-        if allow_memory_chase and teammate_distance == float("inf"):
-            last_enemy_pos = self._get_last_known_enemy_pos()
-            if last_enemy_pos is not None and (time.time() - self._last_enemy_seen_at) <= self._showdown_enemy_chase_timeout:
-                chase_move = self._get_move_toward(
-                    player_pos,
-                    last_enemy_pos,
-                    wall_context,
-                    allow_detour=True,
-                )
-                if chase_move:
-                    return chase_move, "memory_chase"
-
-        roam_move = self._get_showdown_roam_move(player_pos, wall_context)
-        if roam_move is not None:
-            return roam_move, "roam"
-        return None, None
-
-    def _plan_analog_reason(self, movement, reason):
-        if isinstance(movement, (float, int)):
-            self._planned_analog_reason = reason
+        opposite = {"W": "S", "S": "W", "A": "D", "D": "A"}
+        movement_upper = movement.upper()
+        if strafe_key not in movement_upper and opposite[strafe_key] not in movement_upper:
+            return movement + strafe_key
         return movement
-
-    def _stabilize_analog_angle(self, angle, current_time):
-        angle = float(angle) % 360.0
-        reason = self._planned_analog_reason or "engage"
-        self._planned_analog_reason = None
-
-        if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
-            self._committed_analog_reason = reason
-            self._committed_analog_until = current_time + self._analog_goal_hold_times.get(reason, 0.16)
-            return angle
-
-        angle_delta = self._angle_difference(angle, self.last_movement)
-        current_reason = self._committed_analog_reason or reason
-        current_priority = self._analog_goal_priorities.get(current_reason, 0)
-        next_priority = self._analog_goal_priorities.get(reason, 0)
-
-        if current_time < self._committed_analog_until:
-            if next_priority < current_priority and angle_delta < self._analog_turn_emergency_threshold:
-                return float(self.last_movement)
-            if next_priority == current_priority and angle_delta < self._analog_turn_emergency_threshold:
-                return float(self.last_movement)
-
-        self._committed_analog_reason = reason
-        self._committed_analog_until = current_time + self._analog_goal_hold_times.get(reason, 0.16)
-        return angle
-
-    def _get_search_targets(self):
-        width = self.window_controller.width
-        height = self.window_controller.height
-        if self.is_showdown_mode:
-            return [
-                (width * 0.50, height * 0.28),
-                (width * 0.32, height * 0.38),
-                (width * 0.68, height * 0.38),
-                (width * 0.40, height * 0.56),
-                (width * 0.60, height * 0.56),
-                (width * 0.50, height * 0.68),
-            ]
-        if self.game_mode == 3:
-            return [
-                (width * 0.5, height * 0.22),
-                (width * 0.3, height * 0.28),
-                (width * 0.7, height * 0.28),
-            ]
-        return [
-            (width * 0.78, height * 0.5),
-            (width * 0.72, height * 0.3),
-            (width * 0.72, height * 0.7),
-        ]
-
-    def _get_search_movement(self, player_pos, wall_context):
-        targets = self._get_search_targets()
-        if not targets:
-            return None
-
-        now = time.time()
-        if self._search_target_switch_time == 0.0:
-            self._search_target_idx = min(
-                range(len(targets)),
-                key=lambda idx: self.get_distance(targets[idx], player_pos),
-            )
-            self._search_target_switch_time = now
-        idx = self._search_target_idx % len(targets)
-        target = targets[idx]
-        target_distance = self.get_distance(target, player_pos)
-        stale_target = (now - self._search_target_switch_time) > self._search_target_hold_time
-
-        if target_distance < 90 or stale_target:
-            self._search_target_idx = (self._search_target_idx + 1) % len(targets)
-            self._search_target_switch_time = now
-            target = targets[self._search_target_idx]
-
-        return self._get_move_toward(player_pos, target, wall_context, allow_detour=self.is_showdown_mode)
 
     def get_movement(self, player_data, enemy_data, wall_context, brawler):
         brawler_info = self.brawlers_info.get(brawler)
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
+        style = self._get_playstyle(brawler)
+        effective_safe_range = int(safe_range * style["approach_factor"])
+        effective_attack_range = attack_range * style["range_mult"]
         close_range_brawler = self._is_close_range_brawler(brawler_info, safe_range, attack_range)
         contact_attack_threshold = self._get_contact_attack_threshold(brawler_info, attack_range)
 
         player_pos = self.get_player_pos(player_data)
+        current_time = time.time()
+        self._update_ammo(current_time, brawler)
         showdown_fog_escape = None
         if self.is_showdown_mode:
             showdown_fog_escape = self._get_showdown_fog_escape_move(player_data, wall_context)
@@ -1791,20 +2020,25 @@ class Play(Movement):
             if self.is_showdown_mode:
                 return self.no_enemy_movement(player_data, wall_context)
 
-            team_regroup_target = self._get_teammate_centroid()
+            teammate_target = self._get_teammate_centroid()
+            team_regroup_target = teammate_target
             team_regroup_distance = (
                 self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
             )
             should_team_regroup = team_regroup_target and team_regroup_distance > 160
-            if should_team_regroup:
-                team_move = self._get_move_toward(
-                    player_pos,
-                    team_regroup_target,
-                    wall_context,
-                    allow_detour=False,
-                )
-                if team_move:
-                    return self._plan_analog_reason(team_move, "team_regroup")
+            if team_regroup_target and (
+                style.get("prefer_teammates")
+                or self._is_post_burst_defensive(current_time)
+            ):
+                if should_team_regroup:
+                    team_move = self._get_move_toward(
+                        player_pos,
+                        team_regroup_target,
+                        wall_context,
+                        allow_detour=False,
+                    )
+                    if team_move:
+                        return self._plan_analog_reason(team_move, "team_regroup")
 
             last_enemy_pos = self._get_last_known_enemy_pos()
             if last_enemy_pos is not None:
@@ -1816,20 +2050,26 @@ class Play(Movement):
                 )
                 if memory_move:
                     return self._plan_analog_reason(memory_move, "memory_chase")
-
-            search_move = self._get_search_movement(player_pos, wall_context)
-            if search_move:
-                return self._plan_analog_reason(search_move, "search")
+            if style.get("aggressive_no_enemy") and self._no_enemy_duration > 1.0:
+                search_move = self._get_search_movement(player_pos, wall_context)
+                if search_move:
+                    return self._plan_analog_reason(search_move, "search")
             return self.no_enemy_movement(player_data, wall_context)
-        enemy_coords, enemy_distance = self.find_closest_enemy(enemy_data, player_pos, wall_context, "attack")
+        enemy_coords, enemy_distance, target_bbox, target_hittable = self.find_best_target(
+            enemy_data,
+            player_pos,
+            wall_context,
+            "attack",
+            effective_attack_range,
+        )
         if enemy_coords is None:
             return self.no_enemy_movement(player_data, wall_context)
-        enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
-        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
-        if close_range_contact:
-            enemy_hittable = True
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
+        post_burst_defensive = self._is_post_burst_defensive(current_time)
+        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
+        if close_range_contact:
+            target_hittable = True
 
         if self.is_showdown_mode:
             cohesion_target = None
@@ -1846,10 +2086,10 @@ class Play(Movement):
                     ),
                 )
                 dist_factor = min(1.0, (teammate_distance - 100) / 300.0)
-                cohesion_strength = 0.15 * dist_factor
+                cohesion_strength = style.get("team_cohesion", 0.0) * dist_factor
                 if self.is_showdown_mode:
-                    cohesion_strength = max(cohesion_strength, min(0.4, 0.16 + (dist_factor * 0.2)))
-                    if enemy_distance <= attack_range * 1.15:
+                    cohesion_strength = max(cohesion_strength, min(0.45, 0.18 + (dist_factor * 0.22)))
+                    if target_hittable and enemy_distance <= effective_attack_range * 1.2:
                         cohesion_strength *= 0.30
                     elif cohesion_angle_gap > 70.0:
                         cohesion_strength *= 0.45
@@ -1858,23 +2098,44 @@ class Play(Movement):
                 direction_x = direction_x * (1.0 - cohesion_strength) + (cohesion_target[0] - player_pos[0]) * cohesion_strength
                 direction_y = direction_y * (1.0 - cohesion_strength) + (cohesion_target[1] - player_pos[1]) * cohesion_strength
 
-        current_time = time.time()
+        should_retreat_for_ammo = style["retreat_on_low_ammo"] and (
+            self.current_ammo <= 0
+            or (post_burst_defensive and self.current_ammo <= self._ammo_conserve_threshold)
+        )
+        self.target_info.update({
+            "distance": int(enemy_distance),
+            "hp": -1,
+            "hittable": target_hittable,
+            "bbox": target_bbox,
+            "n_enemies": len(enemy_data or []),
+            "n_teammates": len(self._teammate_positions),
+        })
+
         if self._uses_analog_movement():
+            showdown_retreat = self.is_showdown_mode and enemy_distance <= safe_range
             movement = self._get_analog_engagement_move(
                 player_pos,
                 direction_x,
                 direction_y,
                 wall_context,
-                retreat=enemy_distance <= safe_range,
+                retreat=showdown_retreat or should_retreat_for_ammo or (
+                    not self.is_showdown_mode and enemy_distance <= effective_safe_range
+                ),
                 current_time=current_time,
+                style=style,
                 should_strafe=(
                     not self.is_showdown_mode
                     and
-                    enemy_distance > safe_range * 0.8
+                    target_hittable
+                    and not should_retreat_for_ammo
+                    and enemy_distance > effective_safe_range * 0.75
                     and enemy_distance <= attack_range * 1.05
+                    and self.current_ammo > 0
                 ),
             )
-            movement_reason = "retreat" if enemy_distance <= safe_range else "engage"
+            movement_reason = "retreat" if showdown_retreat or should_retreat_for_ammo or (
+                not self.is_showdown_mode and enemy_distance <= effective_safe_range
+            ) else "engage"
             if self.is_showdown_mode and showdown_fog_escape is not None:
                 movement = showdown_fog_escape
                 movement_reason = "fog_escape"
@@ -1884,7 +2145,10 @@ class Play(Movement):
             )
         else:
             # Determine initial movement direction
-            if enemy_distance > safe_range:  # Move towards the enemy
+            if should_retreat_for_ammo:
+                move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
+                move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
+            elif enemy_distance > effective_safe_range:  # Move towards the enemy
                 move_horizontal = self.get_horizontal_move_key(direction_x)
                 move_vertical = self.get_vertical_move_key(direction_y)
             else:  # Move away from the enemy
@@ -1916,6 +2180,9 @@ class Play(Movement):
                     # because it's better than doing nothing
                     movement = move_horizontal + move_vertical
 
+            if enemy_distance <= attack_range * 1.2 and self.current_ammo > 0:
+                movement = self._add_strafe(movement, direction_x, direction_y, current_time, style)
+
             if movement != self.last_movement:
                 if current_time - self.last_movement_time >= self.minimum_movement_delay:
                     self.last_movement = movement
@@ -1925,7 +2192,37 @@ class Play(Movement):
             else:
                 self.last_movement_time = current_time  # Reset timer if movement didn't change
 
-        # Attack if enemy is within attack range and hittable
+        burst_active = False
+        if self.target_info["hittable"] and enemy_distance <= attack_range:
+            if self.current_ammo >= self.max_ammo and not self._burst_mode:
+                self._burst_mode = True
+                self._burst_start_time = current_time
+            if self._burst_mode and self.current_ammo > 0:
+                burst_active = True
+            elif self._burst_mode and self.current_ammo <= 0:
+                self._burst_mode = False
+                self._last_burst_end_time = current_time
+        else:
+            self._burst_mode = False
+
+        attack_interval = self._get_attack_interval(
+            style,
+            brawler_info,
+            enemy_distance,
+            safe_range,
+            effective_attack_range,
+            burst_active,
+        )
+        should_fire = self._should_fire(enemy_distance, safe_range, effective_attack_range, burst_active) or (
+            close_range_contact and self.current_ammo > 0
+        )
+        can_attack_now = (
+            enemy_distance <= effective_attack_range
+            and self.current_ammo > 0
+            and should_fire
+            and (current_time - self.time_since_last_attack >= attack_interval)
+        )
+
         if enemy_distance <= attack_range:
             if self.should_use_gadget == True and self.is_gadget_ready:
                 self.use_gadget()
@@ -1935,12 +2232,13 @@ class Play(Movement):
                 self.use_hypercharge()
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
-            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "attack")
-            if close_range_contact:
-                enemy_hittable = True
-            # print("enemy hittable", enemy_hittable, "enemy_distance", enemy_distance)
-            if enemy_hittable:
-                self.attack()
+        if can_attack_now and (self.target_info["hittable"] or close_range_contact):
+            self.attack()
+            self._consume_ammo(current_time)
+            self.time_since_last_attack = current_time
+            if self._burst_mode and self.current_ammo <= 0:
+                self._burst_mode = False
+                self._last_burst_end_time = current_time
         if self.is_super_ready:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
@@ -1956,6 +2254,13 @@ class Play(Movement):
         return movement
 
     def main(self, frame, brawler):
+        if brawler != self.current_brawler:
+            self.current_brawler = brawler
+            self.shot_timestamps = []
+            self.current_ammo = self.max_ammo
+            self._burst_mode = False
+            self._burst_start_time = 0.0
+            self._last_burst_end_time = 0.0
         current_time = time.time()
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
         if runtime_state == "match" and (current_time - self._last_end_result_probe_time) >= 0.8:
@@ -1968,7 +2273,7 @@ class Play(Movement):
                 self.window_controller.keys_up(list("wasd"))
                 self.time_since_last_proceeding = current_time
                 return
-        data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time)
+        data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
         raw_supporting_entities = (
             self._entity_count(data, "enemy")
             + self._entity_count(data, "teammate")
@@ -2042,6 +2347,7 @@ class Play(Movement):
                 else:
                     self._reset_match_state_guard()
                     self._runtime_state = "match"
+                    self.note_confirmed_match_state(current_time)
         if not data:
             self._allow_skill_inputs = False
             self._reset_match_state_guard()
@@ -2108,7 +2414,10 @@ class Play(Movement):
         if enemies:
             self._update_enemy_memory(enemies)
             self._last_enemy_seen_at = current_time
+            self._no_enemy_duration = 0.0
             self._search_target_switch_time = 0.0
+        else:
+            self._no_enemy_duration = current_time - self._last_enemy_seen_at
         should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
         should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
         should_check_super = current_time - self.time_since_super_checked > self.super_treshold
@@ -2225,4 +2534,3 @@ class Play(Movement):
         movement = movement.lower()
         movement = ''.join(sorted(movement))
         return mapping.get(movement, 'idle' if movement == '' else movement)
-
