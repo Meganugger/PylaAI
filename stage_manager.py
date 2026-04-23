@@ -88,7 +88,7 @@ class StageManager:
         self._lobby_start_retry_delay = 1.35
         self._lobby_start_blocked_until = 0.0
         self._lobby_start_block_reason = ""
-        self._post_result_lobby_delay = 1.15
+        self._post_result_lobby_delay = 1.8
 
     def _is_easyocr_ready(self):
         try:
@@ -649,7 +649,7 @@ class StageManager:
                 max_attempts = 30
                 attempts = 0
                 while current_state != "lobby" and attempts < max_attempts:
-                    self.window_controller.press_continue()
+                    self.window_controller.press_key("Q")
                     if debug: print("Pressed Q to return to lobby")
                     time.sleep(1)
                     screenshot = self.window_controller.screenshot()
@@ -822,9 +822,9 @@ class StageManager:
                         self.window_controller.keys_up(list("wasd"))
                         self.window_controller.close()
                         sys.exit(0)
-            self.window_controller.press_continue()
+            self.window_controller.press_key("Q")
             if debug: print("Game has ended, pressing Q")
-            time.sleep(0.35)
+            time.sleep(0.45)
             screenshot = self.window_controller.screenshot()
             current_state = self._resolve_end_transition_state(
                 screenshot,
