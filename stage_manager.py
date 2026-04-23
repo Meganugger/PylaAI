@@ -187,7 +187,7 @@ class StageManager:
         self._lobby_start_retry_delay = 1.35
         self._lobby_start_blocked_until = 0.0
         self._lobby_start_block_reason = ""
-        self._post_result_lobby_delay = 1.15
+        self._post_result_lobby_delay = 1.8
 
     def _is_easyocr_ready(self):
         try:
@@ -1565,10 +1565,10 @@ class StageManager:
                 if debug:
                     print("Victory - pressing F (Play Again)")
             else:
-                self.window_controller.press_continue()
+                self.window_controller.press_key("Q")
                 if debug:
                     print("Game has ended, pressing Q")
-            time.sleep(0.35)
+            time.sleep(0.45)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot)
             end_attempts += 1
