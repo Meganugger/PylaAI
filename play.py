@@ -384,7 +384,7 @@ class Movement:
     def attack(self):
         if not self._can_issue_live_input():
             return False
-        if getattr(self, "attack_cooldown", 0) > 0:
+        if self.attack_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_attack_time < self.attack_cooldown:
                 return False
@@ -403,7 +403,7 @@ class Movement:
     def use_gadget(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
-        if getattr(self, "gadget_cooldown", 0) > 0:
+        if self.gadget_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_gadget_time < self.gadget_cooldown:
                 return False
@@ -416,7 +416,7 @@ class Movement:
     def use_super(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
             return False
-        if getattr(self, "super_cooldown", 0) > 0:
+        if self.super_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_super_time < self.super_cooldown:
                 return False
@@ -721,7 +721,10 @@ class Play(Movement):
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
         self.entity_detection_retry_interval = float(
-            bot_config.get("entity_detection_retry_interval", 0.18)
+            bot_config.get("entity_detection_retry_interval", 0.30)
+        )
+        self.entity_detection_retry_missing_delay = float(
+            bot_config.get("entity_detection_retry_missing_delay", 0.22)
         )
         self.recent_player_restore_max_age = float(
             bot_config.get("recent_player_restore_max_age", 0.45)
@@ -1572,8 +1575,21 @@ class Play(Movement):
             self._entity_count(data, "enemy")
             + self._entity_count(data, "teammate")
         )
+        player_missing_for = current_time - float(getattr(self, "time_since_player_last_found", 0.0) or 0.0)
+        recent_player_age = current_time - float(getattr(self, "_last_valid_player_seen_at", 0.0) or 0.0)
+        restore_window = max(
+            float(getattr(self, "recent_player_restore_support_age", 0.0) or 0.0),
+            float(getattr(self, "recent_player_restore_solo_age", 0.0) or 0.0),
+        )
+        restore_should_cover_gap = (
+            bool(getattr(self, "_last_valid_player_bbox", None))
+            and recent_player_age <= restore_window
+            and self.has_recent_match_context(current_time)
+        )
         allow_retry = (
             self.entity_detection_retry_confidence < self.entity_detection_confidence
+            and player_missing_for >= self.entity_detection_retry_missing_delay
+            and not restore_should_cover_gap
             and (
                 supporting_entities > 0
                 or runtime_state == "match"
@@ -1583,9 +1599,12 @@ class Play(Movement):
         if not data.get("player") and allow_retry:
             if (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
                 self._last_retry_detection_time = current_time
-                retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+                retry_data = self.Detect_main_info.detect_objects(
+                    frame,
+                    conf_tresh=self.entity_detection_retry_confidence,
+                )
                 if retry_data.get("player"):
-                    if debug and (current_time - self._last_retry_player_log_time) >= 2.0:
+                    if debug and (current_time - self._last_retry_player_log_time) >= 5.0:
                         print(
                             "[DBG] player recovered with lower entity threshold "
                             f"{self.entity_detection_retry_confidence:.2f}"
