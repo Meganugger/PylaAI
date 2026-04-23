@@ -198,7 +198,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             )
             if (
                 runtime_state == "match"
-                and now - self._last_fast_result_probe >= 0.6
+                and player_missing_for >= 0.6
+                and now - self._last_fast_result_probe >= 1.0
             ):
                 self._last_fast_result_probe = now
                 fast_result = find_game_result(frame)
