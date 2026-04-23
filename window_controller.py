@@ -96,6 +96,24 @@ def _serial_port(serial):
             return None
     return None
 
+
+def _serial_candidates(serial, fallback_port=0):
+    candidates = []
+    serial = str(serial or "").strip()
+    port = _serial_port(serial)
+    if serial:
+        candidates.append(serial)
+    if port is None:
+        try:
+            port = int(fallback_port)
+        except (TypeError, ValueError):
+            port = None
+    if port:
+        tcp_serial = f"127.0.0.1:{port}"
+        if tcp_serial not in candidates:
+            candidates.append(tcp_serial)
+    return candidates
+
 class WindowController:
     def __init__(self):
         self.scale_factor = None
@@ -132,43 +150,44 @@ class WindowController:
                 ]
 
             general_config = load_toml_as_dict("cfg/general_config.toml")
-            selected_emulator = _normalize_emulator_name(general_config.get("current_emulator", "Others"))
-            configured_port = general_config.get("emulator_port", 0)
-            candidate_ports = _unique_ports(
-                [configured_port]
-                + EMULATOR_PORTS.get(selected_emulator, EMULATOR_PORTS["Others"])
+            self.selected_emulator = _normalize_emulator_name(general_config.get("current_emulator", "Others"))
+            self.configured_port = general_config.get("emulator_port", 0)
+            self.candidate_ports = _unique_ports(
+                [self.configured_port]
+                + EMULATOR_PORTS.get(self.selected_emulator, EMULATOR_PORTS["Others"])
                 + EMULATOR_PORTS["Others"]
                 + list(range(5565, 5756, 10))
             )
 
             device_list = list_online_devices()
-            preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
+            preferred_devices = prefer_selected_devices(device_list, self.selected_emulator, self.configured_port)
 
-            should_probe_ports = not device_list or (selected_emulator != "Others" and not preferred_devices)
+            should_probe_ports = not device_list or (self.selected_emulator != "Others" and not preferred_devices)
             if should_probe_ports:
-                open_ports = [port for port in candidate_ports if _is_port_open("127.0.0.1", port)]
+                open_ports = [port for port in self.candidate_ports if _is_port_open("127.0.0.1", port)]
                 for port in open_ports:
                     try:
                         adb.connect(f"127.0.0.1:{port}")
                     except Exception:
                         pass
                 device_list = list_online_devices()
-                preferred_devices = prefer_selected_devices(device_list, selected_emulator, configured_port)
+                preferred_devices = prefer_selected_devices(device_list, self.selected_emulator, self.configured_port)
 
             if not device_list:
-                tried_ports = ", ".join(str(port) for port in candidate_ports)
+                tried_ports = ", ".join(str(port) for port in self.candidate_ports)
                 raise ConnectionError(f"No online ADB devices found. Tried ports: {tried_ports}")
 
             self.device = preferred_devices[0] if preferred_devices else device_list[0]
-            if selected_emulator != "Others" and not preferred_devices:
+            self.device_serial = self.device.serial
+            if self.selected_emulator != "Others" and not preferred_devices:
                 print(
-                    f"Could not identify a {selected_emulator} device by port; "
+                    f"Could not identify a {self.selected_emulator} device by port; "
                     f"using first online ADB device instead."
                 )
-            print(f"Connected to {selected_emulator}: {self.device.serial}")
+            print(f"Connected to {self.selected_emulator}: {self.device.serial}")
 
             self.frame_condition = threading.Condition()
-            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
+            self.scrcpy_client = None
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
@@ -176,16 +195,9 @@ class WindowController:
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
             self.last_app_state_check = 0.0
-
-            def on_frame(frame):
-                if frame is not None:
-                    with self.frame_condition:
-                        self.last_frame = frame
-                        self.last_frame_time = time.time()
-                        self.frame_condition.notify_all()
-
-            self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
-            self.scrcpy_client.start(threaded=True)
+            self.SCRCPY_START_RETRIES = 3
+            self.SCRCPY_RETRY_DELAY = 0.5
+            self.start_scrcpy_client()
             atexit.register(self.close)
             print("Scrcpy client started successfully.")
 
@@ -194,6 +206,133 @@ class WindowController:
         self.are_we_moving = False
         self.PID_JOYSTICK = 1  # ID for WASD movement
         self.PID_ATTACK = 2  # ID for clicks/attacks
+
+    def _list_online_devices(self):
+        devices = []
+        for dev in adb.device_list():
+            try:
+                state = dev.get_state()
+            except Exception:
+                state = "unknown"
+            if state == "device":
+                devices.append(dev)
+        return devices
+
+    def _refresh_device_handle(self):
+        candidates = _serial_candidates(self.device_serial, self.configured_port)
+        online_devices = self._list_online_devices()
+
+        for serial in candidates:
+            for dev in online_devices:
+                if dev.serial == serial:
+                    self.device = dev
+                    self.device_serial = dev.serial
+                    return True
+
+        target_port = _serial_port(self.device_serial)
+        if target_port is None:
+            try:
+                target_port = int(self.configured_port)
+            except (TypeError, ValueError):
+                target_port = None
+
+        if target_port is not None:
+            for dev in online_devices:
+                if _serial_port(dev.serial) == target_port:
+                    self.device = dev
+                    self.device_serial = dev.serial
+                    return True
+
+        return False
+
+    def _recover_adb_transport(self, error):
+        print(f"Recovering ADB transport after scrcpy start failure: {error}")
+        for serial in _serial_candidates(self.device_serial, self.configured_port):
+            try:
+                adb.disconnect(serial)
+            except Exception:
+                pass
+
+        time.sleep(0.15)
+
+        for serial in _serial_candidates(self.device_serial, self.configured_port):
+            if serial.startswith("127.0.0.1:"):
+                try:
+                    adb.connect(serial)
+                except Exception:
+                    pass
+
+        if not self._refresh_device_handle():
+            for port in self.candidate_ports:
+                if not _is_port_open("127.0.0.1", port):
+                    continue
+                try:
+                    adb.connect(f"127.0.0.1:{port}")
+                except Exception:
+                    pass
+            self._refresh_device_handle()
+
+    def _reset_frame_state(self):
+        with self.frame_condition:
+            self.last_frame = None
+            self.last_frame_time = 0.0
+            self.frame_condition.notify_all()
+        self.last_joystick_pos = (None, None)
+        self.are_we_moving = False
+
+    def _build_scrcpy_client(self):
+        def on_frame(frame):
+            if frame is not None:
+                with self.frame_condition:
+                    self.last_frame = frame
+                    self.last_frame_time = time.time()
+                    self.frame_condition.notify_all()
+
+        client = scrcpy.Client(device=self.device, max_width=0)
+        client.add_listener(scrcpy.EVENT_FRAME, on_frame)
+        return client
+
+    def start_scrcpy_client(self, retries=None):
+        retries = max(int(retries or self.SCRCPY_START_RETRIES), 1)
+        last_error = None
+        self._reset_frame_state()
+
+        for attempt in range(1, retries + 1):
+            client = None
+            try:
+                self._refresh_device_handle()
+                client = self._build_scrcpy_client()
+                client.start(threaded=True)
+                self.scrcpy_client = client
+                return
+            except Exception as exc:
+                last_error = exc
+                self.scrcpy_client = None
+                if client is not None:
+                    try:
+                        client.stop()
+                    except Exception:
+                        pass
+                if attempt >= retries:
+                    break
+                print(f"scrcpy start attempt {attempt}/{retries} failed: {exc}")
+                self._recover_adb_transport(exc)
+                time.sleep(self.SCRCPY_RETRY_DELAY * attempt)
+
+        raise ConnectionError(f"Failed to start scrcpy after {retries} attempt(s): {last_error}")
+
+    def restart_scrcpy_client(self):
+        print("Restarting scrcpy client...")
+        old_client = self.scrcpy_client
+        self.scrcpy_client = None
+        if old_client is not None:
+            try:
+                old_client.stop()
+            except Exception as exc:
+                print(f"Could not stop old scrcpy client cleanly: {exc}")
+        time.sleep(0.25)
+        self.start_scrcpy_client()
+        print("Scrcpy client restarted successfully.")
 
     def _ensure_frame_geometry(self, frame):
         if self.width and self.height:
@@ -247,6 +386,7 @@ class WindowController:
         did_log_wait = False
         latest_frame_time = 0.0
         checked_app_state = False
+        restarted_scrcpy = False
 
         while True:
             if waiting_for_first_frame and not did_log_wait:
@@ -267,6 +407,14 @@ class WindowController:
                         checked_app_state = True
                         deadline = time.monotonic() + self.APP_RELAUNCH_WAIT + 2.0
                         continue
+                    if not restarted_scrcpy:
+                        try:
+                            self.restart_scrcpy_client()
+                            restarted_scrcpy = True
+                            deadline = time.monotonic() + min(timeout, 5.0)
+                            continue
+                        except Exception as exc:
+                            print(f"Could not restart scrcpy client after frame timeout: {exc}")
                     return None, latest_frame_time
 
                 self.frame_condition.wait(timeout=remaining)
@@ -379,7 +527,13 @@ class WindowController:
 
     def close(self):
         if hasattr(self, 'scrcpy_client'):
-            self.scrcpy_client.stop()
+            client = self.scrcpy_client
+            self.scrcpy_client = None
+            if client is not None:
+                try:
+                    client.stop()
+                except Exception:
+                    pass
 
     def is_stream_alive(self):
         if not hasattr(self, "scrcpy_client"):
@@ -393,22 +547,7 @@ class WindowController:
     def reconnect_scrcpy(self):
         try:
             print("[RECOVERY] Attempting to reconnect scrcpy...")
-            try:
-                self.scrcpy_client.stop()
-            except Exception:
-                pass
-
-            self.scrcpy_client = scrcpy.Client(device=self.device, max_width=0)
-
-            def on_frame(frame):
-                if frame is not None:
-                    with self.frame_condition:
-                        self.last_frame = frame
-                        self.last_frame_time = time.time()
-                        self.frame_condition.notify_all()
-
-            self.scrcpy_client.add_listener(scrcpy.EVENT_FRAME, on_frame)
-            self.scrcpy_client.start(threaded=True)
+            self.restart_scrcpy_client()
             self.last_app_state_check = 0.0
             return True
         except Exception as exc:
