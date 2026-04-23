@@ -721,19 +721,19 @@ class Play(Movement):
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
         self.entity_detection_retry_interval = float(
-            bot_config.get("entity_detection_retry_interval", 0.30)
+            bot_config.get("entity_detection_retry_interval", 0.45)
         )
         self.entity_detection_retry_missing_delay = float(
-            bot_config.get("entity_detection_retry_missing_delay", 0.22)
+            bot_config.get("entity_detection_retry_missing_delay", 0.35)
         )
         self.recent_player_restore_max_age = float(
             bot_config.get("recent_player_restore_max_age", 0.45)
         )
         self.recent_player_restore_support_age = float(
-            bot_config.get("recent_player_restore_support_age", 0.25)
+            bot_config.get("recent_player_restore_support_age", 0.35)
         )
         self.recent_player_restore_solo_age = float(
-            bot_config.get("recent_player_restore_solo_age", 0.14)
+            bot_config.get("recent_player_restore_solo_age", 0.18)
         )
         self._runtime_state = "starting"
         self._last_state_probe_runtime = ""
@@ -1590,11 +1590,8 @@ class Play(Movement):
             self.entity_detection_retry_confidence < self.entity_detection_confidence
             and player_missing_for >= self.entity_detection_retry_missing_delay
             and not restore_should_cover_gap
-            and (
-                supporting_entities > 0
-                or runtime_state == "match"
-                or self.has_recent_match_context(current_time)
-            )
+            and supporting_entities > 0
+            and self.has_recent_match_context(current_time)
         )
         if not data.get("player") and allow_retry:
             if (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
