@@ -187,6 +187,7 @@ class StageManager:
         self._lobby_start_retry_delay = 1.35
         self._lobby_start_blocked_until = 0.0
         self._lobby_start_block_reason = ""
+        self._post_result_lobby_delay = 1.15
 
     def _is_easyocr_ready(self):
         try:
@@ -203,6 +204,12 @@ class StageManager:
             try:
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
+                if self._match_in_progress or not self._awaiting_lobby_result_sync:
+                    self._lobby_ocr_warmup_started = False
+                    return
+                if self._last_start_press_at and (time.time() - self._last_start_press_at) < 1.0:
+                    self._lobby_ocr_warmup_started = False
+                    return
                 warmed = reader.warm_up()
                 if not warmed and not self._is_easyocr_ready():
                     self._lobby_ocr_warmup_started = False
@@ -856,8 +863,6 @@ class StageManager:
             if not synced:
                 ocr_ready = self._is_easyocr_ready()
                 has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
-                if not ocr_ready:
-                    self._ensure_lobby_ocr_warmup(delay_seconds=1.25)
                 synced = self._sync_lobby_result(
                     data,
                     allow_ocr=ocr_ready,
@@ -874,6 +879,7 @@ class StageManager:
                 self._lobby_sync_started_at = 0.0
                 self._pending_verified_result = None
                 self._restart_lobby_settle_window()
+                self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
             if not synced:
                 if self._pending_verified_result:
                     print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
@@ -883,6 +889,7 @@ class StageManager:
                 self._match_in_progress = False
                 self._lobby_sync_started_at = 0.0
                 self._restart_lobby_settle_window()
+                self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
         elif self._awaiting_lobby_result_sync:
             print("[RESULT] lobby reached after direct result commit; skipping OCR fallback")
             self._awaiting_lobby_result_sync = False
@@ -890,6 +897,7 @@ class StageManager:
             self._lobby_sync_started_at = 0.0
             self._pending_verified_result = None
             self._restart_lobby_settle_window()
+            self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
         self._flush_webhook_milestone(data)
 
         # quest Farm Mode: check if current brawler's quest is done
