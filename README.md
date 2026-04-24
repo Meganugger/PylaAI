@@ -47,7 +47,13 @@ If you do not already have the required tools, download them here first:
 
 Do not use `python setup.py install`.
 
-The easiest Windows setup path is to double-click `setup.bat` from the repo root.
+For most Windows users, the simplest rule is:
+- double-click `Run PylaAI.bat` for normal use
+- use `setup.bat` only if you want to run install/repair manually
+
+`Run PylaAI.bat` will send you through setup automatically if the environment is missing or broken.
+
+If you want to run the installer yourself, double-click `setup.bat` from the repo root.
 
 It will:
 - check for Python 3.10.0
@@ -151,7 +157,12 @@ If you prefer a different Python 3.10.0 interpreter:
 
 Start your emulator first, then launch the bot by double-clicking `Run PylaAI.bat`.
 
-`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken. The older `start.bat` still exists as a minimal direct launcher.
+Recommended launcher flow:
+- `Run PylaAI.bat`: normal everyday launcher, including first launch if you want the simplest path
+- `setup.bat`: manual install/repair launcher
+- `start.bat`: legacy direct launcher with fewer checks
+
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken.
 
 Manual fallback from the repository root:
 
