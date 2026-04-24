@@ -323,11 +323,16 @@ class StageManager:
         if type_to_push not in {"trophies", "wins"}:
             type_to_push = "trophies"
 
+        use_verified_progress = (
+            self._awaiting_lobby_result_sync
+            and not getattr(self.Trophy_observer, "_lobby_trophy_verified", False)
+        )
+
         if type_to_push == "wins":
-            raw_value = self.Trophy_observer.current_wins
+            raw_value = active.get("wins") if use_verified_progress else self.Trophy_observer.current_wins
             default_target = 300
         else:
-            raw_value = self.Trophy_observer.current_trophies
+            raw_value = active.get("trophies") if use_verified_progress else self.Trophy_observer.current_trophies
             default_target = 1000
 
         if raw_value is None:
@@ -648,6 +653,16 @@ class StageManager:
             self._coerce_int(active.get('win_streak'), 0),
         )
 
+    def _commit_active_brawler_progress(self, queue_milestone=True):
+        if not self.brawlers_pick_data:
+            return False
+        current_brawler = self.brawlers_pick_data[0].get('brawler')
+        self._sync_active_brawler_progress()
+        if queue_milestone:
+            self._queue_webhook_milestone(current_brawler)
+        save_brawler_data(self.brawlers_pick_data)
+        return True
+
     def _current_brawler_name(self):
         if not self.brawlers_pick_data:
             return None
@@ -823,9 +838,7 @@ class StageManager:
                 return False
 
         self.Trophy_observer.reconcile_verified_trophies(current_brawler, verified_trophies)
-        self._sync_active_brawler_progress()
-        self._queue_webhook_milestone(current_brawler)
-        save_brawler_data(self.brawlers_pick_data)
+        self._commit_active_brawler_progress(queue_milestone=True)
         self._awaiting_lobby_result_sync = False
         self._match_in_progress = False
         self._lobby_sync_started_at = 0.0
@@ -854,72 +867,72 @@ class StageManager:
         self.time_since_last_stat_change = time.time()
 
         type_to_push, value, _ = self._resolve_push_progress()
-
-        self._sync_active_brawler_progress()
-        self._queue_webhook_milestone(current_brawler)
-        self.brawlers_pick_data[0][type_to_push] = value
-        save_brawler_data(self.brawlers_pick_data)
         self._result_applied_for_active_match = True
         self._match_in_progress = False
-        print(f"[RESULT] applied={applied} value={value} type={type_to_push}")
+        print(f"[RESULT] applied={applied} predicted_value={value} type={type_to_push}")
         return applied
 
     def start_game(self, data):
         print("state is lobby, starting game")
 
-        if self._awaiting_lobby_result_sync and not self._result_applied_for_active_match:
-            print("[RESULT] entering lobby fallback sync because no result was committed yet")
+        if self._awaiting_lobby_result_sync:
             synced = False
             if not self._lobby_sync_started_at:
                 self._lobby_sync_started_at = time.time()
-            direct_result = False
-            try:
-                if data is not None:
-                    direct_result = find_game_result(data)
-            except Exception:
+            elapsed = time.time() - self._lobby_sync_started_at
+
+            if not self._result_applied_for_active_match:
+                print("[RESULT] entering lobby fallback sync because no result was committed yet")
                 direct_result = False
-            if direct_result:
-                print(f"[RESULT] lobby entry direct probe recovered {direct_result}")
-                self._apply_or_defer_detected_result(direct_result, source="lobby-entry")
-                synced = self._result_applied_for_active_match
-            if not synced:
-                ocr_ready = self._is_easyocr_ready()
-                has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
-                synced = self._sync_lobby_result(
-                    data,
-                    allow_ocr=ocr_ready,
-                    api_timeout=0.35 if not ocr_ready else 0.75,
-                )
-                if not synced and not has_api_settings and not ocr_ready:
-                    print("[RESULT] Brawl Stars API settings are empty; skipping slow lobby OCR wait and starting the next match")
-            if debug and not synced:
-                print("Lobby result sync did not resolve before next match start.")
-            if synced and self._awaiting_lobby_result_sync:
-                print("[RESULT] lobby fallback resolved after direct result commit; skipping OCR verification")
+                try:
+                    if data is not None:
+                        direct_result = find_game_result(data)
+                except Exception:
+                    direct_result = False
+                if direct_result:
+                    print(f"[RESULT] lobby entry direct probe recovered {direct_result}")
+                    self._apply_or_defer_detected_result(direct_result, source="lobby-entry")
+
+            ocr_ready = self._is_easyocr_ready()
+            has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
+            if not ocr_ready and not has_api_settings:
+                self._ensure_lobby_ocr_warmup(delay_seconds=0.0)
+
+            synced = self._sync_lobby_result(
+                data,
+                allow_ocr=ocr_ready,
+                api_timeout=0.35 if not ocr_ready else 0.75,
+            )
+
+            if synced:
+                self._restart_lobby_settle_window()
+                self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
+            else:
+                verification_window = 2.25 if (has_api_settings or ocr_ready) else 1.25
+                if elapsed < verification_window:
+                    if debug:
+                        print(
+                            f"[RESULT] waiting for verified trophy sync "
+                            f"({elapsed:.2f}s/{verification_window:.2f}s)"
+                        )
+                    self._delay_lobby_start(self._post_result_lobby_delay, "waiting for verified trophy sync")
+                    return
+
+                if self._pending_verified_result and not self._result_applied_for_active_match:
+                    print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
+                    self._apply_match_result(self._pending_verified_result)
+                    self._pending_verified_result = None
+
+                if self._result_applied_for_active_match:
+                    print("[RESULT] verified trophy sync unavailable; keeping predicted progress for this match")
+                    self._commit_active_brawler_progress(queue_milestone=True)
+
                 self._awaiting_lobby_result_sync = False
                 self._match_in_progress = False
                 self._lobby_sync_started_at = 0.0
                 self._pending_verified_result = None
                 self._restart_lobby_settle_window()
                 self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
-            if not synced:
-                if self._pending_verified_result:
-                    print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
-                    self._apply_match_result(self._pending_verified_result)
-                    self._pending_verified_result = None
-                self._awaiting_lobby_result_sync = False
-                self._match_in_progress = False
-                self._lobby_sync_started_at = 0.0
-                self._restart_lobby_settle_window()
-                self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
-        elif self._awaiting_lobby_result_sync:
-            print("[RESULT] lobby reached after direct result commit; skipping OCR fallback")
-            self._awaiting_lobby_result_sync = False
-            self._match_in_progress = False
-            self._lobby_sync_started_at = 0.0
-            self._pending_verified_result = None
-            self._restart_lobby_settle_window()
-            self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
         self._flush_webhook_milestone(data)
 
         # quest Farm Mode: check if current brawler's quest is done

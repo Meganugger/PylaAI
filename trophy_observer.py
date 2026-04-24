@@ -305,6 +305,17 @@ class TrophyObserver:
                 return None
         return self._active_match_start_trophies
 
+    def get_verified_live_trophies(self, current_brawler=None):
+        key = str(current_brawler or self._active_match_brawler or "").lower()
+        current_value = self._safe_int(self.current_trophies, 0)
+        if self._lobby_trophy_verified or not key:
+            return current_value
+        if key in self._session_end_trophies:
+            return self._safe_int(self._session_end_trophies.get(key), current_value)
+        if key in self._session_start_trophies:
+            return self._safe_int(self._session_start_trophies.get(key), current_value)
+        return current_value
+
     def _set_last_match_trophy_summary(
         self,
         game_result,
@@ -608,11 +619,17 @@ class TrophyObserver:
         stats["avg_damage"] = stats["total_damage"] / match_count
         stats["avg_deaths"] = stats["total_deaths"] / match_count
 
-        current_trophies = self.current_trophies if self.current_trophies is not None else 0
-        try:
-            self._session_end_trophies[key] = int(round(float(current_trophies)))
-        except (TypeError, ValueError):
-            self._session_end_trophies[key] = self._session_end_trophies.get(key, 0)
+        if self._lobby_trophy_verified:
+            current_trophies = self.current_trophies if self.current_trophies is not None else 0
+            try:
+                self._session_end_trophies[key] = int(round(float(current_trophies)))
+            except (TypeError, ValueError):
+                self._session_end_trophies[key] = self._session_end_trophies.get(key, 0)
+        else:
+            self._session_end_trophies[key] = self._session_end_trophies.get(
+                key,
+                self._session_start_trophies.get(key, 0),
+            )
 
         self._current_match_stats = {
             "brawler": None,
@@ -692,7 +709,7 @@ class TrophyObserver:
             verified=False,
             history_bucket=outcome["bucket"],
         )
-        print(f"[RESULT] trophies {old} -> {self.current_trophies}")
+        print(f"[RESULT] predicted trophies {old} -> {self.current_trophies}")
         print(f"[RESULT] current wins before increment: {self.current_wins}")
         self.match_history[current_brawler][outcome["bucket"]] += 1
         self.match_history["total"][outcome["bucket"]] += 1
@@ -777,7 +794,7 @@ class TrophyObserver:
         if not key:
             return {}
 
-        current_trophies = self._safe_int(self.current_trophies, 0)
+        current_trophies = self.get_verified_live_trophies(key)
         self.start_session_brawler(key, current_trophies)
         trophy_start = self._session_start_trophies.get(key, current_trophies)
         trophy_end = self._session_end_trophies.get(key, current_trophies)
@@ -824,7 +841,7 @@ class TrophyObserver:
         if not key:
             return None
 
-        current_trophies = self._safe_int(self.current_trophies, 0)
+        current_trophies = self.get_verified_live_trophies(key)
         self.start_session_brawler(key, current_trophies)
         current_bucket = self._milestone_bucket_for(current_trophies)
         highest_bucket = self._webhook_highest_milestone_bucket.get(
