@@ -46,6 +46,7 @@ class StageManager:
             'popup': self.close_pop_up,
             'reward_claim': self.claim_reward,
             'trophy_reward': self.claim_reward,
+            'player_title_reward': self.handle_player_title_reward,
             'match': lambda: 0,
             'end': self.end_game,
             'end_victory': self.end_game,
@@ -91,6 +92,12 @@ class StageManager:
         self._post_result_lobby_delay = 2.75
         self._unexpected_brawler_selection_delay = 2.5
         self._last_brawler_menu_recovery_at = 0.0
+        self._end_transition_started_at = 0.0
+        self._end_transition_last_action_at = 0.0
+        self._end_transition_last_result = None
+        self._end_transition_hold_match_until = 0.0
+        self._end_transition_action_interval = 0.75
+        self._end_transition_timeout = 12.0
 
     def _is_easyocr_ready(self):
         try:
@@ -153,6 +160,53 @@ class StageManager:
         self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
         self._lobby_start_block_reason = reason or self._lobby_start_block_reason
         self._start_wait_logged_at = 0.0
+
+    @staticmethod
+    def _is_endish_state(state):
+        return isinstance(state, str) and (
+            state.startswith("end")
+            or state in {"reward_claim", "trophy_reward", "player_title_reward", "star_drop"}
+        )
+
+    def _begin_end_transition(self, result=None, now=None):
+        if now is None:
+            now = time.time()
+        result = str(result or "").strip() or None
+        if result != self._end_transition_last_result:
+            self._end_transition_last_action_at = 0.0
+        if not self._end_transition_started_at or result != self._end_transition_last_result:
+            self._end_transition_started_at = now
+        self._end_transition_last_result = result
+        self._end_transition_hold_match_until = max(self._end_transition_hold_match_until, now + 4.0)
+
+    def _clear_end_transition(self):
+        self._end_transition_started_at = 0.0
+        self._end_transition_last_action_at = 0.0
+        self._end_transition_last_result = None
+        self._end_transition_hold_match_until = 0.0
+
+    def has_recent_end_transition(self, now=None):
+        if now is None:
+            now = time.time()
+        if not self._end_transition_started_at:
+            return False
+        return (now - self._end_transition_started_at) < self._end_transition_timeout
+
+    def get_end_transition_state(self):
+        if self._end_transition_last_result:
+            return f"end_{self._end_transition_last_result}"
+        if self._end_transition_started_at:
+            return "end"
+        return ""
+
+    def should_hold_match_probe(self, now=None):
+        if now is None:
+            now = time.time()
+        return (
+            self._awaiting_lobby_result_sync
+            and self.has_recent_end_transition(now)
+            and now < self._end_transition_hold_match_until
+        )
 
     def _recover_from_brawler_selection(self):
         now = time.time()
@@ -343,6 +397,7 @@ class StageManager:
         self._pending_verified_result = None
         self._api_lobby_sync_attempts = 0
         self._last_api_lobby_sync_attempt_at = 0.0
+        self._clear_end_transition()
         self._reset_lobby_start_tracking()
         if self.brawlers_pick_data:
             self.Trophy_observer.begin_match(self.brawlers_pick_data[0]['brawler'])
@@ -732,132 +787,111 @@ class StageManager:
 
         self.window_controller.press_continue()
 
-    def _resolve_end_transition_state(self, screenshot, previous_state, end_started_at, end_attempts):
-        state_without_ocr = get_state(screenshot, allow_reward_ocr=False)
-        if state_without_ocr != "match":
-            return state_without_ocr
-
-        self._ensure_lobby_ocr_warmup(delay_seconds=0.35)
-        allow_reward_ocr = (
-            self._is_easyocr_ready()
-            and (end_attempts >= 1 or (time.time() - end_started_at) >= 0.9)
-        )
-        if allow_reward_ocr:
-            state_with_ocr = get_state(screenshot, allow_reward_ocr=True)
-            if state_with_ocr != "match":
-                return state_with_ocr
-
-        return previous_state
+    def handle_player_title_reward(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
+        print("[RESULT] Player title reward detected; dismissing reward screen")
+        fallback_center = get_reward_claim_button_center(screenshot)
+        if fallback_center:
+            self.window_controller.click(*fallback_center)
+            time.sleep(0.08)
+            self.window_controller.press_continue(include_fallback_clicks=False)
+            return
+        self.window_controller.press_key("Q")
 
     def end_game(self, frame=None, known_result=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
-
-        found_game_result = False
-        end_started_at = time.time()
-        current_state = get_state(screenshot, allow_reward_ocr=False)
-        print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
-        if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
-            found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
-            current_state = f"end_{known_result}"
-        max_end_attempts = 30
-        end_attempts = 0
-        while (
-            (
-                str(current_state).startswith("end")
-                or current_state in {"reward_claim", "trophy_reward", "star_drop"}
-            )
-            and end_attempts < max_end_attempts
-        ):
-            if current_state in {"reward_claim", "trophy_reward"}:
-                self.claim_reward(screenshot)
-                time.sleep(0.2)
-                screenshot = self.window_controller.screenshot()
-                current_state = self._resolve_end_transition_state(
-                    screenshot,
-                    current_state,
-                    end_started_at,
-                    end_attempts,
-                )
-                end_attempts += 1
-                continue
-            if current_state == "star_drop":
-                self.click_star_drop()
-                time.sleep(0.2)
-                screenshot = self.window_controller.screenshot()
-                current_state = self._resolve_end_transition_state(
-                    screenshot,
-                    current_state,
-                    end_started_at,
-                    end_attempts,
-                )
-                end_attempts += 1
-                continue
-            state_result = None
-            if isinstance(current_state, str) and current_state.startswith("end_"):
-                state_result = current_state.split("_", 1)[1]
-
-            should_probe_result = (
-                not found_game_result
-                and (state_result is not None or time.time() - self.time_since_last_stat_change > 10)
-            )
-            if should_probe_result:
-                if state_result is not None:
-                    print(f"[RESULT] end_game state result probe -> {state_result}")
-                    found_game_result = state_result if self._apply_or_defer_detected_result(state_result, source="state-probe") else False
-                else:
-                    detected_result = self.Trophy_observer.find_game_result(
-                        screenshot,
-                        current_brawler=self.brawlers_pick_data[0]['brawler'],
-                        game_result=state_result,
-                    )
-                    if detected_result:
-                        found_game_result = (
-                            detected_result
-                            if self._apply_or_defer_detected_result(detected_result, source="ocr-fallback")
-                            else False
-                        )
-                        if self._result_applied_for_active_match:
-                            self.time_since_last_stat_change = time.time()
-                            self._sync_active_brawler_progress()
-                            save_brawler_data(self.brawlers_pick_data)
-                            print(f"[RESULT] OCR fallback committed {found_game_result}")
-                        elif detected_result == "draw":
-                            print("[RESULT] OCR fallback detected draw; awaiting lobby verification")
-                type_to_push, value, push_current_brawler_till = self._resolve_push_progress()
-
-                if value >= push_current_brawler_till:
-                    if len(self.brawlers_pick_data) <= 1:
-                        print(
-                            "Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
-                            "Bot will now pause itself until closed.")
-                        screenshot = self.window_controller.screenshot()
-                        self._flush_webhook_milestone(screenshot)
-                        self._send_webhook(
-                            "all_targets_completed",
-                            screenshot=screenshot,
-                            current_brawler=self._current_brawler_name(),
-                        )
-                        if os.path.exists("latest_brawler_data.json"):
-                            os.remove("latest_brawler_data.json")
-                        print("Bot stopping: all targets completed.")
-                        self.window_controller.keys_up(list("wasd"))
-                        self.window_controller.close()
-                        sys.exit(0)
-            self.window_controller.press_key("Q")
-            if debug: print("Game has ended, pressing Q")
-            time.sleep(0.45)
-            screenshot = self.window_controller.screenshot()
-            current_state = self._resolve_end_transition_state(
+        now = time.time()
+        current_state = (
+            f"end_{known_result}"
+            if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}
+            else get_state(
                 screenshot,
-                current_state,
-                end_started_at,
-                end_attempts,
+                allow_reward_ocr=self.should_hold_match_probe(now) and self._is_easyocr_ready(),
             )
-            end_attempts += 1
-        if end_attempts >= max_end_attempts:
-            print("End game screen stuck for too long, forcing continue")
+        )
+        print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
+
+        state_result = None
+        if isinstance(current_state, str) and current_state.startswith("end_"):
+            state_result = current_state.split("_", 1)[1]
+        result_to_apply = known_result if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"} else state_result
+
+        if result_to_apply:
+            self._begin_end_transition(result_to_apply, now)
+            print(f"[RESULT] end_game state result probe -> {result_to_apply}")
+            found_game_result = (
+                result_to_apply
+                if self._apply_or_defer_detected_result(result_to_apply, source="known-result" if known_result else "state-probe")
+                else False
+            )
+        else:
+            found_game_result = False
+            should_probe_result = time.time() - self.time_since_last_stat_change > 10
+            if should_probe_result:
+                detected_result = self.Trophy_observer.find_game_result(
+                    screenshot,
+                    current_brawler=self.brawlers_pick_data[0]['brawler'],
+                    game_result=None,
+                )
+                if detected_result:
+                    self._begin_end_transition(detected_result, now)
+                    found_game_result = (
+                        detected_result
+                        if self._apply_or_defer_detected_result(detected_result, source="ocr-fallback")
+                        else False
+                    )
+                    if self._result_applied_for_active_match:
+                        self.time_since_last_stat_change = time.time()
+                        self._sync_active_brawler_progress()
+                        save_brawler_data(self.brawlers_pick_data)
+                        print(f"[RESULT] OCR fallback committed {found_game_result}")
+                    elif detected_result == "draw":
+                        print("[RESULT] OCR fallback detected draw; awaiting lobby verification")
+
+        if self._result_applied_for_active_match:
+            type_to_push, value, push_current_brawler_till = self._resolve_push_progress()
+            if value >= push_current_brawler_till:
+                if len(self.brawlers_pick_data) <= 1:
+                    print(
+                        "Brawler reached required trophies/wins. No more brawlers selected for pushing in the menu. "
+                        "Bot will now pause itself until closed.")
+                    screenshot = self.window_controller.screenshot()
+                    self._flush_webhook_milestone(screenshot)
+                    self._send_webhook(
+                        "all_targets_completed",
+                        screenshot=screenshot,
+                        current_brawler=self._current_brawler_name(),
+                    )
+                    if os.path.exists("latest_brawler_data.json"):
+                        os.remove("latest_brawler_data.json")
+                    print("Bot stopping: all targets completed.")
+                    self.window_controller.keys_up(list("wasd"))
+                    self.window_controller.close()
+                    sys.exit(0)
+
+        if not self._is_endish_state(current_state):
+            print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
+            if debug:
+                print("Game has ended", current_state)
+            return
+
+        if (now - self._end_transition_last_action_at) < self._end_transition_action_interval:
+            return
+
+        if current_state in {"reward_claim", "trophy_reward"}:
+            self.claim_reward(screenshot)
+        elif current_state == "player_title_reward":
+            self.handle_player_title_reward(screenshot)
+        elif current_state == "star_drop":
+            self.click_star_drop()
+        else:
+            self.window_controller.press_key("Q")
+            if debug:
+                print("Game has ended, pressing Q")
+        self._end_transition_last_action_at = now
         print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
-        if debug: print("Game has ended", current_state)
+        if debug:
+            print("Game has ended", current_state)
 
     def quit_shop(self):
         self.window_controller.click(100*self.window_controller.width_ratio, 60*self.window_controller.height_ratio)
@@ -875,6 +909,14 @@ class StageManager:
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]
             state = "end"
+        now = time.time()
+        if state == "lobby":
+            self._clear_end_transition()
+        elif state == "match" and self.should_hold_match_probe(now):
+            state = "end"
+            known_result = self._end_transition_last_result or known_result
+        elif not self._is_endish_state(state):
+            self._clear_end_transition()
         if state == "brawler_selection":
             recent_start_press = self._last_start_press_at and (time.time() - self._last_start_press_at) <= 4.0
             self._delay_lobby_start(self._unexpected_brawler_selection_delay, "recovering from accidental brawler menu")
