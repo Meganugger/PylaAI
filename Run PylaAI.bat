@@ -2,6 +2,12 @@
 setlocal
 cd /d %~dp0
 
+echo.
+echo PylaAI launcher:
+echo   - Use this file for normal launches
+echo   - Use setup.bat only for first-time install or manual repair
+echo.
+
 if not exist ".venv\Scripts\python.exe" goto setup_needed
 
 .\.venv\Scripts\python.exe tools\runtime_preflight.py
@@ -39,5 +45,6 @@ pause
 exit /b 1
 
 :start
+echo Starting PylaAI...
 .\.venv\Scripts\python.exe main.py
 pause
