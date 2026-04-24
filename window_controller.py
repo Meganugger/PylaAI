@@ -516,13 +516,18 @@ class WindowController:
         time.sleep(delay)
         self.touch_up(x, y, pointer_id=self.PID_ATTACK)
 
-    def press_key(self, key, delay=0.005):
+    def press_key(self, key, delay=0.005, touch_up=True, touch_down=True):
         if key not in key_coords_dict:
             return
         x, y = key_coords_dict[key]
         target_x = x * self.width_ratio
         target_y = y * self.height_ratio
-        self.click(target_x, target_y, delay)
+        if touch_down and touch_up:
+            self.click(target_x, target_y, delay)
+        elif touch_down:
+            self.touch_down(int(target_x), int(target_y), pointer_id=self.PID_ATTACK)
+        elif touch_up:
+            self.touch_up(int(target_x), int(target_y), pointer_id=self.PID_ATTACK)
 
     def press_continue(self, hold_seconds=0.0, include_fallback_clicks=True):
         delay = float(hold_seconds) if hold_seconds and hold_seconds > 0 else 0.005

@@ -457,16 +457,22 @@ class Movement:
             return "W" if direction_y > 0 else "S"
         return "S" if direction_y > 0 else "W"
 
-    def attack(self):
+    def attack(self, touch_up=True, touch_down=True):
         if not self._can_issue_live_input():
             return False
-        if self.attack_cooldown > 0:
+        if touch_up and touch_down and self.attack_cooldown > 0:
             current_time = time.time()
             if current_time - self.last_attack_time < self.attack_cooldown:
                 return False
             self.last_attack_time = current_time
-        self.window_controller.press_key("M")
+        self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
         return True
+
+    @staticmethod
+    def must_brawler_hold_attack(brawler, brawlers_info=None):
+        if not brawlers_info:
+            brawlers_info = load_brawlers_info()
+        return brawlers_info[brawler].get('hold_attack', 0) > 0
 
     def use_hypercharge(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
@@ -849,7 +855,6 @@ class Play(Movement):
             ),
         }
         self._scaled_hud_cache = None
-        self.scene_data = []
         self.should_detect_walls = self.is_showdown_mode or self._should_detect_walls_for_mode(self.selected_gamemode)
         self.minimum_movement_delay = bot_config["minimum_movement_delay"]
         self.no_detection_proceed_delay = time_config["no_detection_proceed"]
@@ -873,6 +878,10 @@ class Play(Movement):
         self.last_gadget_time = 0.0
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
+        self.time_since_holding_attack = None
+        self.seconds_to_hold_attack_after_reaching_max = float(
+            bot_config.get("seconds_to_hold_attack_after_reaching_max", 0.5)
+        )
         self.entity_detection_retry_interval = float(
             bot_config.get("entity_detection_retry_interval", 0.45)
         )
@@ -985,7 +994,12 @@ class Play(Movement):
             self._reset_match_state_guard()
             return False
 
-        if not self.has_recent_start_request(current_time):
+        has_recent_start = self.has_recent_start_request(current_time)
+        has_recent_match_memory = (
+            self._last_confirmed_match_time > 0.0
+            and (current_time - self._last_confirmed_match_time) < 30.0
+        )
+        if not has_recent_start and not has_recent_match_memory:
             self._reset_match_state_guard()
             return False
 
@@ -1095,9 +1109,7 @@ class Play(Movement):
                 "line_cache": {},
                 "enemy_hittable_cache": {},
             }
-        else:
-            self.wall_context["line_cache"].clear()
-            self.wall_context["enemy_hittable_cache"].clear()
+        # When walls haven't changed, keep existing caches — they're still valid.
         return self.wall_context
 
     @staticmethod
@@ -1462,6 +1474,8 @@ class Play(Movement):
 
         return best_target if best_target else (None, None, None, False)
 
+    _ENEMY_MEMORY_MAX_ENTRIES = 20
+
     def _update_enemy_memory(self, enemies):
         now = time.time()
         for enemy in enemies:
@@ -1473,6 +1487,8 @@ class Play(Movement):
             for x, y, seen_at in self._last_known_enemies
             if now - seen_at < self._enemy_memory_duration
         ]
+        if len(self._last_known_enemies) > self._ENEMY_MEMORY_MAX_ENTRIES:
+            self._last_known_enemies = self._last_known_enemies[-self._ENEMY_MEMORY_MAX_ENTRIES:]
 
     def _get_last_known_enemy_pos(self):
         if not self._last_known_enemies:
@@ -1510,32 +1526,33 @@ class Play(Movement):
 
         current_time = time.time()
         nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
-        selected_target = nearest_target
-        selected_distance = nearest_distance
 
-        if self._showdown_locked_teammate is not None:
-            locked_target = min(
-                self._teammate_positions,
-                key=lambda teammate_pos: self.get_distance(teammate_pos, self._showdown_locked_teammate),
-            )
-            locked_distance = self.get_distance(locked_target, player_pos)
-            selected_target = locked_target
-            selected_distance = locked_distance
-            should_switch = (
-                nearest_target != locked_target
-                and current_time >= self._showdown_teammate_lock_until
-                and nearest_distance < locked_distance * (1.0 - self._showdown_teammate_hysteresis)
-            )
-            if should_switch:
-                selected_target = nearest_target
-                selected_distance = nearest_distance
-                self._showdown_teammate_lock_until = current_time + self._showdown_teammate_lock_duration
-        else:
+        if self._showdown_locked_teammate is None:
+            # First acquisition — lock nearest teammate.
+            self._showdown_locked_teammate = nearest_target
+            self._showdown_locked_teammate_distance = nearest_distance
             self._showdown_teammate_lock_until = current_time + self._showdown_teammate_lock_duration
+            return nearest_target, nearest_distance
 
-        self._showdown_locked_teammate = selected_target
-        self._showdown_locked_teammate_distance = selected_distance
-        return selected_target, selected_distance
+        # Update locked teammate's position to this frame's closest match.
+        locked_distance = self.get_distance(nearest_target, player_pos)
+
+        # Hysteresis: only switch to a different teammate if it's significantly
+        # closer AND the lock cooldown has expired.
+        should_switch = (
+            current_time >= self._showdown_teammate_lock_until
+            and nearest_distance < locked_distance * (1.0 - self._showdown_teammate_hysteresis)
+        )
+        if should_switch:
+            self._showdown_locked_teammate = nearest_target
+            self._showdown_locked_teammate_distance = nearest_distance
+            self._showdown_teammate_lock_until = current_time + self._showdown_teammate_lock_duration
+        else:
+            # Same target — always update its position from this frame.
+            self._showdown_locked_teammate = nearest_target
+            self._showdown_locked_teammate_distance = nearest_distance
+
+        return self._showdown_locked_teammate, self._showdown_locked_teammate_distance
 
     def _pick_showdown_orbit_side(self):
         current_time = time.time()
@@ -1881,6 +1898,9 @@ class Play(Movement):
         if "enemy" not in data.keys():
             data['enemy'] = None
 
+        if "teammate" not in data.keys():
+            data['teammate'] = None
+
         if 'wall' not in data.keys() or not data['wall']:
             data['wall'] = []
 
@@ -1978,10 +1998,7 @@ class Play(Movement):
             player_pos is not None
             and wall_context is not None
             and bool(wall_context.get("rectangles"))
-            and (
-                self._get_blocking_wall_angle(player_pos, angle, wall_context) is not None
-                or self._is_path_blocked_angle(player_pos, angle, wall_context)
-            )
+            and self._is_path_blocked_angle(player_pos, angle, wall_context)
         )
         if not blocked_forward:
             self._movement_anchor_angle = angle
@@ -1991,7 +2008,7 @@ class Play(Movement):
 
         if current_time - self.time_since_different_movement > state["delay_to_trigger"]:
             fixed_angle = self._choose_unstuck_angle(angle, player_pos, wall_context or {})
-            if self._angle_difference(fixed_angle, angle) < 20.0:
+            if self._angle_difference(fixed_angle, angle) < 12.0:
                 self._movement_anchor_angle = angle
                 self._movement_anchor_angle_pos = player_pos
                 self.time_since_different_movement = current_time
@@ -2272,6 +2289,17 @@ class Play(Movement):
         brawler_info = self.brawlers_info.get(brawler)
         if not brawler_info:
             raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
+
+        # Hold-attack auto-release: if the brawler has been holding attack past
+        # its maximum hold duration, release the attack button.
+        is_hold_attack_brawler = self.must_brawler_hold_attack(brawler, self.brawlers_info)
+        if is_hold_attack_brawler and self.time_since_holding_attack is not None:
+            hold_elapsed = time.time() - self.time_since_holding_attack
+            max_hold = brawler_info.get('hold_attack', 0) + self.seconds_to_hold_attack_after_reaching_max
+            if hold_elapsed >= max_hold:
+                self.attack(touch_up=True, touch_down=False)
+                self.time_since_holding_attack = None
+
         safe_range, attack_range, super_range = self.get_brawler_range(brawler)
         style = self._get_playstyle(brawler)
         effective_safe_range = int(safe_range * style["approach_factor"])
@@ -2528,7 +2556,15 @@ class Play(Movement):
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
         if can_attack_now and (self.target_info["hittable"] or close_range_contact):
-            self.attack()
+            if is_hold_attack_brawler:
+                if self.time_since_holding_attack is None:
+                    self.time_since_holding_attack = current_time
+                    self.attack(touch_up=False, touch_down=True)
+                elif current_time - self.time_since_holding_attack >= brawler_info.get('hold_attack', 0):
+                    self.attack(touch_up=True, touch_down=False)
+                    self.time_since_holding_attack = None
+            else:
+                self.attack()
             self._consume_ammo(current_time)
             self.time_since_last_attack = current_time
             if self._burst_mode and self.current_ammo <= 0:
@@ -2556,6 +2592,7 @@ class Play(Movement):
             self._burst_mode = False
             self._burst_start_time = 0.0
             self._last_burst_end_time = 0.0
+            self.time_since_holding_attack = None
         current_time = time.time()
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
         data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
@@ -2730,93 +2767,3 @@ class Play(Movement):
 
         self.current_frame = frame
         movement = self.loop(brawler, data, current_time, wall_context)
-
-        # if data:
-        #     # Record scene data
-        #     self.scene_data.append({
-        #         'frame_number': len(self.scene_data),
-        #         'player': data.get('player', []),
-        #         'enemy': data.get('enemy', []),
-        #         'wall': data.get('wall', []),
-        #         'movement': movement,
-        #     })
-
-    def generate_visualization(self, output_filename='visualization.mp4'):
-        import cv2
-        import numpy as np
-
-        frame_size = (1920, 1080)  # Adjust as needed
-        fps = 10
-
-        # Initialize VideoWriter
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-        out = cv2.VideoWriter(output_filename, fourcc, fps, frame_size)
-
-        for frame_data in self.scene_data:
-            # Create a blank image
-            img = np.zeros((frame_size[1], frame_size[0], 3), np.uint8)
-
-            # Scale factors if needed
-            scale_x = frame_size[0] / 1920
-            scale_y = frame_size[1] / 1080
-
-            if frame_data['wall']:
-                # Draw walls
-                for wall in frame_data['wall']:
-                    x1, y1, x2, y2 = map(int, wall)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (128, 128, 128), -1)  # Gray walls
-
-            if frame_data['enemy']:
-                # Draw enemies
-                for enemy in frame_data['enemy']:
-                    x1, y1, x2, y2 = map(int, enemy)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), -1)  # Red enemies
-
-            if frame_data['player']:
-                # Draw player
-                for player in frame_data['player']:
-                    x1, y1, x2, y2 = map(int, player)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), -1)  # Green player
-
-            # Draw movement decision
-            movement = frame_data['movement']
-            direction = self.movement_to_direction(movement)
-            cv2.putText(img, f'Movement: {direction}', (10, frame_size[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (255, 255, 255), 1)
-
-            # Write frame to video
-            out.write(img)
-
-        out.release()
-
-    @staticmethod
-    def movement_to_direction(movement):
-        mapping = {
-            'w': 'up',
-            'a': 'left',
-            's': 'down',
-            'd': 'right',
-            'wa': 'up-left',
-            'aw': 'up-left',
-            'wd': 'up-right',
-            'dw': 'up-right',
-            'sa': 'down-left',
-            'as': 'down-left',
-            'sd': 'down-right',
-            'ds': 'down-right',
-        }
-        movement = movement.lower()
-        movement = ''.join(sorted(movement))
-        return mapping.get(movement, 'idle' if movement == '' else movement)
