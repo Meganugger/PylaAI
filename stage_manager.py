@@ -139,6 +139,7 @@ class StageManager:
             'star_drop': self.click_star_drop,
             'reward_claim': self.claim_reward,
             'trophy_reward': self.dismiss_trophy_reward,
+            'player_title_reward': self.handle_player_title_reward,
             'idle_disconnect': self.handle_idle_disconnect,
             'mode_selection': self.handle_mode_selection,
         }
@@ -1463,7 +1464,27 @@ class StageManager:
 
         max_end_attempts = 30
         end_attempts = 0
-        while str(current_state).startswith("end") and end_attempts < max_end_attempts:
+        while (
+            (
+                str(current_state).startswith("end")
+                or current_state in {"reward_claim", "trophy_reward", "player_title_reward", "star_drop"}
+            )
+            and end_attempts < max_end_attempts
+        ):
+            if current_state in {"reward_claim", "trophy_reward", "player_title_reward"}:
+                self.states[current_state](screenshot)
+                time.sleep(0.2)
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
+                end_attempts += 1
+                continue
+            if current_state == "star_drop":
+                self.click_star_drop()
+                time.sleep(0.2)
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
+                end_attempts += 1
+                continue
             state_result = None
             if isinstance(current_state, str) and current_state.startswith("end_"):
                 state_result = current_state.split("_", 1)[1]
@@ -1659,6 +1680,17 @@ class StageManager:
         # Also try clicking center of screen as last resort
         self.window_controller.click(int(960 * wr), int(540 * hr))
         print("[STAGE] Trophy reward dismiss attempts completed")
+
+    def handle_player_title_reward(self, frame=None):
+        screenshot = frame if frame is not None else self.window_controller.screenshot()
+        print("[RESULT] Player title reward detected; dismissing reward screen")
+        fallback_center = get_reward_claim_button_center(screenshot)
+        if fallback_center:
+            self.window_controller.click(*fallback_center)
+            time.sleep(0.08)
+            self.window_controller.press_continue(include_fallback_clicks=False)
+            return
+        self.window_controller.press_key("Q")
 
     def do_state(self, state, data=None):
         known_result = None

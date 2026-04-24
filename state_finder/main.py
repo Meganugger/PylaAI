@@ -42,6 +42,10 @@ _reward_claim_cache = {
     "detected": False,
     "button_center": None,
 }
+_player_title_reward_cache = {
+    "checked_at": 0.0,
+    "detected": False,
+}
 _selected_gamemode_cache = {
     "checked_at": 0.0,
     "value": "",
@@ -310,6 +314,8 @@ def get_in_game_state(image):
         return "popup"
     if is_in_trophy_reward(image):
         return "trophy_reward"
+    if is_in_player_title_reward(image):
+        return "player_title_reward"
     if is_in_reward_claim(image):
         return "reward_claim"
     if is_in_lobby(image):
@@ -348,6 +354,47 @@ def is_in_reward_claim(image) -> bool:
 
 def is_in_trophy_reward(image) -> bool:
     return is_template_in_region(image, path + 'trophies_screen.png', region_data["trophies_screen"])
+
+
+def is_in_player_title_reward(image) -> bool:
+    now = time.time()
+    if now - _player_title_reward_cache["checked_at"] < 1.0:
+        return _player_title_reward_cache["detected"]
+
+    _player_title_reward_cache["checked_at"] = now
+    screenshot_bgr = to_bgr_array(image)
+    height, width = screenshot_bgr.shape[:2]
+    top_half = screenshot_bgr[0:int(height * 0.62), int(width * 0.16):int(width * 0.84)]
+    if top_half.size == 0:
+        _player_title_reward_cache["detected"] = False
+        return False
+
+    try:
+        hsv = cv2.cvtColor(top_half, cv2.COLOR_BGR2HSV)
+    except Exception:
+        _player_title_reward_cache["detected"] = False
+        return False
+
+    blue_ratio = cv2.inRange(hsv, (90, 65, 70), (125, 255, 255)).mean() / 255.0
+    if blue_ratio < 0.22:
+        _player_title_reward_cache["detected"] = False
+        return False
+
+    try:
+        text = " ".join(result[1] for result in reader.readtext(top_half)).lower()
+    except Exception as exc:
+        if debug:
+            print(f"Could not OCR player title reward screen: {exc}")
+        _player_title_reward_cache["detected"] = False
+        return False
+
+    normalized = "".join(ch for ch in text if ch.isalnum())
+    detected = (
+        "newplayertitle" in normalized
+        or ("playertitle" in normalized and "battlecard" in normalized)
+    )
+    _player_title_reward_cache["detected"] = detected
+    return detected
 
 
 def is_in_lobby(image) -> bool:

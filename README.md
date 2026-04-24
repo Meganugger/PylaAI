@@ -4,15 +4,16 @@ PylaAI is a Windows-only Python automation project for Brawl Stars development a
 
 ## Branch Focus
 
-This branch is `strongest-bot-full`.
+This branch is `strongest-bot`.
 
-Its goal is to carry the full PylaAI-N-style feature stack while preserving the stronger setup/runtime base from this repo:
-- full combat/BT/overlay/pathing feature set
-- richer diagnostics and dashboards
-- stronger match decision logic, even at a higher runtime cost
-- kept compatible with the newer setup flow and wall model
+Its goal is to make the bot as strong as possible in matches:
+- richer combat logic
+- better target choice
+- better teammate-aware behavior
+- smarter ammo discipline and burst pacing
+- more aggressive enemy search when vision is lost
 
-This branch is intended to be the most feature-complete and strongest branch, not the lightest one.
+This branch may use more runtime budget than the `performance` branch when that tradeoff improves gameplay quality.
 
 ## Supported Platform
 
@@ -64,7 +65,7 @@ Git must be available during install because the project installs the intended s
 ```powershell
 git clone https://github.com/Meganugger/PylaAI.git
 cd PylaAI
-git checkout strongest-bot-full
+git checkout strongest-bot
 ```
 
 ### 2. Recommended one-click setup
@@ -148,7 +149,9 @@ If you prefer a different Python 3.10.0 interpreter:
 
 ## Run
 
-Start your emulator first, then launch the bot by double-clicking `start.bat`.
+Start your emulator first, then launch the bot by double-clicking `Run PylaAI.bat`.
+
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken. The older `start.bat` still exists as a minimal direct launcher.
 
 Manual fallback from the repository root:
 
@@ -237,7 +240,7 @@ It also removes interactive install-time prompts and subprocess-based dependency
 - The project depends on the scrcpy client from the intended upstream source revision instead of relying on old install-time hacks.
 - `adbutils` and `av` are no longer manually pinned at the top level in PylaAI packaging. They are resolved through the scrcpy dependency chain so `pip install -e ".[cpu|directml|cuda]"` can resolve cleanly.
 - `setuptools` is pinned below `81` because the current `adbutils` runtime still imports `pkg_resources` and newer setuptools emits deprecation warnings for that path.
-- `shapely` is included in this branch because the full PylaAI-N-style combat/pathing stack actively uses it.
+- `shapely` was removed from packaging because the current runtime no longer imports it.
 - For CUDA installs, PylaAI now pins the venv runtime libraries to CUDA `12.4.*` and cuDNN `9.20.*` so pip does not drift to newer incompatible runtime packages.
 - I did not hardcode a system-wide CUDA 12.4 + cuDNN 9.20 copy step because ONNX Runtime does not require that for its supported Python package flow. The supported path is to keep those DLLs inside the virtual environment and preload them at runtime.
 
