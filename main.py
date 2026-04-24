@@ -196,21 +196,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 0.0,
                 now - float(getattr(self.Play, "time_since_player_last_found", now) or now),
             )
-            if (
-                runtime_state == "match"
-                and player_missing_for >= 0.6
-                and now - self._last_fast_result_probe >= 1.0
-            ):
-                self._last_fast_result_probe = now
-                fast_result = find_game_result(frame)
-                if fast_result:
-                    print(f"[RESULT] fast probe detected {fast_result} in manage_time_tasks")
-                    end_state = f"end_{fast_result}"
-                    self.current_state = end_state
-                    self.Play._runtime_state = end_state
-                    self.Stage_manager.do_state(end_state, frame)
-                    return
-
             if self.Time_management.state_check():
                 allow_reward_ocr = (
                     runtime_state.startswith("end_")
@@ -288,6 +273,172 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.cooldown_start_time = time.time()
             self.Stage_manager.set_lobby_start_enabled(False)
 
+        def _push_runtime_dashboard(self, force=False):
+            active_dashboard = _get_active_dashboard_instance()
+            if active_dashboard is None:
+                return
+
+            tobs = self.Stage_manager.Trophy_observer
+            active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+            session_stats = getattr(tobs, "session_stats", {}) or {}
+            coerce_int = getattr(self.Stage_manager, "_coerce_int", None)
+            if not callable(coerce_int):
+                def coerce_int(value, default=0):
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return default
+
+            brawler = str(active_entry.get("brawler", "") or "")
+            current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
+            current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
+            current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
+            current_deaths = int(getattr(self.Play, "_death_count", 0) or 0)
+            current_damage = int(
+                getattr(self.Play, "_current_damage", 0)
+                or getattr(self.Play, "_damage_dealt", 0)
+                or 0
+            )
+            live_trophies = coerce_int(
+                tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
+                0,
+            )
+            live_wins = coerce_int(
+                getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
+                0,
+            )
+            live_streak = coerce_int(
+                tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
+                0,
+            )
+            if active_entry:
+                if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
+                    active_entry["trophies"] = live_trophies
+                if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
+                    active_entry["wins"] = live_wins
+                if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
+                    active_entry["win_streak"] = live_streak
+            now = time.time()
+            match_active = self.current_state == "match" or str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+            if (
+                hasattr(tobs, "update_live_match_stats")
+                and brawler
+                and match_active
+                and (force or (now - self._last_live_stats_push) >= self._live_stats_push_interval)
+            ):
+                try:
+                    tobs.update_live_match_stats(
+                        brawler,
+                        kills=current_kills,
+                        assists=0,
+                        damage=current_damage,
+                        deaths=current_deaths,
+                    )
+                    self._last_live_stats_push = now
+                except Exception as live_stats_exc:
+                    if time.time() - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Match stat sync error: {live_stats_exc}")
+                        self._last_live_exception_time = time.time()
+
+            roster_signature = tuple(
+                (
+                    str(entry.get("brawler", "")),
+                    int(entry.get("trophies", 0) or 0),
+                    int(entry.get("wins", 0) or 0),
+                    int(entry.get("win_streak", 0) or 0),
+                    int(entry.get("push_until", 0) or 0),
+                    str(entry.get("type", "trophies") or "trophies"),
+                    bool(entry.get("automatically_pick", True)),
+                    bool(entry.get("manual_trophies", False)),
+                )
+                for entry in (self.Stage_manager.brawlers_pick_data or [])
+                if isinstance(entry, dict)
+            )
+            should_sync_roster = (
+                force
+                or roster_signature != self._last_roster_signature
+                or current_match_counter != self._last_dashboard_match_counter
+                or current_history_revision != self._last_dashboard_history_revision
+                or (now - self._last_roster_push_time) >= self._roster_push_interval
+            )
+            if should_sync_roster:
+                try:
+                    active_dashboard.sync_runtime_roster(
+                        self.Stage_manager.brawlers_pick_data,
+                        emit_history=(
+                            force
+                            or current_match_counter != self._last_dashboard_match_counter
+                            or current_history_revision != self._last_dashboard_history_revision
+                        ),
+                    )
+                    self._last_roster_signature = roster_signature
+                    self._last_roster_push_time = now
+                    self._last_dashboard_match_counter = current_match_counter
+                    self._last_dashboard_history_revision = current_history_revision
+                except Exception as roster_exc:
+                    if now - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Roster sync error: {roster_exc}")
+                        self._last_live_exception_time = now
+
+            if force or (now - self._last_live_push) >= self._live_push_interval:
+                self._last_live_push = now
+                try:
+                    session_victories = int(session_stats.get("victories", 0) or 0)
+                    session_defeats = int(session_stats.get("defeats", 0) or 0)
+                    session_draws = int(session_stats.get("draws", 0) or 0)
+                    session_matches = int(session_stats.get("total_matches", 0) or 0)
+                    if session_matches <= 0:
+                        session_matches = current_match_counter
+                    active_dashboard.update_live(
+                        start_time=self.start_time,
+                        ips=self.current_ips,
+                        state=self.current_state,
+                        brawler=brawler,
+                        trophies=live_trophies,
+                        target=active_entry.get("push_until", 0),
+                        victories=session_victories,
+                        defeats=session_defeats,
+                        draws=session_draws,
+                        streak=live_streak,
+                        game_mode=getattr(self.Play, "game_mode_name", ""),
+                        gadget_ready=getattr(self.Play, "is_gadget_ready", False),
+                        super_ready=getattr(self.Play, "is_super_ready", False),
+                        hypercharge_ready=getattr(self.Play, "is_hypercharge_ready", False),
+                        movement=getattr(self.Play, "last_movement", ""),
+                        ammo=getattr(self.Play, "current_ammo", getattr(self.Play, "_ammo", 0)),
+                        current_kills=current_kills,
+                        current_deaths=current_deaths,
+                        current_assists=0,
+                        current_damage=current_damage,
+                        kills=current_kills,
+                        assists=0,
+                        damage=current_damage,
+                        total_kills=session_stats.get("total_kills", 0),
+                        total_assists=session_stats.get("total_assists", 0),
+                        total_damage=session_stats.get("total_damage", 0),
+                        total_matches=session_matches,
+                        session_matches=session_matches,
+                        session_victories=session_victories,
+                        session_defeats=session_defeats,
+                        session_draws=session_draws,
+                        last_kills=session_stats.get("last_match_kills", 0),
+                        last_assists=session_stats.get("last_match_assists", 0),
+                        last_damage=session_stats.get("last_match_damage", 0),
+                        last_result=getattr(tobs, "last_match_result", None),
+                        last_trophy_delta=getattr(tobs, "last_match_trophy_delta", 0),
+                        last_trophy_delta_verified=getattr(tobs, "last_match_trophies_verified", False),
+                        last_streak_bonus=getattr(tobs, "last_match_streak_bonus", 0),
+                        last_underdog_bonus=getattr(tobs, "last_match_underdog_bonus", 0),
+                        last_trophy_adjustment=getattr(tobs, "last_match_trophy_adjustment", 0),
+                        match_active=self.current_state == "match",
+                        farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
+                        farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                    )
+                except Exception as live_exc:
+                    if now - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Dashboard update error: {live_exc}")
+                        self._last_live_exception_time = now
+
         def main(self): #this is for timer to stop after time
             s_time = time.monotonic()
             c = 0
@@ -357,7 +508,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 record_timing("time_tasks", time.perf_counter() - tasks_started_at, print_every=120)
 
                 runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+                self._push_runtime_dashboard()
                 if runtime_state.startswith("end_") or runtime_state == "reward_claim":
+                    self._push_runtime_dashboard(force=True)
                     c += 1
                     continue
 
@@ -381,6 +534,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     or recent_start_request
                 )
                 if not play_allowed:
+                    self._push_runtime_dashboard()
                     c += 1
                     continue
 
@@ -404,165 +558,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     self.current_state = end_state
                     self.Play._runtime_state = end_state
                     self.Stage_manager.do_state(end_state, frame)
+                    self._push_runtime_dashboard(force=True)
                     c += 1
                     continue
                 c += 1
-
-                active_dashboard = _get_active_dashboard_instance()
-                if active_dashboard is not None:
-                    tobs = self.Stage_manager.Trophy_observer
-                    active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
-                    session_stats = getattr(tobs, "session_stats", {}) or {}
-                    coerce_int = getattr(self.Stage_manager, "_coerce_int", None)
-                    if not callable(coerce_int):
-                        def coerce_int(value, default=0):
-                            try:
-                                return int(value)
-                            except (TypeError, ValueError):
-                                return default
-                    current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
-                    current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
-                    current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
-                    current_deaths = int(getattr(self.Play, "_death_count", 0) or 0)
-                    current_damage = int(
-                        getattr(self.Play, "_current_damage", 0)
-                        or getattr(self.Play, "_damage_dealt", 0)
-                        or 0
-                    )
-                    live_trophies = coerce_int(
-                        tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
-                        0,
-                    )
-                    live_wins = coerce_int(
-                        getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
-                        0,
-                    )
-                    live_streak = coerce_int(
-                        tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
-                        0,
-                    )
-                    if active_entry:
-                        if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
-                            active_entry["trophies"] = live_trophies
-                        if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
-                            active_entry["wins"] = live_wins
-                        if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
-                            active_entry["win_streak"] = live_streak
-                    now = time.time()
-                    if (
-                        hasattr(tobs, "update_live_match_stats")
-                        and (now - self._last_live_stats_push) >= self._live_stats_push_interval
-                    ):
-                        try:
-                            tobs.update_live_match_stats(
-                                brawler,
-                                kills=current_kills,
-                                assists=0,
-                                damage=current_damage,
-                                deaths=current_deaths,
-                            )
-                            self._last_live_stats_push = now
-                        except Exception as live_stats_exc:
-                            if time.time() - self._last_live_exception_time >= 5.0:
-                                print(f"[LIVE] Match stat sync error: {live_stats_exc}")
-                                self._last_live_exception_time = time.time()
-
-                    roster_signature = tuple(
-                        (
-                            str(entry.get("brawler", "")),
-                            int(entry.get("trophies", 0) or 0),
-                            int(entry.get("wins", 0) or 0),
-                            int(entry.get("win_streak", 0) or 0),
-                            int(entry.get("push_until", 0) or 0),
-                            str(entry.get("type", "trophies") or "trophies"),
-                            bool(entry.get("automatically_pick", True)),
-                            bool(entry.get("manual_trophies", False)),
-                        )
-                        for entry in (self.Stage_manager.brawlers_pick_data or [])
-                        if isinstance(entry, dict)
-                    )
-                    should_sync_roster = (
-                        roster_signature != self._last_roster_signature
-                        or current_match_counter != self._last_dashboard_match_counter
-                        or current_history_revision != self._last_dashboard_history_revision
-                        or (now - self._last_roster_push_time) >= self._roster_push_interval
-                    )
-                    if should_sync_roster:
-                        try:
-                            active_dashboard.sync_runtime_roster(
-                                self.Stage_manager.brawlers_pick_data,
-                                emit_history=(
-                                    current_match_counter != self._last_dashboard_match_counter
-                                    or current_history_revision != self._last_dashboard_history_revision
-                                ),
-                            )
-                            self._last_roster_signature = roster_signature
-                            self._last_roster_push_time = now
-                            self._last_dashboard_match_counter = current_match_counter
-                            self._last_dashboard_history_revision = current_history_revision
-                        except Exception as roster_exc:
-                            if now - self._last_live_exception_time >= 5.0:
-                                print(f"[LIVE] Roster sync error: {roster_exc}")
-                                self._last_live_exception_time = now
-
-                    if (now - self._last_live_push) >= self._live_push_interval:
-                        self._last_live_push = now
-                        try:
-                            session_victories = int(session_stats.get("victories", 0) or 0)
-                            session_defeats = int(session_stats.get("defeats", 0) or 0)
-                            session_draws = int(session_stats.get("draws", 0) or 0)
-                            session_matches = int(session_stats.get("total_matches", 0) or 0)
-                            if session_matches <= 0:
-                                session_matches = current_match_counter
-                            active_dashboard.update_live(
-                                start_time=self.start_time,
-                                ips=self.current_ips,
-                                state=self.current_state,
-                                brawler=brawler,
-                                trophies=live_trophies,
-                                target=active_entry.get("push_until", 0),
-                                victories=session_victories,
-                                defeats=session_defeats,
-                                draws=session_draws,
-                                streak=live_streak,
-                                game_mode=getattr(self.Play, "game_mode_name", ""),
-                                gadget_ready=getattr(self.Play, "is_gadget_ready", False),
-                                super_ready=getattr(self.Play, "is_super_ready", False),
-                                hypercharge_ready=getattr(self.Play, "is_hypercharge_ready", False),
-                                movement=getattr(self.Play, "last_movement", ""),
-                                ammo=getattr(self.Play, "current_ammo", getattr(self.Play, "_ammo", 0)),
-                                current_kills=current_kills,
-                                current_deaths=current_deaths,
-                                current_assists=0,
-                                current_damage=current_damage,
-                                kills=current_kills,
-                                assists=0,
-                                damage=current_damage,
-                                total_kills=session_stats.get("total_kills", 0),
-                                total_assists=session_stats.get("total_assists", 0),
-                                total_damage=session_stats.get("total_damage", 0),
-                                total_matches=session_matches,
-                                session_matches=session_matches,
-                                session_victories=session_victories,
-                                session_defeats=session_defeats,
-                                session_draws=session_draws,
-                                last_kills=session_stats.get("last_match_kills", 0),
-                                last_assists=session_stats.get("last_match_assists", 0),
-                                last_damage=session_stats.get("last_match_damage", 0),
-                                last_result=getattr(tobs, "last_match_result", None),
-                                last_trophy_delta=getattr(tobs, "last_match_trophy_delta", 0),
-                                last_trophy_delta_verified=getattr(tobs, "last_match_trophies_verified", False),
-                                last_streak_bonus=getattr(tobs, "last_match_streak_bonus", 0),
-                                last_underdog_bonus=getattr(tobs, "last_match_underdog_bonus", 0),
-                                last_trophy_adjustment=getattr(tobs, "last_match_trophy_adjustment", 0),
-                                match_active=self.current_state == "match",
-                                farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
-                                farm_remaining=len(self.Stage_manager.brawlers_pick_data),
-                            )
-                        except Exception as live_exc:
-                            if now - self._last_live_exception_time >= 5.0:
-                                print(f"[LIVE] Dashboard update error: {live_exc}")
-                                self._last_live_exception_time = now
+                self._push_runtime_dashboard()
 
                 if self.max_ips:
                     target_period = 1 / self.max_ips
