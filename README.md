@@ -4,16 +4,16 @@ PylaAI is a Windows-only Python automation project for Brawl Stars development a
 
 ## Branch Focus
 
-This branch is `performance`.
+This branch is `strongest-bot`.
 
-Its goal is to keep Pyla responsive and efficient:
-- lower CPU-side overhead
-- leaner runtime update cadence
-- tighter thread budgets
-- cleaner fallback behavior when GPU acceleration is unavailable
-- better suitability for running more than one emulator instance at once
+Its goal is to make the bot as strong as possible in matches:
+- richer combat logic
+- better target choice
+- better teammate-aware behavior
+- smarter ammo discipline and burst pacing
+- more aggressive enemy search when vision is lost
 
-This branch intentionally favors throughput and stability over the heavier experimental systems from `strongest-bot-full`.
+This branch may use more runtime budget than the `performance` branch when that tradeoff improves gameplay quality.
 
 ## Supported Platform
 
@@ -65,7 +65,7 @@ Git must be available during install because the project installs the intended s
 ```powershell
 git clone https://github.com/Meganugger/PylaAI.git
 cd PylaAI
-git checkout performance
+git checkout strongest-bot
 ```
 
 ### 2. Recommended one-click setup
@@ -149,70 +149,15 @@ If you prefer a different Python 3.10.0 interpreter:
 
 ## Run
 
-Start your emulator first, then launch the bot by double-clicking `start.bat`.
+Start your emulator first, then launch the bot by double-clicking `Run PylaAI.bat`.
+
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken. The older `start.bat` still exists as a minimal direct launcher.
 
 Manual fallback from the repository root:
 
 ```powershell
 python main.py
 ```
-
-## Multi-Instance
-
-The `performance` branch now supports lightweight multi-instance launches without duplicating the whole repo.
-
-### 1. Generate per-instance configs and launchers
-
-Run:
-
-```powershell
-python main.py --setup-instances 2
-```
-
-Replace `2` with however many emulator instances you want.
-
-This creates:
-- `instances\1\cfg`, `instances\2\cfg`, ...
-- per-instance `latest_brawler_data.json` files when a saved roster already exists
-- `start_1.bat`, `start_2.bat`, ...
-
-During setup, PylaAI asks for the emulator port for each instance and writes that value into the matching instance config.
-
-### 2. Launch an instance
-
-Use the generated launcher for each instance:
-
-```powershell
-start_1.bat
-```
-
-Each launcher uses:
-
-```powershell
-python main.py --instance 1 --autostart
-```
-
-That means the instance:
-- uses its own `instances\<n>\cfg` directory
-- uses its own saved roster file
-- connects to the configured emulator port instead of grabbing the first ADB device it sees
-- skips the UI for lower overhead and starts the bot directly
-
-### 3. Open the UI for a specific instance
-
-If you want to edit roster or settings for one instance in the Control Center first, run:
-
-```powershell
-python main.py --instance 1
-```
-
-That opens the normal UI, but bound to `instances\1\cfg` and that instance's saved roster instead of the root config.
-
-### Multi-instance efficiency notes
-
-- When `instance_count` is greater than `1`, the performance branch now scales CPU-side thread defaults down automatically so instances do not oversubscribe the same machine as aggressively.
-- `scrcpy_max_fps = "auto"` also becomes more conservative for multi-instance runs to reduce decoder overhead.
-- For the best results, keep one emulator per configured ADB port and save a roster for each instance before using `--autostart`.
 
 ## Brawler Setup
 
