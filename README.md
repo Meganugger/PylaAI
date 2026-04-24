@@ -65,7 +65,7 @@ Git must be available during install because the project installs the intended s
 ```powershell
 git clone https://github.com/Meganugger/PylaAI.git
 cd PylaAI
-git checkout main
+git checkout strongest-bot
 ```
 
 ### 2. Recommended one-click setup
@@ -149,7 +149,9 @@ If you prefer a different Python 3.10.0 interpreter:
 
 ## Run
 
-Start your emulator first, then launch the bot by double-clicking `start.bat`.
+Start your emulator first, then launch the bot by double-clicking `Run PylaAI.bat`.
+
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken. The older `start.bat` still exists as a minimal direct launcher.
 
 Manual fallback from the repository root:
 

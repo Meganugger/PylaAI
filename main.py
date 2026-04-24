@@ -202,6 +202,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     or runtime_state == "reward_claim"
                 )
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
+                held_end_state = None
+                if state == "match" and hasattr(self.Stage_manager, "should_hold_match_probe"):
+                    held_end_state = self.Stage_manager.get_end_transition_state() if self.Stage_manager.should_hold_match_probe(now) else None
+                    if held_end_state:
+                        state = held_end_state
                 if state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
                     self.Play.note_confirmed_match_state(now)
                 if (
@@ -236,6 +241,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             screenshot,
                             allow_reward_ocr=allow_reward_ocr,
                         )
+                        if confirmed_state == "match" and hasattr(self.Stage_manager, "should_hold_match_probe"):
+                            held_end_state = self.Stage_manager.get_end_transition_state() if self.Stage_manager.should_hold_match_probe(time.time()) else None
+                            if held_end_state:
+                                confirmed_state = held_end_state
                         if confirmed_state == "match" and hasattr(self.Play, "note_confirmed_match_state"):
                             self.Play.note_confirmed_match_state(time.time())
                         if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
