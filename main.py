@@ -308,19 +308,28 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 or getattr(self.Play, "_damage_dealt", 0)
                 or 0
             )
-            live_trophies = coerce_int(
-                tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
-                0,
+            awaiting_verified_sync = bool(
+                getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(tobs, "_lobby_trophy_verified", False)
             )
-            live_wins = coerce_int(
-                getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
-                0,
-            )
-            live_streak = coerce_int(
-                tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
-                0,
-            )
-            if active_entry:
+            if awaiting_verified_sync:
+                live_trophies = coerce_int(active_entry.get("trophies", 0), 0)
+                live_wins = coerce_int(active_entry.get("wins", 0), 0)
+                live_streak = coerce_int(active_entry.get("win_streak", 0), 0)
+            else:
+                live_trophies = coerce_int(
+                    tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
+                    0,
+                )
+                live_wins = coerce_int(
+                    getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
+                    0,
+                )
+                live_streak = coerce_int(
+                    tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
+                    0,
+                )
+            if active_entry and not awaiting_verified_sync:
                 if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
                     active_entry["trophies"] = live_trophies
                 if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
