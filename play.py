@@ -3190,6 +3190,9 @@ class Play(Movement):
         if "enemy" not in data.keys() or data['enemy'] is None:
             data['enemy'] = []
 
+        if "teammate" not in data.keys():
+            data['teammate'] = None
+
         if 'wall' not in data.keys() or not data['wall']:
             data['wall'] = []
 
@@ -5916,83 +5919,4 @@ class Play(Movement):
         except Exception:
             pass
 
-    def generate_visualization(self, output_filename='visualization.mp4'):
-        import cv2
-        import numpy as np
-
-        frame_size = (1920, 1080)  # Adjust as needed
-        fps = 10
-
-        # Initialize VideoWriter
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # type: ignore[attr-defined]
-        out = cv2.VideoWriter(output_filename, fourcc, fps, frame_size)
-
-        for frame_data in self.scene_data:
-            # Create a blank image
-            img = np.zeros((frame_size[1], frame_size[0], 3), np.uint8)
-
-            # Scale factors if needed
-            scale_x = frame_size[0] / 1920
-            scale_y = frame_size[1] / 1080
-
-            if frame_data['wall']:
-                # Draw walls
-                for wall in frame_data['wall']:
-                    x1, y1, x2, y2 = map(int, wall)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (128, 128, 128), -1)  # Gray walls
-
-            if frame_data['enemy']:
-                # Draw enemies
-                for enemy in frame_data['enemy']:
-                    x1, y1, x2, y2 = map(int, enemy)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 0, 255), -1)  # Red enemies
-
-            if frame_data['player']:
-                # Draw player
-                for player in frame_data['player']:
-                    x1, y1, x2, y2 = map(int, player)
-                    x1 = int(x1 * scale_x)
-                    y1 = int(y1 * scale_y)
-                    x2 = int(x2 * scale_x)
-                    y2 = int(y2 * scale_y)
-                    cv2.rectangle(img, (x1, y1), (x2, y2), (0, 255, 0), -1)  # Green player
-
-            # Draw movement decision
-            movement = frame_data['movement']
-            direction = self.movement_to_direction(movement)
-            cv2.putText(img, f'Movement: {direction}', (10, frame_size[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5,
-                        (255, 255, 255), 1)
-
-            # Write frame to video
-            out.write(img)
-
-        out.release()
-
-    @staticmethod
-    def movement_to_direction(movement):
-        mapping = {
-            'w': 'up',
-            'a': 'left',
-            's': 'down',
-            'd': 'right',
-            'wa': 'up-left',
-            'aw': 'up-left',
-            'wd': 'up-right',
-            'dw': 'up-right',
-            'sa': 'down-left',
-            'as': 'down-left',
-            'sd': 'down-right',
-            'ds': 'down-right',
-        }
-        movement = movement.lower()
-        movement = ''.join(sorted(movement))
-        return mapping.get(movement, 'idle' if movement == '' else movement)
 
