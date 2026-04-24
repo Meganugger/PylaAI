@@ -21,56 +21,74 @@ PLAYSTYLE_CONFIG = {
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
         "prefer_teammates": False,
+        "low_ammo_safe_ratio": 0.90,
+        "low_ammo_attack_ratio": 0.55,
+        "low_ammo_use_long_range": False,
     },
     "sniper": {
         "range_mult": 1.0,
         "approach_factor": 0.55,
-        "attack_interval": 0.15,
+        "attack_interval": 0.14,
         "team_cohesion": 0.20,
         "dodge_chance": 0.60,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
         "prefer_teammates": False,
+        "low_ammo_safe_ratio": 1.00,
+        "low_ammo_attack_ratio": 0.72,
+        "low_ammo_use_long_range": True,
     },
     "tank": {
         "range_mult": 1.0,
         "approach_factor": 1.5,
-        "attack_interval": 0.10,
+        "attack_interval": 0.09,
         "team_cohesion": 0.35,
         "dodge_chance": 0.15,
         "retreat_on_low_ammo": False,
         "aggressive_no_enemy": True,
         "prefer_teammates": True,
+        "low_ammo_safe_ratio": 1.05,
+        "low_ammo_attack_ratio": 0.72,
+        "low_ammo_use_long_range": False,
     },
     "assassin": {
         "range_mult": 1.0,
         "approach_factor": 1.3,
-        "attack_interval": 0.10,
+        "attack_interval": 0.09,
         "team_cohesion": 0.12,
         "dodge_chance": 0.70,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
         "prefer_teammates": False,
+        "low_ammo_safe_ratio": 0.95,
+        "low_ammo_attack_ratio": 0.62,
+        "low_ammo_use_long_range": False,
     },
     "thrower": {
         "range_mult": 1.0,
         "approach_factor": 0.75,
-        "attack_interval": 0.10,
+        "attack_interval": 0.085,
         "team_cohesion": 0.35,
         "dodge_chance": 0.55,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
         "prefer_teammates": True,
+        "low_ammo_safe_ratio": 1.05,
+        "low_ammo_attack_ratio": 0.86,
+        "low_ammo_use_long_range": True,
     },
     "support": {
         "range_mult": 1.0,
         "approach_factor": 0.75,
-        "attack_interval": 0.14,
+        "attack_interval": 0.12,
         "team_cohesion": 0.50,
         "dodge_chance": 0.40,
         "retreat_on_low_ammo": True,
         "aggressive_no_enemy": True,
         "prefer_teammates": True,
+        "low_ammo_safe_ratio": 1.00,
+        "low_ammo_attack_ratio": 0.78,
+        "low_ammo_use_long_range": True,
     },
 }
 
@@ -147,9 +165,13 @@ class Movement:
         self._showdown_combat_regroup_bias = float(
             bot_config.get("showdown_combat_regroup_bias", bot_config.get("teammate_combat_bias", 0.35))
         )
+        self._showdown_teammate_lock_duration = float(
+            bot_config.get("showdown_teammate_lock_duration", 0.55)
+        )
         self._showdown_orbit_switch_interval = float(bot_config.get("showdown_orbit_switch_interval", 1.8))
         self._showdown_locked_teammate = None
         self._showdown_locked_teammate_distance = float("inf")
+        self._showdown_teammate_lock_until = 0.0
         self._showdown_regroup_active = False
         self._showdown_roam_spin_angle = 270.0
         self._showdown_orbit_side = 1
@@ -1477,6 +1499,7 @@ class Play(Movement):
     def _reset_showdown_teammate_lock(self):
         self._showdown_locked_teammate = None
         self._showdown_locked_teammate_distance = float("inf")
+        self._showdown_teammate_lock_until = 0.0
         self._showdown_regroup_active = False
         self._showdown_orbit_until = 0.0
 
@@ -1485,6 +1508,7 @@ class Play(Movement):
             self._reset_showdown_teammate_lock()
             return None, float("inf")
 
+        current_time = time.time()
         nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
         selected_target = nearest_target
         selected_distance = nearest_distance
@@ -1495,9 +1519,19 @@ class Play(Movement):
                 key=lambda teammate_pos: self.get_distance(teammate_pos, self._showdown_locked_teammate),
             )
             locked_distance = self.get_distance(locked_target, player_pos)
-            if nearest_distance >= locked_distance * (1.0 - self._showdown_teammate_hysteresis):
-                selected_target = locked_target
-                selected_distance = locked_distance
+            selected_target = locked_target
+            selected_distance = locked_distance
+            should_switch = (
+                nearest_target != locked_target
+                and current_time >= self._showdown_teammate_lock_until
+                and nearest_distance < locked_distance * (1.0 - self._showdown_teammate_hysteresis)
+            )
+            if should_switch:
+                selected_target = nearest_target
+                selected_distance = nearest_distance
+                self._showdown_teammate_lock_until = current_time + self._showdown_teammate_lock_duration
+        else:
+            self._showdown_teammate_lock_until = current_time + self._showdown_teammate_lock_duration
 
         self._showdown_locked_teammate = selected_target
         self._showdown_locked_teammate_distance = selected_distance
@@ -1515,7 +1549,7 @@ class Play(Movement):
         self._showdown_orbit_until = current_time + self._showdown_orbit_switch_interval
         return self._showdown_orbit_side
 
-    def _get_showdown_follow_move(self, player_pos, wall_context, allow_spacing=True):
+    def _get_showdown_follow_move(self, player_pos, wall_context, allow_spacing=True, allow_orbit=False):
         teammate_target, teammate_distance = self._get_showdown_regroup_target(player_pos)
         if teammate_target is None:
             return None, float("inf"), None
@@ -1533,7 +1567,7 @@ class Play(Movement):
                 desired_angle = self.angle_opposite(teammate_angle)
                 return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_follow"
 
-            if teammate_distance <= orbit_distance:
+            if allow_orbit and teammate_distance <= orbit_distance:
                 orbit_side = self._pick_showdown_orbit_side()
                 desired_angle = (teammate_angle + (90.0 * orbit_side)) % 360.0
                 return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_follow"
@@ -1555,6 +1589,7 @@ class Play(Movement):
             player_pos,
             wall_context,
             allow_spacing=True,
+            allow_orbit=False,
         )
         if teammate_move is not None:
             return teammate_move, teammate_reason or "team_follow"
@@ -1636,13 +1671,20 @@ class Play(Movement):
 
         return max(0.06, attack_interval)
 
-    def _should_fire(self, enemy_distance, safe_range, attack_range, burst_active):
+    def _should_fire(self, style, enemy_distance, safe_range, attack_range, burst_active):
         if burst_active:
             return self.current_ammo > 0
         if self.current_ammo > self._ammo_conserve_threshold:
             return True
         if self.current_ammo == self._ammo_conserve_threshold:
-            return enemy_distance < min(safe_range * 0.9, attack_range * 0.55)
+            safe_limit = safe_range * float(style.get("low_ammo_safe_ratio", 0.90))
+            attack_limit = attack_range * float(style.get("low_ammo_attack_ratio", 0.55))
+            distance_limit = (
+                max(safe_limit, attack_limit)
+                if style.get("low_ammo_use_long_range")
+                else min(safe_limit, attack_limit)
+            )
+            return enemy_distance < max(78.0, distance_limit)
         return False
 
     @staticmethod
@@ -2466,7 +2508,7 @@ class Play(Movement):
             effective_attack_range,
             burst_active,
         )
-        should_fire = self._should_fire(enemy_distance, safe_range, effective_attack_range, burst_active) or (
+        should_fire = self._should_fire(style, enemy_distance, safe_range, effective_attack_range, burst_active) or (
             close_range_contact and self.current_ammo > 0
         )
         can_attack_now = (
