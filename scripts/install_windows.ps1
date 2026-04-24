@@ -12,6 +12,7 @@ $ErrorActionPreference = "Stop"
 $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPath = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
+$runBatPath = Join-Path $repoRoot "Run PylaAI.bat"
 $startBatPath = Join-Path $repoRoot "start.bat"
 $generalConfigPath = Join-Path $repoRoot "cfg\general_config.toml"
 $pythonDownloadUrl = "https://www.python.org/ftp/python/3.10.0/python-3.10.0-amd64.exe"
@@ -321,8 +322,14 @@ try {
     Write-StartBat
     Write-Host ""
     Write-Host "Setup completed successfully." -ForegroundColor Green
-    Write-Host "You can now launch the bot by double-clicking start.bat." -ForegroundColor Green
-    Write-Host "Optional multi-instance setup: run '.venv\\Scripts\\python.exe main.py --setup-instances 2' to generate per-instance configs and start_1.bat / start_2.bat launchers." -ForegroundColor Cyan
+    if (Test-Path $runBatPath) {
+        Write-Host "Use 'Run PylaAI.bat' for normal launches." -ForegroundColor Green
+        Write-Host "Use 'setup.bat' only for first-time install or manual repair." -ForegroundColor Green
+        Write-Host "'start.bat' is still available as a legacy direct launcher." -ForegroundColor DarkGray
+    }
+    else {
+        Write-Host "You can now launch the bot by double-clicking start.bat." -ForegroundColor Green
+    }
 }
 catch {
     Write-Host ""
