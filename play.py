@@ -167,6 +167,7 @@ class Movement:
             "retreat": float(bot_config.get("analog_retreat_hold_time", 0.12)),
             "engage": float(bot_config.get("analog_engage_hold_time", 0.16)),
             "memory_chase": float(bot_config.get("analog_memory_hold_time", 0.22)),
+            "team_follow": float(bot_config.get("analog_team_follow_hold_time", bot_config.get("analog_team_hold_time", 0.28))),
             "team_space": float(bot_config.get("analog_team_space_hold_time", 0.24)),
             "team_regroup": float(bot_config.get("analog_team_hold_time", 0.28)),
             "team_orbit": float(bot_config.get("analog_team_orbit_hold_time", 0.30)),
@@ -176,6 +177,7 @@ class Movement:
         self._analog_goal_priorities = {
             "roam": 0,
             "search": 1,
+            "team_follow": 2,
             "team_space": 2,
             "team_regroup": 2,
             "team_orbit": 2,
@@ -1501,43 +1503,23 @@ class Play(Movement):
         self._showdown_locked_teammate_distance = selected_distance
         return selected_target, selected_distance
 
-    def _pick_showdown_orbit_side(self, player_pos, teammate_angle, wall_context):
+    def _pick_showdown_orbit_side(self):
         current_time = time.time()
         if current_time < self._showdown_orbit_until and self._showdown_orbit_side in (-1, 1):
             return self._showdown_orbit_side
 
-        side_scores = []
-        for side in (1, -1):
-            candidate_angle = (float(teammate_angle) + (90.0 * side)) % 360.0
-            score = self._score_wall_detour_candidate(teammate_angle, candidate_angle)
-            if self._is_path_blocked_angle(player_pos, candidate_angle, wall_context):
-                score += 120.0
-            if side == self._showdown_orbit_side:
-                score -= 6.0
-            side_scores.append((score, side))
-
-        self._showdown_orbit_side = min(side_scores, key=lambda item: item[0])[1]
+        if self._showdown_orbit_side not in (-1, 1):
+            self._showdown_orbit_side = 1
+        else:
+            self._showdown_orbit_side *= -1
         self._showdown_orbit_until = current_time + self._showdown_orbit_switch_interval
         return self._showdown_orbit_side
-
-    def _should_hold_showdown_regroup(self, teammate_distance):
-        if teammate_distance == float("inf"):
-            self._showdown_regroup_active = False
-            return False
-
-        start_distance = max(self._showdown_team_pull_distance, self._showdown_regroup_release_distance + 10.0)
-        if self._showdown_regroup_active:
-            self._showdown_regroup_active = teammate_distance > self._showdown_regroup_release_distance
-        else:
-            self._showdown_regroup_active = teammate_distance > start_distance
-        return self._showdown_regroup_active
 
     def _get_showdown_follow_move(self, player_pos, wall_context, allow_spacing=True):
         teammate_target, teammate_distance = self._get_showdown_regroup_target(player_pos)
         if teammate_target is None:
             return None, float("inf"), None
 
-        follow_deadzone = max(72.0, min(110.0, self._showdown_team_pull_distance * 0.55))
         teammate_angle = self.angle_from_direction(
             teammate_target[0] - player_pos[0],
             teammate_target[1] - player_pos[1],
@@ -1548,18 +1530,13 @@ class Play(Movement):
 
         if self._showdown_trio_grouping_enabled and allow_spacing:
             if teammate_distance < spacing_distance:
-                orbit_side = self._pick_showdown_orbit_side(player_pos, teammate_angle, wall_context)
-                desired_angle = (teammate_angle + (110.0 * orbit_side)) % 360.0
-                return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_space"
+                desired_angle = self.angle_opposite(teammate_angle)
+                return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_follow"
 
             if teammate_distance <= orbit_distance:
-                orbit_side = self._pick_showdown_orbit_side(player_pos, teammate_angle, wall_context)
+                orbit_side = self._pick_showdown_orbit_side()
                 desired_angle = (teammate_angle + (90.0 * orbit_side)) % 360.0
-                return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_orbit"
-
-        if teammate_distance <= follow_deadzone and not self._should_hold_showdown_regroup(teammate_distance):
-            held_angle = float(self.last_movement) % 360.0 if isinstance(self.last_movement, (float, int)) else None
-            return held_angle, teammate_distance, "team_hold"
+                return self._find_best_angle(player_pos, desired_angle, wall_context), teammate_distance, "team_follow"
 
         teammate_move = self._get_move_toward(
             player_pos,
@@ -1567,20 +1544,20 @@ class Play(Movement):
             wall_context,
             allow_detour=True,
         )
-        return teammate_move, teammate_distance, "team_regroup"
+        return teammate_move, teammate_distance, "team_follow"
 
     def _get_showdown_roam_move(self, player_pos, wall_context):
         self._showdown_roam_spin_angle = (self._showdown_roam_spin_angle + 15.0) % 360.0
         return self._find_best_angle(player_pos, self._showdown_roam_spin_angle, wall_context)
 
-    def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True, combat_recover=False):
+    def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True):
         teammate_move, teammate_distance, teammate_reason = self._get_showdown_follow_move(
             player_pos,
             wall_context,
-            allow_spacing=not combat_recover,
+            allow_spacing=True,
         )
         if teammate_move is not None:
-            return teammate_move, teammate_reason or "team_regroup"
+            return teammate_move, teammate_reason or "team_follow"
 
         if allow_memory_chase and teammate_distance == float("inf"):
             last_enemy_pos = self._get_last_known_enemy_pos()
@@ -1940,7 +1917,7 @@ class Play(Movement):
             self.time_since_different_movement = current_time
             return angle
 
-        if movement_reason in {"team_hold", "team_orbit", "team_space", "roam"}:
+        if movement_reason in {"team_follow", "team_hold", "team_orbit", "team_space", "roam"}:
             self._movement_anchor_angle = angle
             self._movement_anchor_angle_pos = player_pos
             self.time_since_different_movement = current_time
@@ -2336,20 +2313,6 @@ class Play(Movement):
         })
 
         if self.is_showdown_mode:
-            target_blocked = (
-                not target_hittable
-                and not close_range_contact
-                and self._is_path_blocked_angle(player_pos, enemy_angle, wall_context)
-            )
-            if target_blocked:
-                support_move, support_reason = self._get_showdown_support_move(
-                    player_pos,
-                    wall_context,
-                    allow_memory_chase=False,
-                    combat_recover=True,
-                )
-                if support_move is not None:
-                    return self._plan_analog_reason(support_move, support_reason)
             cohesion_target = None
         else:
             cohesion_target = self._get_teammate_centroid()
@@ -2382,7 +2345,7 @@ class Play(Movement):
             if (
                 self._showdown_trio_grouping_enabled
                 and self._teammate_positions
-                and enemy_distance > max(effective_attack_range * 1.25, safe_range * 1.15)
+                and enemy_distance > effective_attack_range
             ):
                 nearest_teammate, teammate_distance = self._get_nearest_teammate_target(player_pos)
                 if nearest_teammate is not None and teammate_distance > self._showdown_combat_regroup_distance:
@@ -2393,10 +2356,7 @@ class Play(Movement):
                     desired_angle = self.blend_angles(
                         desired_angle,
                         team_angle,
-                        min(
-                            self._showdown_combat_regroup_bias,
-                            0.20 if target_hittable else 0.28,
-                        ),
+                        min(self._showdown_combat_regroup_bias, 0.18),
                     )
             movement = self._find_best_angle(player_pos, desired_angle, wall_context)
             movement_reason = "retreat" if (showdown_retreat or should_retreat_for_ammo) else "engage"
