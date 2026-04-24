@@ -329,7 +329,7 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "star_drop"
     if is_in_trophy_reward(image):
         return "trophy_reward"
-    if is_in_player_title_reward(image):
+    if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
         return "player_title_reward"
     if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
         return "reward_claim"
@@ -363,7 +363,9 @@ def is_in_trophy_reward(image) -> bool:
     return is_template_in_region(image, path + 'trophies_screen.png', region_data["trophies_screen"])
 
 
-def is_in_player_title_reward(image) -> bool:
+def is_in_player_title_reward(image, allow_ocr=False) -> bool:
+    if not allow_ocr:
+        return False
     now = time.time()
     if now - _player_title_reward_cache["checked_at"] < 1.0:
         return _player_title_reward_cache["detected"]
