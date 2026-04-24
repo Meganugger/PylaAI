@@ -85,10 +85,12 @@ class StageManager:
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
         self._lobby_start_settle_delay = 0.45
-        self._lobby_start_retry_delay = 1.35
+        self._lobby_start_retry_delay = 2.75
         self._lobby_start_blocked_until = 0.0
         self._lobby_start_block_reason = ""
-        self._post_result_lobby_delay = 1.8
+        self._post_result_lobby_delay = 2.75
+        self._unexpected_brawler_selection_delay = 2.5
+        self._last_brawler_menu_recovery_at = 0.0
 
     def _is_easyocr_ready(self):
         try:
@@ -131,9 +133,10 @@ class StageManager:
         if not self._lobby_visible_since:
             self._lobby_visible_since = now
 
-    def _reset_lobby_start_tracking(self):
+    def _reset_lobby_start_tracking(self, reset_last_press=True):
         self._lobby_visible_since = 0.0
-        self._last_start_press_at = 0.0
+        if reset_last_press:
+            self._last_start_press_at = 0.0
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
 
@@ -150,6 +153,24 @@ class StageManager:
         self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
         self._lobby_start_block_reason = reason or self._lobby_start_block_reason
         self._start_wait_logged_at = 0.0
+
+    def _recover_from_brawler_selection(self):
+        now = time.time()
+        if now - self._last_brawler_menu_recovery_at < 0.9:
+            return False
+        region = (self.lobby_config.get("template_matching") or {}).get("go_back_arrow") or [0, 0, 175, 110]
+        if len(region) != 4:
+            region = [0, 0, 175, 110]
+        x, y, w, h = [int(value) for value in region]
+        target_x = max(1, x + (w // 2))
+        target_y = max(1, y + (h // 2))
+        self.window_controller.keys_up(list("wasd"))
+        self.window_controller.click(target_x, target_y, already_include_ratio=False)
+        self._last_brawler_menu_recovery_at = now
+        self._last_start_press_at = now
+        self._start_wait_logged_at = 0.0
+        print("[START] Unexpected brawler menu opened; backing out before retrying")
+        return True
 
     def _try_press_lobby_start(self):
         now = time.time()
@@ -855,11 +876,14 @@ class StageManager:
             known_result = state.split("_", 1)[1]
             state = "end"
         if state == "brawler_selection":
-            self._delay_lobby_start(1.25, "unexpected brawler selection")
+            recent_start_press = self._last_start_press_at and (time.time() - self._last_start_press_at) <= 4.0
+            self._delay_lobby_start(self._unexpected_brawler_selection_delay, "recovering from accidental brawler menu")
+            if recent_start_press:
+                self._recover_from_brawler_selection()
         if state == "lobby":
             self._note_lobby_visible()
         else:
-            self._reset_lobby_start_tracking()
+            self._reset_lobby_start_tracking(reset_last_press=(state != "brawler_selection"))
         if state == "lobby" and not self.lobby_start_enabled:
             return
 
