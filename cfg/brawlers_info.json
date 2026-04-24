@@ -1698,5 +1698,22 @@
         "movement_speed": 720,
         "projectile_speed": 750,
         "super_damage": 800
+    },
+    "najia": {
+        "safe_range": 236,
+        "attack_range": 810,
+        "super_type": "damage",
+        "super_range": 341,
+        "ignore_walls_for_attacks": false,
+        "ignore_walls_for_supers": true,
+        "playstyle": "fighter",
+        "reload_speed": 1.4,
+        "health": 3200,
+        "attack_damage": 1200,
+        "projectile_count": 1,
+        "movement_speed": 720,
+        "projectile_speed": 900,
+        "super_damage": 1400,
+        "hold_attack": 0
     }
 }
