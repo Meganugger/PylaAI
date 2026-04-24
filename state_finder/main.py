@@ -304,7 +304,7 @@ def find_game_result(screenshot):
     return False
 
 
-def get_in_game_state(image):
+def get_in_game_state(image, allow_reward_ocr=False):
     game_result = find_game_result(image)
     if game_result:
         return f"end_{game_result}"
@@ -314,9 +314,9 @@ def get_in_game_state(image):
         return "popup"
     if is_in_trophy_reward(image):
         return "trophy_reward"
-    if is_in_player_title_reward(image):
+    if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
         return "player_title_reward"
-    if is_in_reward_claim(image):
+    if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
         return "reward_claim"
     if is_in_lobby(image):
         return "lobby"
@@ -356,7 +356,9 @@ def is_in_trophy_reward(image) -> bool:
     return is_template_in_region(image, path + 'trophies_screen.png', region_data["trophies_screen"])
 
 
-def is_in_player_title_reward(image) -> bool:
+def is_in_player_title_reward(image, allow_ocr=False) -> bool:
+    if not allow_ocr:
+        return False
     now = time.time()
     if now - _player_title_reward_cache["checked_at"] < 1.0:
         return _player_title_reward_cache["detected"]
@@ -420,11 +422,11 @@ def is_in_star_drop(image):
     return False
 
 
-def get_state(screenshot):
+def get_state(screenshot, allow_reward_ocr=False):
     global _last_state_debug_value, _last_state_debug_time
     started_at = time.perf_counter()
     screenshot_bgr = to_bgr_array(screenshot)
-    state = get_in_game_state(screenshot_bgr)
+    state = get_in_game_state(screenshot_bgr, allow_reward_ocr=allow_reward_ocr)
     record_timing("state_detection", time.perf_counter() - started_at, print_every=60)
     now = time.time()
     if debug and (state != _last_state_debug_value or now - _last_state_debug_time >= 3.0):

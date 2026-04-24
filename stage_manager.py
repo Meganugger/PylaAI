@@ -514,7 +514,7 @@ class StageManager:
         wr = self.window_controller.width_ratio or 1.0
         hr = self.window_controller.height_ratio or 1.0
         screenshot = self.window_controller.screenshot()
-        current_state = get_state(screenshot)
+        current_state = get_state(screenshot, allow_reward_ocr=True)
         attempts = 0
         while current_state != "lobby" and attempts < 30:
             # Use back arrow instead of Q (Q maps to START MATCH button)
@@ -1245,14 +1245,14 @@ class StageManager:
                 self.states[current_state](screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
+                current_state = get_state(screenshot, allow_reward_ocr=True)
                 end_attempts += 1
                 continue
             if current_state == "star_drop":
                 self.click_star_drop()
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
+                current_state = get_state(screenshot, allow_reward_ocr=True)
                 end_attempts += 1
                 continue
             state_result = None
@@ -1456,7 +1456,7 @@ class StageManager:
         observed_result_processed = False
         result_post_processed = False
         read_match_stats = False
-        current_state = get_state(screenshot)
+        current_state = get_state(screenshot, allow_reward_ocr=True)
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
         if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
@@ -1475,14 +1475,14 @@ class StageManager:
                 self.states[current_state](screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
+                current_state = get_state(screenshot, allow_reward_ocr=True)
                 end_attempts += 1
                 continue
             if current_state == "star_drop":
                 self.click_star_drop()
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
+                current_state = get_state(screenshot, allow_reward_ocr=True)
                 end_attempts += 1
                 continue
             state_result = None
@@ -1595,7 +1595,7 @@ class StageManager:
                     print("[END] Feed still stale after 15s, breaking out of end_game")
                     break
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot)
+                current_state = get_state(screenshot, allow_reward_ocr=True)
                 continue
 
             if (
@@ -1612,7 +1612,7 @@ class StageManager:
                     print("Game has ended, pressing Q")
             time.sleep(0.45)
             screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot)
+            current_state = get_state(screenshot, allow_reward_ocr=True)
             end_attempts += 1
 
         if end_attempts >= max_end_attempts:
