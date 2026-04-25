@@ -49,11 +49,11 @@ Do not use `python setup.py install`.
 
 For most Windows users, the simplest rule is:
 - double-click `Run PylaAI.bat` for normal use
-- use `setup.bat` only if you want to run install/repair manually
+- use `scripts\\setup.bat` only if you want to run install/repair manually
 
 `Run PylaAI.bat` will send you through setup automatically if the environment is missing or broken.
 
-If you want to run the installer yourself, double-click `setup.bat` from the repo root.
+If you want to run the installer yourself, double-click `scripts\setup.bat`.
 
 It will:
 - check for Python 3.10.0
@@ -61,7 +61,7 @@ It will:
 - ask whether you want `CUDA`, `DirectML`, or `CPU`
 - install the selected backend
 - apply a recommended backend-specific thread preset to `cfg/general_config.toml`
-- create `start.bat`
+- create `scripts\\start.bat`
 
 Use a Python 3.10.0 virtual environment and install one ONNX Runtime backend explicitly.
 Git must be available during install because the project installs the intended scrcpy client source revision directly.
@@ -76,22 +76,22 @@ git checkout strongest-bot
 
 ### 2. Recommended one-click setup
 
-Double-click `setup.bat`
+Double-click `scripts\setup.bat`
 
 or run:
 
 ```powershell
-.\setup.bat
+.\scripts\setup.bat
 ```
 
-`setup.bat` also writes a sane default performance preset for the backend you choose:
+`scripts\\setup.bat` also writes a sane default performance preset for the backend you choose:
 - `CUDA`: balanced GPU-friendly limits
 - `DirectML`: slightly higher ONNX CPU-side threading than CUDA
 - `CPU`: a CPU-only preset with higher worker counts
 
 It also remembers the selected backend in `cfg/general_config.toml` so runtime provider selection and default thread tuning can stay aligned with your install choice.
 
-If Python 3.10.0 or Git is missing, `setup.bat` / `scripts/install_windows.ps1` now prints the direct download links above plus a short Windows installer checklist.
+If Python 3.10.0 or Git is missing, `scripts\\setup.bat` / `scripts/install_windows.ps1` now prints the direct download links above plus a short Windows installer checklist.
 
 ### 3. Manual setup
 Create and activate a Python 3.10.0 virtual environment:
@@ -159,10 +159,10 @@ Start your emulator first, then launch the bot by double-clicking `Run PylaAI.ba
 
 Recommended launcher flow:
 - `Run PylaAI.bat`: normal everyday launcher, including first launch if you want the simplest path
-- `setup.bat`: manual install/repair launcher
-- `start.bat`: legacy direct launcher with fewer checks
+- `scripts\\setup.bat`: manual install/repair launcher
+- `scripts\\start.bat`: legacy direct launcher with fewer checks
 
-`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `setup.bat` if the local runtime is broken.
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `scripts\\setup.bat` if the local runtime is broken.
 
 Manual fallback from the repository root:
 

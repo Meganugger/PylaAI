@@ -5,7 +5,7 @@ cd /d %~dp0
 echo.
 echo PylaAI launcher:
 echo   - Use this file for normal launches
-echo   - Use setup.bat only for first-time install or manual repair
+echo   - Use scripts\setup.bat only for first-time install or manual repair
 echo.
 
 if not exist ".venv\Scripts\python.exe" goto setup_needed
@@ -17,8 +17,8 @@ goto start
 
 :setup_needed
 echo.
-echo PylaAI is not ready yet. Running setup.bat...
-call .\setup.bat
+echo PylaAI is not ready yet. Running setup...
+call .\scripts\setup.bat
 if errorlevel 1 goto repair_failed
 if not exist ".venv\Scripts\python.exe" goto repair_failed
 .\.venv\Scripts\python.exe tools\runtime_preflight.py
@@ -28,7 +28,7 @@ goto start
 :repair
 echo.
 echo Repairing PylaAI dependencies. This can take a few minutes...
-call .\setup.bat
+call .\scripts\setup.bat
 if errorlevel 1 goto repair_failed
 if not exist ".venv\Scripts\python.exe" goto repair_failed
 .\.venv\Scripts\python.exe tools\runtime_preflight.py
