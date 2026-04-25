@@ -13,7 +13,7 @@ $repoRoot = Split-Path -Parent $PSScriptRoot
 $venvPath = Join-Path $repoRoot ".venv"
 $venvPython = Join-Path $venvPath "Scripts\python.exe"
 $runBatPath = Join-Path $repoRoot "Run PylaAI.bat"
-$startBatPath = Join-Path $repoRoot "start.bat"
+$startBatPath = Join-Path $repoRoot "scripts\start.bat"
 $generalConfigPath = Join-Path $repoRoot "cfg\general_config.toml"
 $pythonDownloadUrl = "https://www.python.org/ftp/python/3.10.0/python-3.10.0-amd64.exe"
 $gitDownloadUrl = "https://github.com/git-for-windows/git/releases/download/v2.53.0.windows.3/Git-2.53.0.3-64-bit.exe"
@@ -162,7 +162,7 @@ function Ensure-Venv {
 function Write-StartBat {
     $content = @'
 @echo off
-cd /d "%~dp0"
+cd /d "%~dp0.."
 .venv\Scripts\python.exe main.py
 pause
 '@
@@ -324,11 +324,11 @@ try {
     Write-Host "Setup completed successfully." -ForegroundColor Green
     if (Test-Path $runBatPath) {
         Write-Host "Use 'Run PylaAI.bat' for normal launches." -ForegroundColor Green
-        Write-Host "Use 'setup.bat' only for first-time install or manual repair." -ForegroundColor Green
-        Write-Host "'start.bat' is still available as a legacy direct launcher." -ForegroundColor DarkGray
+        Write-Host "Use 'scripts\setup.bat' only for first-time install or manual repair." -ForegroundColor Green
+        Write-Host "'scripts\start.bat' is still available as a legacy direct launcher." -ForegroundColor DarkGray
     }
     else {
-        Write-Host "You can now launch the bot by double-clicking start.bat." -ForegroundColor Green
+        Write-Host "You can now launch the bot by double-clicking 'Run PylaAI.bat' or 'scripts\start.bat'." -ForegroundColor Green
     }
 }
 catch {
