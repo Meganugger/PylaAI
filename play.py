@@ -24,6 +24,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 0.90,
         "low_ammo_attack_ratio": 0.55,
         "low_ammo_use_long_range": False,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
     "sniper": {
         "range_mult": 1.0,
@@ -37,6 +39,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 1.00,
         "low_ammo_attack_ratio": 0.72,
         "low_ammo_use_long_range": True,
+        "strict_hittable": True,
+        "fires_over_walls": False,
     },
     "tank": {
         "range_mult": 1.0,
@@ -50,6 +54,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 1.05,
         "low_ammo_attack_ratio": 0.72,
         "low_ammo_use_long_range": False,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
     "assassin": {
         "range_mult": 1.0,
@@ -63,6 +69,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 0.95,
         "low_ammo_attack_ratio": 0.62,
         "low_ammo_use_long_range": False,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
     "thrower": {
         "range_mult": 1.0,
@@ -76,6 +84,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 1.05,
         "low_ammo_attack_ratio": 0.86,
         "low_ammo_use_long_range": True,
+        "strict_hittable": False,
+        "fires_over_walls": True,
     },
     "support": {
         "range_mult": 1.0,
@@ -89,6 +99,8 @@ PLAYSTYLE_CONFIG = {
         "low_ammo_safe_ratio": 1.00,
         "low_ammo_attack_ratio": 0.78,
         "low_ammo_use_long_range": True,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
 }
 
@@ -1193,26 +1205,34 @@ class Play(Movement):
                 return self._plan_analog_reason(support_move, support_reason)
 
         if self._uses_analog_movement():
-            desired_angle = 270.0 if self.game_mode == 3 else 0.0
+            if self._is_brawl_ball_mode(self.selected_gamemode):
+                # Brawl Ball: push forward toward the enemy goal aggressively.
+                # The enemy goal is at the top for game_mode 3.
+                desired_angle = 270.0  # up = toward enemy goal
+            else:
+                desired_angle = 270.0 if self.game_mode == 3 else 0.0
             return self._plan_analog_reason(
                 self._find_best_angle(player_position, desired_angle, wall_context),
                 "roam",
             )
 
-        preferred_movement = 'W' if self.game_mode == 3 else 'D'  # Adjust based on game mode
+        # Brawl Ball WASD: prefer forward movement (W) to push toward goal.
+        if self._is_brawl_ball_mode(self.selected_gamemode):
+            preferred_movement = 'W'
+        else:
+            preferred_movement = 'W' if self.game_mode == 3 else 'D'
 
         if not self.is_path_blocked(player_position, preferred_movement, wall_context):
             return preferred_movement
         else:
             # Try alternative movements
             alternative_moves = ['W', 'A', 'S', 'D']
-            alternative_moves.remove(preferred_movement)
+            if preferred_movement in alternative_moves:
+                alternative_moves.remove(preferred_movement)
             random.shuffle(alternative_moves)
             for move in alternative_moves:
                 if not self.is_path_blocked(player_position, move, wall_context):
                     return move
-            print("no movement possible ?")
-            # If no movement is possible, return empty string
             return preferred_movement
 
     def _build_target_move_candidates(self, direction_x, direction_y, allow_detour=False):
@@ -1442,6 +1462,9 @@ class Play(Movement):
         best_score = float("-inf")
         previous_bbox = self.target_info.get("bbox")
         previous_pos = self.get_enemy_pos(previous_bbox) if previous_bbox else None
+        style = self._get_playstyle(self.current_brawler) if self.current_brawler else PLAYSTYLE_CONFIG["fighter"]
+        is_strict_hittable = style.get("strict_hittable", False)
+        fires_over_walls = style.get("fires_over_walls", False)
 
         for enemy in enemy_data:
             enemy_pos = self.get_enemy_pos(enemy)
@@ -1453,7 +1476,18 @@ class Play(Movement):
 
             score = 0.0
             score -= distance * 0.3
-            score += 200 if hittable else -350
+            if hittable:
+                score += 200
+            elif fires_over_walls:
+                # Throwers can still attack unhittable targets — treat them
+                # as partially valid targets with a moderate score.
+                score += 60
+            elif is_strict_hittable:
+                # Snipers/marksmen must not waste shots on blocked targets;
+                # give a very heavy penalty so they prefer hittable ones.
+                score -= 500
+            else:
+                score -= 350
             if distance <= attack_range:
                 score += 100
             score -= size_factor * 0.001
@@ -1672,16 +1706,24 @@ class Play(Movement):
         attack_interval = style["attack_interval"]
         attack_damage = int(brawler_info.get("attack_damage", 0))
         projectile_count = int(brawler_info.get("projectile_count", 1))
+        playstyle_name = str(brawler_info.get("playstyle", "fighter")).lower()
 
+        # High-damage single-projectile brawlers (snipers/marksmen) should pace
+        # shots more carefully to avoid wasting ammo.
         if attack_damage >= 2500 and projectile_count <= 1:
-            attack_interval *= 1.1
+            attack_interval *= 1.15 if playstyle_name == "sniper" else 1.1
         elif attack_damage < 1200:
             attack_interval *= 0.82
 
+        # Shotgun-style / multi-projectile brawlers fire faster.
         if projectile_count >= 4:
             attack_interval *= 0.90
 
-        if enemy_distance < safe_range:
+        # Throwers fire at a steady rhythm regardless of distance since
+        # they lob over walls — don't slow down at long range.
+        if playstyle_name == "thrower":
+            attack_interval *= 0.92
+        elif enemy_distance < safe_range:
             attack_interval *= 0.78
         elif enemy_distance < attack_range * 0.7:
             attack_interval *= 0.90
@@ -1691,6 +1733,9 @@ class Play(Movement):
     def _should_fire(self, style, enemy_distance, safe_range, attack_range, burst_active):
         if burst_active:
             return self.current_ammo > 0
+        # Strict-hittable classes (snipers) never fire speculatively — the
+        # hittable gate in can_attack_now will block, but we also suppress
+        # low-ammo "panic fire" to avoid wasting shots at walls.
         if self.current_ammo > self._ammo_conserve_threshold:
             return True
         if self.current_ammo == self._ammo_conserve_threshold:
@@ -2411,6 +2456,10 @@ class Play(Movement):
 
         if self.is_showdown_mode:
             showdown_retreat = enemy_distance <= safe_range
+            # Sniper/marksman: retreat if enemy is within safe range AND
+            # we can't hit them — don't stand still in the open.
+            if style.get("strict_hittable") and not target_hittable and enemy_distance <= attack_range:
+                showdown_retreat = True
             desired_angle = self.angle_opposite(enemy_angle) if (showdown_retreat or should_retreat_for_ammo) else enemy_angle
             if (
                 self._showdown_trio_grouping_enabled
@@ -2555,8 +2604,12 @@ class Play(Movement):
                 self.use_hypercharge()
                 self.time_since_hypercharge_checked = time.time()
                 self.is_hypercharge_ready = False
-        if can_attack_now and (self.target_info["hittable"] or close_range_contact):
-            if is_hold_attack_brawler:
+        if can_attack_now and (self.target_info["hittable"] or close_range_contact or style.get("fires_over_walls", False)):
+            # Throwers can fire at unhittable targets (over walls).
+            # Strict-hittable brawlers (snipers) must NOT fire when blocked.
+            if style.get("strict_hittable") and not self.target_info["hittable"]:
+                pass  # Suppress the shot — wall blocks line of sight
+            elif is_hold_attack_brawler:
                 if self.time_since_holding_attack is None:
                     self.time_since_holding_attack = current_time
                     self.attack(touch_up=False, touch_down=True)
