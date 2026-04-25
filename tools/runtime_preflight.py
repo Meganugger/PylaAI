@@ -16,7 +16,7 @@ def check_python():
         print_header()
         print("Python 3.10 64-bit is required.")
         print(f"Current Python: {sys.version.split()[0]} {platform.architecture()[0]}")
-        print("Run setup.bat again, or reinstall Python 3.10.0 x64.")
+        print("Run scripts/setup.bat again, or reinstall Python 3.10.0 x64.")
         return False
     return True
 
@@ -33,7 +33,7 @@ def check_onnxruntime():
         if "onnxruntime_pybind11_state" in message or "DLL load failed" in message:
             print("Windows is missing a native runtime DLL, or the ONNX package is damaged.")
             print("")
-            print("Run setup.bat to repair the environment.")
+            print("Run scripts/setup.bat to repair the environment.")
             print("If that still fails, install this Microsoft runtime:")
             print(f"  {VC_REDIST_URL}")
             print("")
@@ -42,7 +42,7 @@ def check_onnxruntime():
             print("The ONNX package import failed with this error:")
             print(f"  {message}")
             print("")
-            print("Run setup.bat to repair the environment.")
+            print("Run scripts/setup.bat to repair the environment.")
         return False
 
 
