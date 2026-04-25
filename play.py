@@ -34,6 +34,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.30,       # Stay with team
         "predict_shots": True,       # Lead targets (NEW)
         "retreat_on_low_ammo": True, # Smart ammo management (NEW)
+        "strict_hittable": False,    # Fire normally at hittable targets
+        "fires_over_walls": False,   # Cannot lob over walls
     },
     "sniper": {
         "range_mult": 1.0,
@@ -49,6 +51,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.20,
         "predict_shots": True,       # Lead targets - critical for snipers
         "retreat_on_low_ammo": True,
+        "strict_hittable": True,     # NEVER fire at wall-blocked targets
+        "fires_over_walls": False,   # Cannot lob over walls
     },
     "tank": {
         "range_mult": 1.0,
@@ -64,6 +68,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.35,       # Stay with team for support
         "predict_shots": False,      # Close range - no need
         "retreat_on_low_ammo": False,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
     "assassin": {
         "range_mult": 1.0,
@@ -79,6 +85,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.12,       # Flank independently
         "predict_shots": True,       # Predict for burst damage
         "retreat_on_low_ammo": True, # Need ammo for burst
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
     "thrower": {
         "range_mult": 1.0,
@@ -94,6 +102,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.35,       # Stay with team
         "predict_shots": True,       # Lead throws
         "retreat_on_low_ammo": True,
+        "strict_hittable": False,    # Can attack over walls
+        "fires_over_walls": True,    # Throwers lob over walls
     },
     "support": {
         "range_mult": 1.0,
@@ -110,6 +120,8 @@ PLAYSTYLE_CONFIG = {
         "team_cohesion": 0.50,       # Stay CLOSE to teammates
         "predict_shots": True,
         "retreat_on_low_ammo": True,
+        "strict_hittable": False,
+        "fires_over_walls": False,
     },
 }
 
@@ -1660,9 +1672,16 @@ class Movement:
     def find_best_target(self, enemy_data, player_coords, walls, skill_type, attack_range):
 
         """Score all enemies and pick the best target - not just the closest.
-        Considers: distance, estimated HP, hittability, kill-potential."""
+        Considers: distance, estimated HP, hittability, kill-potential.
+        Class-aware: throwers prefer over-wall targets; snipers penalize blocked targets heavily."""
         best_target = None
         best_score = float('-inf')
+        # Load class flags for scoring
+        _playstyle = (self.brawlers_info.get(self.current_brawler, {}).get('playstyle', 'fighter')
+                      if self.current_brawler else 'fighter')
+        _style = PLAYSTYLE_CONFIG.get(_playstyle, PLAYSTYLE_CONFIG['fighter'])
+        _is_strict_hittable = _style.get('strict_hittable', False)
+        _fires_over_walls = _style.get('fires_over_walls', False)
         for enemy in enemy_data:
             enemy_pos = self.get_enemy_pos(enemy)
             distance = self.get_distance(enemy_pos, player_coords)
@@ -1676,7 +1695,16 @@ class Movement:
             # Scoring formula
             score = 0.0
             score -= distance * 0.3                       # Closer = better
-            score += 200 if hittable else -500            # STRONG penalty for unhittable (behind wall)
+            if hittable:
+                score += 200
+            elif _fires_over_walls:
+                # Throwers can still lob over walls — treat as a partial target.
+                score += 60
+            elif _is_strict_hittable:
+                # Snipers MUST NOT waste ammo on blocked targets.
+                score -= 600
+            else:
+                score -= 500  # Default penalty for unhittable
             score += 100 if distance <= attack_range else 0  # In-range bonus
             score -= size_factor * 0.001                   # Smaller targets = easier kills
             # If we've been hitting this enemy, prefer to focus-fire
@@ -4594,14 +4622,18 @@ class Play(Movement):
                     else:
                         should_fire = self._should_fire(enemy_hp_low=enemy_is_low)
                     if should_fire and not autoaim_would_miss:
-                        # Auto-aim targets nearest enemy - verified our target IS the closest
-                        self.attack()
-                        self._spend_ammo()
-                        # Restore previous movement direction
-                        if movement:
-                            self.do_movement(movement)
-                        burst_tag = " [BURST]" if burst_active else ""
-                        self.last_decision_reason = f"ATTACK: {int(enemy_distance)}px, ammo={self._ammo}{burst_tag}"
+                        # Sniper strict hittable guard: suppress fire at wall-blocked targets.
+                        if style.get('strict_hittable', False) and not enemy_hittable_attack:
+                            self.last_decision_reason = f"HELD FIRE: wall-blocked ({int(enemy_distance)}px)"
+                        else:
+                            # Auto-aim targets nearest enemy - verified our target IS the closest
+                            self.attack()
+                            self._spend_ammo()
+                            # Restore previous movement direction
+                            if movement:
+                                self.do_movement(movement)
+                            burst_tag = " [BURST]" if burst_active else ""
+                            self.last_decision_reason = f"ATTACK: {int(enemy_distance)}px, ammo={self._ammo}{burst_tag}"
                         # POST-ATTACK DODGE: force a fresh strafe direction right after shooting
                         dodge_chance = style.get("dodge_chance", 0.35)
                         if random.random() < dodge_chance:
