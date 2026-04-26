@@ -930,6 +930,18 @@ class Play(Movement):
         self._last_start_request_time = 0.0
         self._last_live_player_source = "base"
         self._allow_skill_inputs = True
+        # ── Combat stat tracking (real hit attribution) ──────────
+        self._enemies_killed_this_match = 0
+        self._death_count = 0
+        self._current_damage = 0
+        self._last_enemy_count = 0
+        self._last_player_visible = True
+        self._pending_hit_check = False
+        self._pending_hit_time = 0.0
+        self._pending_hit_enemy_count = 0
+        self._pending_hit_brawler = ""
+        self._pending_hit_attack_damage = 0
+        self._hit_check_window = 0.35  # seconds after shot to check for hit
 
     @staticmethod
     def _entity_count(data, key):
@@ -2625,195 +2637,22 @@ class Play(Movement):
             if attack_issued:
                 self._consume_ammo(current_time)
                 self.time_since_last_attack = current_time
-                # Record fire event for adaptive brain using the actual fire
-                # event, not just an attack decision that got suppressed.
-                brain = getattr(self, "_adaptive_brain", None)
-                if brain is not None:
-                    clear = (
-                        self.target_info.get("hittable", False)
-                        and enemy_distance <= effective_attack_range
-                    )
-                    brain.record_fire(brawler, clear)
+                # Queue hit check for next detection cycle (real hit attribution).
+                # Instead of the old proxy signal, we now compare enemy counts
+                # between frames to detect actual hits and kills.
+                attack_dmg = 0
+                try:
+                    attack_dmg = int(brawler_info.get("attack_damage", 0) or 0)
+                except (TypeError, ValueError):
+                    pass
+                self._pending_hit_check = True
+                self._pending_hit_time = current_time
+                self._pending_hit_enemy_count = self._last_enemy_count
+                self._pending_hit_brawler = brawler
+                self._pending_hit_attack_damage = attack_dmg
                 if self._burst_mode and self.current_ammo <= 0:
                     self._burst_mode = False
                     self._last_burst_end_time = current_time
-        if self.is_super_ready:
-            super_type = brawler_info['super_type']
-            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
-
-            if (enemy_hittable and
-                    (enemy_distance <= super_range
-                     or super_type in ["spawnable", "other"]
-                     or (brawler in ["stu", "surge"] and super_type == "charge" and enemy_distance <= super_range + attack_range)
-                    )):
-                self.use_super()
-                self.time_since_super_checked = time.time()
-                self.is_super_ready = False
-        return movement
-
-    def main(self, frame, brawler):
-        if brawler != self.current_brawler:
-            self.current_brawler = brawler
-            self.shot_timestamps = []
-            self.current_ammo = self.max_ammo
-            self._burst_mode = False
-            self._burst_start_time = 0.0
-            self._last_burst_end_time = 0.0
-            self.time_since_holding_attack = None
-        current_time = time.time()
-        runtime_state = str(getattr(self, "_runtime_state", "") or "")
-        data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
-        raw_supporting_entities = (
-            self._entity_count(data, "enemy")
-            + self._entity_count(data, "teammate")
-        )
-        if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:
-
-            tile_data = self.get_tile_data(frame)
-
-            walls = self.process_tile_data(tile_data)
-
-            self.time_since_walls_checked = current_time
-            self.last_walls_data = walls
-            data['wall'] = walls
-        elif self.keep_walls_in_memory:
-            data['wall'] = self.last_walls_data
-
-        data = self._restore_recent_player_detection(data, current_time, runtime_state)
-
-        data = self.validate_game_data(data)
-        self.track_no_detections(data)
-        if data:
-            player_source = str(data.get("_player_source", "base") or "base")
-            self._last_live_player_source = player_source
-            self._allow_skill_inputs = (
-                player_source == "base"
-                or (player_source == "retry" and raw_supporting_entities > 0)
-            )
-            self._remember_player_detection(data, current_time)
-            if (
-                self._is_plausible_player_detection(data)
-                and (
-                    self._entity_count(data, "enemy") > 0
-                    or self._entity_count(data, "teammate") > 0
-                    or (
-                        runtime_state == "match"
-                        and (current_time - self._last_confirmed_match_time) <= 1.0
-                    )
-                )
-            ):
-                self._last_match_evidence_time = current_time
-            self.time_since_player_last_found = time.time()
-            if runtime_state != "match":
-                should_recheck_state = (
-                    current_time >= self._match_state_grace_until
-                    and (
-                        current_time - self._last_state_probe_time >= 0.35
-                        or runtime_state != self._last_state_probe_runtime
-                    )
-                )
-                if should_recheck_state:
-                    checked_state = get_state(frame)
-                    self._last_state_probe_time = current_time
-                    self._last_state_probe_runtime = runtime_state
-                    self._last_state_probe_result = checked_state
-                    if checked_state == "match":
-                        self.note_confirmed_match_state(current_time)
-                        self._match_state_grace_until = current_time + 2.0
-                    else:
-                        self._match_state_grace_until = 0.0
-                else:
-                    checked_state = self._last_state_probe_result or runtime_state
-                if self._should_promote_detected_match(data, runtime_state, checked_state, current_time):
-                    self._runtime_state = "match"
-                    self.note_confirmed_match_state(current_time)
-                    self._match_state_grace_until = current_time + 2.0
-                elif checked_state != "match":
-                    if debug and (current_time - self._last_state_guard_log_time >= 2.0):
-                        print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
-                        self._last_state_guard_log_time = current_time
-                    data = None
-                else:
-                    self._reset_match_state_guard()
-                    self._runtime_state = "match"
-                    self.note_confirmed_match_state(current_time)
-        if not data:
-            self._allow_skill_inputs = False
-            self._reset_match_state_guard()
-            self._reset_wall_stuck_state(current_time)
-            self.escape_state["phase"] = None
-            player_missing_for = current_time - self.time_since_player_last_found
-            if (
-                runtime_state == "match"
-                and player_missing_for >= 0.6
-                and raw_supporting_entities <= 0
-                and (current_time - self._last_end_result_probe_time) >= 1.0
-            ):
-                self._last_end_result_probe_time = current_time
-                game_result = find_game_result(frame)
-                if game_result:
-                    print(f"[RESULT] play missing-player probe detected {game_result}")
-                    self._pending_end_result = game_result
-                    self._runtime_state = f"end_{game_result}"
-                    self.window_controller.keys_up(list("wasd"))
-                    self.time_since_last_proceeding = current_time
-                    return
-            if current_time - self.time_since_player_last_found > 1.0:
-                self.window_controller.keys_up(list("wasd"))
-            self.time_since_different_movement = time.time()
-            if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
-                current_state = get_state(frame)
-                allow_reward_ocr = (
-                    current_state == "match"
-                    and (
-                        runtime_state == "reward_claim"
-                        or str(runtime_state).startswith("end_")
-                    )
-                )
-                if allow_reward_ocr:
-                    current_state = get_state(frame, allow_reward_ocr=True)
-                if isinstance(current_state, str) and current_state.startswith("end_"):
-                    print(f"[RESULT] play state probe detected {current_state}")
-                    self._pending_end_result = current_state.split("_", 1)[1]
-                    self._runtime_state = current_state
-                    self.window_controller.keys_up(list("wasd"))
-                    self.time_since_last_proceeding = current_time
-                    return
-                if current_state == "reward_claim":
-                    print("[RESULT] play state probe detected reward_claim")
-                    self._runtime_state = current_state
-                    self.window_controller.keys_up(list("wasd"))
-                    self.time_since_last_proceeding = current_time
-                    return
-                if current_state != "match":
-                    self.time_since_last_proceeding = current_time
-                else:
-                    if debug and (current_time - self._last_no_player_log_time >= 2.0):
-                        print("haven't detected the player in a while proceeding")
-                        self._last_no_player_log_time = current_time
-                    self.window_controller.press_key("Q")
-                    self.time_since_last_proceeding = time.time()
-            return
-        self.time_since_last_proceeding = time.time()
-        wall_context = self.get_wall_context(data['wall'])
-        teammates = data.get('teammate') or []
-        self._teammate_positions = [self.get_enemy_pos(teammate) for teammate in teammates]
-        if not self._teammate_positions:
-            self._reset_showdown_teammate_lock()
-        enemies = data.get('enemy') or []
-        if enemies:
-            self._update_enemy_memory(enemies)
-            self._last_enemy_seen_at = current_time
-            self._no_enemy_duration = 0.0
-            self._search_target_switch_time = 0.0
-        else:
-            self._no_enemy_duration = current_time - self._last_enemy_seen_at
-        should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
-        should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
-        should_check_super = current_time - self.time_since_super_checked > self.super_treshold
-        hud_hsv = None
-        hud_origin = (0, 0)
-        if self._allow_skill_inputs and (should_check_hypercharge or should_check_gadget or should_check_super):
             hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
         if self._allow_skill_inputs and should_check_hypercharge:

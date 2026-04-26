@@ -421,13 +421,14 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     rl_win_rate = adaptive_live.get("window_win_rate", 0.0)
                     rl_total_matches = adaptive_live.get("total_matches", 0)
                     rl_total_fires = adaptive_live.get("total_fires", 0)
-                    rl_clear_fires = adaptive_live.get("clear_fires", 0)
-                    rl_clear_rate = adaptive_live.get("clear_rate")
+                    rl_hit_fires = adaptive_live.get("hit_fires", 0)
+                    rl_hit_rate = adaptive_live.get("hit_rate")
                     rl_is_updating = adaptive_live.get("is_updating", False)
                     rl_params = adaptive_live.get("params", {})
                     rl_offsets = adaptive_live.get("offsets", {})
                     rl_clamped = adaptive_live.get("clamped", {})
                     rl_sample_met = adaptive_live.get("sample_threshold_met", False)
+                    rl_has_brawler_params = adaptive_live.get("has_brawler_params", False)
                     active_dashboard.update_live(
                         start_time=self.start_time,
                         ips=self.current_ips,
@@ -479,11 +480,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         rl_buffer_size=rl_total_fires,
                         rl_buffer_capacity=0,
                         rl_episode_reward=rl_win_rate,
-                        rl_kills=rl_clear_fires,
-                        rl_deaths=rl_total_fires - rl_clear_fires,
+                        rl_kills=rl_hit_fires,
+                        rl_deaths=rl_total_fires - rl_hit_fires,
                         rl_damage_dealt=0,
                         rl_damage_taken=0,
-                        rl_hit_rate=rl_clear_rate if rl_clear_rate is not None else -1,
+                        rl_hit_rate=rl_hit_rate if rl_hit_rate is not None else -1,
                         # New adaptive-specific keys
                         adaptive_params=rl_params,
                         adaptive_offsets=rl_offsets,
@@ -607,7 +608,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 # Keep tuned values fresh even when we stay on the same brawler
                 # across multiple matches.
                 try:
-                    self.Stage_manager.adaptive_brain.apply_to_play(self.Play)
+                    self.Stage_manager.adaptive_brain.apply_to_play(self.Play, brawler=brawler)
                 except Exception:
                     pass
                 play_started_at = time.perf_counter()
