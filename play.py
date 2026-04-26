@@ -2607,22 +2607,26 @@ class Play(Movement):
         if can_attack_now and (self.target_info["hittable"] or close_range_contact or style.get("fires_over_walls", False)):
             # Throwers can fire at unhittable targets (over walls).
             # Strict-hittable brawlers (snipers) must NOT fire when blocked.
+            attack_issued = False
             if style.get("strict_hittable") and not self.target_info["hittable"]:
                 pass  # Suppress the shot — wall blocks line of sight
             elif is_hold_attack_brawler:
                 if self.time_since_holding_attack is None:
-                    self.time_since_holding_attack = current_time
-                    self.attack(touch_up=False, touch_down=True)
+                    attack_issued = self.attack(touch_up=False, touch_down=True)
+                    if attack_issued:
+                        self.time_since_holding_attack = current_time
                 elif current_time - self.time_since_holding_attack >= brawler_info.get('hold_attack', 0):
-                    self.attack(touch_up=True, touch_down=False)
-                    self.time_since_holding_attack = None
+                    attack_issued = self.attack(touch_up=True, touch_down=False)
+                    if attack_issued:
+                        self.time_since_holding_attack = None
             else:
-                self.attack()
-            self._consume_ammo(current_time)
-            self.time_since_last_attack = current_time
-            if self._burst_mode and self.current_ammo <= 0:
-                self._burst_mode = False
-                self._last_burst_end_time = current_time
+                attack_issued = self.attack()
+            if attack_issued:
+                self._consume_ammo(current_time)
+                self.time_since_last_attack = current_time
+                if self._burst_mode and self.current_ammo <= 0:
+                    self._burst_mode = False
+                    self._last_burst_end_time = current_time
         if self.is_super_ready:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
