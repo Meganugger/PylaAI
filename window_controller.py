@@ -191,7 +191,7 @@ class WindowController:
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
-            self.FRAME_STALE_TIMEOUT = 5.0
+            self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
             self.last_app_state_check = 0.0
