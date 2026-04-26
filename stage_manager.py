@@ -664,7 +664,7 @@ class StageManager:
             synced = self._sync_lobby_result(
                 data,
                 allow_ocr=ocr_ready,
-                api_timeout=0.35 if not ocr_ready else 0.75,
+                api_timeout=3.0,
             )
 
             if synced:
@@ -685,6 +685,8 @@ class StageManager:
                     print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
                     self._apply_match_result(self._pending_verified_result)
                     self._pending_verified_result = None
+                elif not self._result_applied_for_active_match:
+                    print("[RESULT] WARNING: match result could not be verified (no API, OCR failed, no pending result). Result dropped.")
 
                 if self._result_applied_for_active_match:
                     print("[RESULT] verified trophy sync unavailable; keeping predicted progress for this match")
