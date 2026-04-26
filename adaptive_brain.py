@@ -39,7 +39,7 @@ ADAPTIVE_STATE_PATH = "cfg/adaptive_state.json"
 # Parameter schema
 # These are the tunable parameters. Each has a default, hard limits, and
 # a per-update step size. The system adjusts them based on recent win-rate
-# and per-brawler accuracy.
+# and per-brawler clear-fire proxy data.
 
 DEFAULTS = {
     "safe_range_multiplier": 1.0,
@@ -273,7 +273,7 @@ class AdaptiveBrain:
                 "limits": {k: list(v) for k, v in LIMITS.items()},
             }
 
-    # ÔöÇÔöÇ Summary ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Summary
 
     def win_rate(self):
         with self._lock:
@@ -288,7 +288,7 @@ class AdaptiveBrain:
                 f"params={self.state['params']}"
             )
 
-    # ÔöÇÔöÇ Internal ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Internal
 
     @staticmethod
     def _brawler_key(brawler):
