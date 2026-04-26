@@ -201,6 +201,10 @@ class WindowController:
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
             self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
+            self._last_frame_hash = None
+            self._consecutive_identical_frames = 0
+            self._frozen_frame_threshold = 5  # trigger restart after this many identical frames
+            self._last_healthy_frame_time = 0.0
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
             self.last_app_state_check = 0.0
@@ -293,6 +297,13 @@ class WindowController:
         def on_frame(frame):
             if frame is not None:
                 with self.frame_condition:
+                    frame_hash = hash(frame.data.tobytes()[:4096])
+                    if frame_hash == self._last_frame_hash:
+                        self._consecutive_identical_frames += 1
+                    else:
+                        self._consecutive_identical_frames = 0
+                        self._last_frame_hash = frame_hash
+                        self._last_healthy_frame_time = time.time()
                     self.last_frame = frame
                     self.last_frame_time = time.time()
                     self.frame_condition.notify_all()
@@ -438,6 +449,19 @@ class WindowController:
 
                 self.frame_condition.wait(timeout=remaining)
 
+    def is_connection_healthy(self):
+        """Check if the scrcpy connection is delivering fresh, non-frozen frames."""
+        if self.scrcpy_client is None:
+            return False
+        if self.last_frame is None:
+            return False
+        frame_age = time.time() - self.last_frame_time if self.last_frame_time > 0 else float("inf")
+        if frame_age > self.FRAME_STALE_TIMEOUT:
+            return False
+        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
+            return False
+        return True
+
     def screenshot(self, array=False):
         frame, frame_time = self.get_current_frame(copy_frame=True, timeout=15.0)
         if frame is None:
@@ -449,6 +473,20 @@ class WindowController:
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
+
+        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
+            print(
+                f"WARNING: {self._consecutive_identical_frames} consecutive identical frames "
+                f"detected -- restarting scrcpy to recover"
+            )
+            try:
+                self.restart_scrcpy_client()
+                frame, frame_time = self.get_current_frame(copy_frame=True, timeout=10.0)
+                if frame is None:
+                    raise ConnectionError("No frame after frozen-frame scrcpy restart")
+            except Exception as exc:
+                print(f"Could not recover from frozen frames: {exc}")
+
         if array:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
