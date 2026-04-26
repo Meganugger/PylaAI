@@ -4,7 +4,7 @@ Newly designed for the strongest-bot-rl branch. Extends the simpler win-rate-
 only AdaptiveBrain from PylaAI-OP's parameter schema (safe_range_multiplier,
 strafe_blend, strafe_interval, attack_cooldown) with:
 
-  - Per-brawler parameter tracking (each brawler converges independently).
+  - Per-brawler fire and match tracking, while tuning a shared parameter set.
   - EMA smoothing on parameter adjustments (alpha = 0.12) to prevent noise-
     driven jumps.
   - Decay-to-baseline when a brawler hasn't been played recently, so stale
@@ -36,7 +36,7 @@ import time
 
 ADAPTIVE_STATE_PATH = "cfg/adaptive_state.json"
 
-# ÔöÇÔöÇ Parameter schema ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+# Parameter schema
 # These are the tunable parameters. Each has a default, hard limits, and
 # a per-update step size. The system adjusts them based on recent win-rate
 # and per-brawler accuracy.
@@ -65,13 +65,13 @@ STEP = {
 # EMA smoothing factor for parameter updates (lower = more conservative)
 EMA_ALPHA = 0.12
 
-# Decay factor per match of any brawler ÔÇö pulls stale brawler params toward
+# Decay factor per match of any brawler; pulls shared parameters toward
 # baseline. After ~40 matches of NOT playing a brawler, its params will be
 # roughly halfway back to defaults.
 DECAY_PER_MATCH = 0.017
 
-# Minimum matches before the per-brawler accuracy signal is trusted enough
-# to influence parameters.
+# Minimum fires before the per-brawler clear-fire proxy is trusted enough
+# to influence pacing.
 MIN_ACCURACY_SAMPLES = 12
 
 # Rolling window size for match results (win/loss/draw history).
@@ -82,7 +82,7 @@ FIRE_WINDOW_SIZE = 60
 
 
 class AdaptiveBrain:
-    """Win-rate and per-brawler accuracy driven parameter tuner."""
+    """Win-rate and clear-fire proxy driven parameter tuner."""
 
     def __init__(self, enabled=True, state_path=ADAPTIVE_STATE_PATH,
                  window_size=DEFAULT_WINDOW_SIZE):
@@ -98,7 +98,7 @@ class AdaptiveBrain:
         self._fire_log = {}
         self._last_save_time = time.time()
 
-    # ÔöÇÔöÇ Public properties ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Public properties
 
     @property
     def params(self):
@@ -111,7 +111,7 @@ class AdaptiveBrain:
         with self._lock:
             return int(self.state.get("total_matches", 0))
 
-    # ÔöÇÔöÇ Match result recording ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Match result recording
 
     def record_result(self, result, brawler=None):
         """Record a match result and update parameters.
@@ -155,7 +155,7 @@ class AdaptiveBrain:
             f"strafe={self.state['params']['strafe_blend']:.3f}"
         )
 
-    # ÔöÇÔöÇ Fire-opportunity tracking (proxy signal) ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Fire-opportunity tracking (proxy signal)
 
     def record_fire(self, brawler, clear):
         """Record a fire event with a qualified-shot proxy.
@@ -204,7 +204,7 @@ class AdaptiveBrain:
             rate = clear / total if total >= MIN_ACCURACY_SAMPLES else None
             return total, clear, rate
 
-    # ÔöÇÔöÇ Apply parameters to play instance ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Apply parameters to play instance
 
     def apply_to_play(self, play_instance):
         """Apply current tuned parameters to a Play instance.
@@ -222,7 +222,7 @@ class AdaptiveBrain:
         if hasattr(play_instance, "attack_cooldown"):
             play_instance.attack_cooldown = params["attack_cooldown"]
 
-    # ÔöÇÔöÇ Live dashboard data ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+    # Live dashboard data
 
     def get_live_state(self, current_brawler=None):
         """Return a snapshot dict suitable for the dashboard live-data feed."""
@@ -330,7 +330,7 @@ class AdaptiveBrain:
         return clear / len(log)
 
     def _ensure_brawler_data(self, brawler_key):
-        """Ensure per-brawler tracking dict exists."""
+        """Ensure per-brawler metadata exists."""
         brawlers = self.state.setdefault("brawlers", {})
         if brawler_key not in brawlers:
             brawlers[brawler_key] = {
@@ -340,19 +340,14 @@ class AdaptiveBrain:
         return brawlers[brawler_key]
 
     def _decay_stale_brawlers(self, current_brawler_key):
-        """Decay parameters toward baseline for brawlers not currently being
-        played. This prevents stale tuning from persisting when you switch
-        brawlers."""
+        """Decay the shared parameter set toward baseline between brawlers."""
         brawlers = self.state.get("brawlers", {})
         for bkey, bdata in brawlers.items():
             if bkey == current_brawler_key:
                 continue
-            # The global params already represent a blend ÔÇö we just nudge
-            # toward defaults slightly each match.
-            # This is a lightweight approach: we don't store per-brawler
-            # params separately (the system is global), but the decay ensures
-            # a brawler that was played 50 matches ago doesn't hold residual
-            # tuning from that era.
+            # The global params already represent a blend, so we just nudge
+            # them toward defaults slightly each match.
+            # This branch does not keep separate parameter sets per brawler.
         # Apply global decay toward defaults
         params = self.state["params"]
         for key, default_val in DEFAULTS.items():
@@ -391,7 +386,7 @@ class AdaptiveBrain:
                 "attack_cooldown": params["attack_cooldown"] + STEP["attack_cooldown"],
             }
         else:
-            # Neutral zone ÔÇö no win-rate driven adjustment, just EMA hold
+            # Neutral zone: no win-rate driven adjustment, just EMA hold
             targets = dict(params)
 
         # -- Clear-rate proxy adjustment (secondary, proxy signal) ----
@@ -415,7 +410,7 @@ class AdaptiveBrain:
                     params["attack_cooldown"] + STEP["attack_cooldown"] * 0.5,
                 )
 
-        # ÔöÇÔöÇ Apply EMA smoothing and clamp ÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇÔöÇ
+        # Apply EMA smoothing and clamp
         for key in DEFAULTS:
             raw_target = targets.get(key, params[key])
             smoothed = params[key] + EMA_ALPHA * (raw_target - params[key])

@@ -604,11 +604,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         brawler,
                         self.Stage_manager.brawlers_pick_data[0].get("trophies", 0),
                     )
-                    # Apply adaptive brain tuned parameters to play instance
-                    try:
-                        self.Stage_manager.adaptive_brain.apply_to_play(self.Play)
-                    except Exception:
-                        pass
+                # Keep tuned values fresh even when we stay on the same brawler
+                # across multiple matches.
+                try:
+                    self.Stage_manager.adaptive_brain.apply_to_play(self.Play)
+                except Exception:
+                    pass
                 play_started_at = time.perf_counter()
                 self.Play.main(frame, brawler)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
