@@ -886,6 +886,7 @@ class Play(Movement):
         self.player_red_pixel_penalty = float(bot_config.get("player_red_pixel_penalty", 0.05))
         self.attack_cooldown = float(bot_config.get("attack_cooldown", 0.16))
         self.last_attack_time = 0.0
+        self._adaptive_brain = None  # set by AdaptiveBrain.apply_to_play()
         self.gadget_cooldown = float(bot_config.get("gadget_cooldown", 1.0))
         self.last_gadget_time = 0.0
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
@@ -2620,6 +2621,15 @@ class Play(Movement):
                 self.attack()
             self._consume_ammo(current_time)
             self.time_since_last_attack = current_time
+            # Record fire event for adaptive brain (proxy signal: was this a
+            # clear, unobstructed, in-range shot? NOT a true hit signal.)
+            brain = getattr(self, "_adaptive_brain", None)
+            if brain is not None:
+                clear = (
+                    self.target_info.get("hittable", False)
+                    and enemy_distance <= effective_attack_range
+                )
+                brain.record_fire(brawler, clear)
             if self._burst_mode and self.current_ammo <= 0:
                 self._burst_mode = False
                 self._last_burst_end_time = current_time

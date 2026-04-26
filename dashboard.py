@@ -1,4 +1,4 @@
-﻿"""
+"""
 PylaAI Dashboard - Unified Bot Interface
 ==========================================
 Single-window application with sidebar navigation.
@@ -3969,13 +3969,32 @@ class Dashboard(ctk.CTk):
         summary_mode = "LIVE" if match_active else "SESSION"
         fallback_tag = " +TS" if fallback_used else ""
         if hasattr(self, "_live_rl_info"):
+            a_params = d.get("adaptive_params", {})
+            a_offsets = d.get("adaptive_offsets", {})
+            a_clamped = d.get("adaptive_clamped", {})
+            a_updating = d.get("adaptive_is_updating", False)
+            a_brawler = d.get("adaptive_brawler", "")
+            a_brawler_matches = d.get("adaptive_brawler_matches", 0)
+            param_parts = []
+            for pkey in ("safe_range_multiplier", "strafe_blend", "strafe_interval", "attack_cooldown"):
+                pval = a_params.get(pkey)
+                offset = a_offsets.get(pkey, 0)
+                clamped = a_clamped.get(pkey, False)
+                if pval is not None:
+                    sign = "+" if offset > 0 else ""
+                    clamp_tag = " !" if clamped else ""
+                    short_name = pkey.replace("_", " ").title()[:12]
+                    param_parts.append(f"{short_name}:{pval:.3f}({sign}{offset:.3f}{clamp_tag})")
+            param_line = "  ".join(param_parts) if param_parts else "no params"
+            status_tag = "UPDATING" if a_updating else "STABLE"
             _s(
                 self._live_rl_info,
                 "rl_info",
                 text=(
-                    f"Overview [{summary_mode}{fallback_tag}]  Source:{perf_source}  Match K/D/A: {ck}/{cd}/{ca}  Match Dmg:{cdmg:,}\n"
-                    f"RL [{rl_mode}]  Ep:{rl_total_episodes}  Upd:{rl_total_updates}  Buf:{buffer_text}  Reward:{rl_episode_reward:.2f}"
-                    f"  RL K/D:{rl_kills}/{rl_deaths}  RL Dmg:{rl_damage_dealt:,}/{rl_damage_taken:,}  Hit:{hit_rate_text}"
+                    f"Adaptive [{rl_mode}|{status_tag}]  WR:{rl_episode_reward:.0%}  "
+                    f"Fires:{rl_buffer_size}  Clear:{hit_rate_text}"
+                    f"  [{a_brawler}x{a_brawler_matches}]\n"
+                    f"{param_line}"
                 ),
                 text_color=ACCENT if rl_training_enabled else DIM,
             )

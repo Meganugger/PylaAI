@@ -407,6 +407,27 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     session_matches = int(session_stats.get("total_matches", 0) or 0)
                     if session_matches <= 0:
                         session_matches = current_match_counter
+                    # ── Adaptive brain live state for dashboard RL section ──
+                    adaptive_live = {}
+                    try:
+                        adaptive_live = self.Stage_manager.adaptive_brain.get_live_state(
+                            current_brawler=brawler
+                        )
+                    except Exception:
+                        pass
+
+                    # Map adaptive brain state to the RL dashboard keys
+                    rl_enabled = adaptive_live.get("adaptive_enabled", False)
+                    rl_win_rate = adaptive_live.get("window_win_rate", 0.0)
+                    rl_total_matches = adaptive_live.get("total_matches", 0)
+                    rl_total_fires = adaptive_live.get("total_fires", 0)
+                    rl_clear_fires = adaptive_live.get("clear_fires", 0)
+                    rl_clear_rate = adaptive_live.get("clear_rate")
+                    rl_is_updating = adaptive_live.get("is_updating", False)
+                    rl_params = adaptive_live.get("params", {})
+                    rl_offsets = adaptive_live.get("offsets", {})
+                    rl_clamped = adaptive_live.get("clamped", {})
+                    rl_sample_met = adaptive_live.get("sample_threshold_met", False)
                     active_dashboard.update_live(
                         start_time=self.start_time,
                         ips=self.current_ips,
@@ -451,6 +472,26 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         match_active=self.current_state == "match",
                         farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
                         farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                        # Adaptive brain live keys
+                        rl_training_enabled=rl_enabled,
+                        rl_total_episodes=rl_total_matches,
+                        rl_total_updates=rl_total_matches,
+                        rl_buffer_size=rl_total_fires,
+                        rl_buffer_capacity=0,
+                        rl_episode_reward=rl_win_rate,
+                        rl_kills=rl_clear_fires,
+                        rl_deaths=rl_total_fires - rl_clear_fires,
+                        rl_damage_dealt=0,
+                        rl_damage_taken=0,
+                        rl_hit_rate=rl_clear_rate if rl_clear_rate is not None else -1,
+                        # New adaptive-specific keys
+                        adaptive_params=rl_params,
+                        adaptive_offsets=rl_offsets,
+                        adaptive_clamped=rl_clamped,
+                        adaptive_is_updating=rl_is_updating,
+                        adaptive_sample_met=rl_sample_met,
+                        adaptive_brawler=adaptive_live.get("brawler", ""),
+                        adaptive_brawler_matches=adaptive_live.get("brawler_matches", 0),
                     )
                 except Exception as live_exc:
                     if now - self._last_live_exception_time >= 5.0:
@@ -563,6 +604,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         brawler,
                         self.Stage_manager.brawlers_pick_data[0].get("trophies", 0),
                     )
+                    # Apply adaptive brain tuned parameters to play instance
+                    try:
+                        self.Stage_manager.adaptive_brain.apply_to_play(self.Play)
+                    except Exception:
+                        pass
                 play_started_at = time.perf_counter()
                 self.Play.main(frame, brawler)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)

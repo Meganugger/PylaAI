@@ -7,6 +7,8 @@ import threading
 import cv2
 import numpy as np
 
+from adaptive_brain import AdaptiveBrain
+
 from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, notify_user, has_notification_webhook, \
@@ -71,6 +73,12 @@ class StageManager:
         self.time_since_last_stat_change = time.time()
         self.long_press_star_drop = load_toml_as_dict("./cfg/general_config.toml")["long_press_star_drop"]
         self.window_controller = window_controller
+        # ── Adaptive brain ──────────────────────────────────────
+        bot_config = self.bot_config
+        adaptive_enabled = str(bot_config.get("adaptive_brain_enabled", "yes")).lower() in ("yes", "true", "1")
+        adaptive_window = int(bot_config.get("adaptive_brain_window", 20))
+        self.adaptive_brain = AdaptiveBrain(enabled=adaptive_enabled, window_size=adaptive_window)
+        print(self.adaptive_brain.summary())
         self.lobby_start_enabled = True
         self._awaiting_lobby_result_sync = False
         self._result_applied_for_active_match = False
@@ -626,6 +634,12 @@ class StageManager:
         applied = self.Trophy_observer.add_trophies(game_result, current_brawler)
         self.Trophy_observer.add_win(game_result)
         self.time_since_last_stat_change = time.time()
+
+        # ── Feed result to adaptive brain for parameter tuning ──
+        try:
+            self.adaptive_brain.record_result(game_result, brawler=current_brawler)
+        except Exception as exc:
+            print(f"[ADAPTIVE] Could not record result: {exc}")
 
         type_to_push, value, _ = self._resolve_push_progress()
         self._result_applied_for_active_match = True
