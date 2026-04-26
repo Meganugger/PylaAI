@@ -185,12 +185,14 @@ class StageManager:
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
         self._lobby_start_settle_delay = 0.45
-        self._lobby_start_retry_delay = 2.75
+        self._lobby_start_retry_delay = 1.5
         self._lobby_start_blocked_until = 0.0
         self._lobby_start_block_reason = ""
-        self._post_result_lobby_delay = 2.75
+        self._post_result_lobby_delay = 1.5
         self._unexpected_brawler_selection_delay = 2.5
         self._last_brawler_menu_recovery_at = 0.0
+        self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
+        self._consecutive_lobby_start_fails = 0
 
     def _is_easyocr_ready(self):
         try:
@@ -304,6 +306,7 @@ class StageManager:
         self._start_press_attempts += 1
         self._start_wait_logged_at = 0.0
         self._lobby_start_block_reason = ""
+        self._consecutive_lobby_start_fails = 0
         if self._start_press_attempts == 1:
             print(f"{prefix} Pressed Q to start a match")
         else:
@@ -910,13 +913,16 @@ class StageManager:
             else:
                 verification_window = 2.25 if (has_api_settings or ocr_ready) else 1.25
                 if elapsed < verification_window:
-                    if debug:
-                        print(
-                            f"[RESULT] waiting for verified trophy sync "
-                            f"({elapsed:.2f}s/{verification_window:.2f}s)"
-                        )
-                    self._delay_lobby_start(self._post_result_lobby_delay, "waiting for verified trophy sync")
-                    return
+                    if elapsed >= self._lobby_sync_max_timeout:
+                        print(f"[RESULT] lobby sync hit hard max timeout ({elapsed:.1f}s), forcing through")
+                    else:
+                        if debug:
+                            print(
+                                f"[RESULT] waiting for verified trophy sync "
+                                f"({elapsed:.2f}s/{verification_window:.2f}s)"
+                            )
+                        self._delay_lobby_start(self._post_result_lobby_delay, "waiting for verified trophy sync")
+                        return
 
                 if self._pending_verified_result and not self._result_applied_for_active_match:
                     print(f"[RESULT] lobby verification unavailable; falling back to pending {self._pending_verified_result}")
