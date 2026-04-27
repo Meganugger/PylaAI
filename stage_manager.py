@@ -46,6 +46,7 @@ class StageManager:
             'popup': self.close_pop_up,
             'reward_claim': self.claim_reward,
             'trophy_reward': self.claim_reward,
+            'prestige_reward': self.handle_prestige_reward,
             'player_title_reward': self.handle_player_title_reward,
             'match': lambda: 0,
             'end': self.end_game,
@@ -167,7 +168,7 @@ class StageManager:
     def _is_endish_state(state):
         return isinstance(state, str) and (
             state.startswith("end")
-            or state in {"reward_claim", "trophy_reward", "player_title_reward", "star_drop"}
+            or state in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward", "star_drop"}
         )
 
     def _begin_end_transition(self, result=None, now=None):
@@ -676,6 +677,7 @@ class StageManager:
             else:
                 verification_window = 2.25 if (has_api_settings or ocr_ready) else 1.25
                 if elapsed < verification_window:
+                    # Hard max timeout: never wait longer than _lobby_sync_max_timeout
                     if elapsed >= self._lobby_sync_max_timeout:
                         print(f"[RESULT] lobby sync hit hard max timeout ({elapsed:.1f}s), forcing through")
                     else:
@@ -819,6 +821,17 @@ class StageManager:
             return
         self.window_controller.press_key("Q")
 
+    def handle_prestige_reward(self, frame=None):
+        """Dismiss the prestige (1k trophy) reward screen by clicking the green NEXT button."""
+        print("[RESULT] Prestige reward detected; clicking NEXT button")
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        # Green NEXT button center at approximately (1390, 962) on 1920x1080
+        self.window_controller.click(int(1390 * wr), int(962 * hr))
+        time.sleep(0.3)
+        # Fallback continue press in case NEXT wasn't hit precisely
+        self.window_controller.press_continue()
+
     def end_game(self, frame=None, known_result=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
         now = time.time()
@@ -903,12 +916,14 @@ class StageManager:
             self.claim_reward(screenshot)
         elif current_state == "player_title_reward":
             self.handle_player_title_reward(screenshot)
+        elif current_state == "prestige_reward":
+            self.handle_prestige_reward(screenshot)
         elif current_state == "star_drop":
             self.click_star_drop()
         else:
-            self.window_controller.press_key("Q")
+            self.window_controller.press_continue()
             if debug:
-                print("Game has ended, pressing Q")
+                print("Game has ended, pressing continue")
         self._end_transition_last_action_at = now
         print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
         if debug:
