@@ -1,6 +1,7 @@
 import os
 import sys
 from functools import lru_cache
+import math
 import time
 
 import cv2
@@ -213,7 +214,7 @@ def _ocr_text_tokens(image, region, allowlist=None):
     return tokens
 
 
-def _is_mastery_reward_screen(image):
+def _is_mastery_reward_screen(image, allow_ocr=False):
     now = time.time()
     signature = _reward_claim_signature(image)
     if (
@@ -222,6 +223,13 @@ def _is_mastery_reward_screen(image):
         and (now - _reward_claim_cache["checked_at"]) < 0.6
     ):
         return _reward_claim_cache["detected"], _reward_claim_cache["button_center"]
+
+    if not allow_ocr:
+        _reward_claim_cache["checked_at"] = now
+        _reward_claim_cache["signature"] = signature
+        _reward_claim_cache["detected"] = False
+        _reward_claim_cache["button_center"] = None
+        return False, None
 
     button_tokens = _ocr_text_tokens(
         image,
@@ -254,7 +262,7 @@ def _is_mastery_reward_screen(image):
 
 def find_reward_claim_action(screenshot):
     screenshot_bgr = to_bgr_array(screenshot)
-    _detected, button_center = _is_mastery_reward_screen(screenshot_bgr)
+    _detected, button_center = _is_mastery_reward_screen(screenshot_bgr, allow_ocr=True)
     return button_center
 
 
@@ -312,12 +320,6 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "shop"
     if is_in_offer_popup(image):
         return "popup"
-    if is_in_trophy_reward(image):
-        return "trophy_reward"
-    if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
-        return "player_title_reward"
-    if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
-        return "reward_claim"
     if is_in_lobby(image):
         return "lobby"
     if is_in_brawler_selection(image):
@@ -326,6 +328,14 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "shop"
     if is_in_star_drop(image):
         return "star_drop"
+    if is_in_trophy_reward(image):
+        return "trophy_reward"
+    if is_in_prestige_reward(image):
+        return "prestige_reward"
+    if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
+        return "player_title_reward"
+    if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
+        return "reward_claim"
     return "match"
 
 
@@ -341,14 +351,14 @@ def is_in_offer_popup(image) -> bool:
     return is_template_in_region(image, path + 'close_popup.png', region_data["close_popup"])
 
 
-def is_in_reward_claim(image) -> bool:
+def is_in_reward_claim(image, allow_ocr=False) -> bool:
     if is_template_in_region(
         image,
         path + 'end_battle_top_left_continue_corner.png',
         region_data["reward_claim_corner"]
     ):
         return True
-    detected, _button_center = _is_mastery_reward_screen(image)
+    detected, _button_center = _is_mastery_reward_screen(image, allow_ocr=allow_ocr)
     return detected
 
 
@@ -400,7 +410,49 @@ def is_in_player_title_reward(image, allow_ocr=False) -> bool:
 
 
 def is_in_lobby(image) -> bool:
-    return is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"])
+    return (
+        is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"])
+        or is_lobby_play_button_visible(image)
+    )
+
+
+def is_lobby_play_button_visible(image) -> bool:
+    """Detect the large yellow PLAY button in the lobby as a fallback.
+
+    This prevents lobby frames from falling through to the expensive match
+    detection when the small menu template misses (e.g. different emulator
+    resolutions or UI skins).
+    """
+    current_height, current_width = image.shape[:2]
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+
+    region = [1260, 820, 610, 225]
+    x = int(region[0] * width_ratio)
+    y = int(region[1] * height_ratio)
+    w = int(region[2] * width_ratio)
+    h = int(region[3] * height_ratio)
+    crop = image[y:y + h, x:x + w]
+    if crop.size == 0:
+        return False
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    yellow_mask = cv2.inRange(
+        hsv,
+        np.array((15, 90, 120), dtype=np.uint8),
+        np.array((42, 255, 255), dtype=np.uint8),
+    )
+    yellow_pixels = cv2.countNonZero(yellow_mask)
+    yellow_ratio = yellow_pixels / max(1, crop.shape[0] * crop.shape[1])
+    if yellow_ratio < 0.28:
+        return False
+
+    contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return False
+    largest = max(contours, key=cv2.contourArea)
+    bx, by, bw, bh = cv2.boundingRect(largest)
+    return bw > w * 0.45 and bh > h * 0.35
 
 
 def is_in_end_of_a_match(image):
@@ -416,10 +468,103 @@ def is_in_star_road(image):
 
 
 def is_in_star_drop(image):
+    return get_star_drop_type(image) is not None
+
+
+def get_star_drop_type(image):
+    """Return 'angelic', 'demonic', or 'standard' if a star drop is detected, else None."""
     for image_filename in images_with_star_drop:
         if is_template_in_region(image, path + image_filename, region_data['star_drop']):
-            return True
-    return False
+            if "angelic" in image_filename:
+                return "angelic"
+            if "demonic" in image_filename:
+                return "demonic"
+            return "standard"
+    return None
+
+
+def _count_hsv_in_region(image, region, lower, upper):
+    """Count pixels matching an HSV range within a scaled region."""
+    current_height, current_width = image.shape[:2]
+    orig_x, orig_y, orig_width, orig_height = region
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+    x = int(orig_x * width_ratio)
+    y = int(orig_y * height_ratio)
+    w = int(orig_width * width_ratio)
+    h = int(orig_height * height_ratio)
+    crop = image[y:y + h, x:x + w]
+    if crop.size == 0:
+        return 0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8))
+    return int(cv2.countNonZero(mask))
+
+
+def is_in_prestige_reward(image):
+    """Detect the prestige (1000-trophy) reward screen.
+
+    Checks for a green NEXT button in the lower-right area,
+    white text inside it, and a large purple background region.
+    """
+    current_height, current_width = image.shape[:2]
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+
+    # Green NEXT button region
+    button_region = [1210, 895, 360, 135]
+    x = int(button_region[0] * width_ratio)
+    y = int(button_region[1] * height_ratio)
+    w = int(button_region[2] * width_ratio)
+    h = int(button_region[3] * height_ratio)
+    button_crop = image[y:y + h, x:x + w]
+    if button_crop.size == 0:
+        return False
+
+    hsv = cv2.cvtColor(button_crop, cv2.COLOR_BGR2HSV)
+    green_mask = cv2.inRange(
+        hsv,
+        np.array((50, 150, 130), dtype=np.uint8),
+        np.array((72, 255, 255), dtype=np.uint8),
+    )
+    contours, _ = cv2.findContours(green_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return False
+    largest = max(contours, key=cv2.contourArea)
+    area = cv2.contourArea(largest)
+    bx, by, bw, bh = cv2.boundingRect(largest)
+    crop_area = max(1, button_crop.shape[0] * button_crop.shape[1])
+    green_ratio = cv2.countNonZero(green_mask) / crop_area
+    if area < crop_area * 0.35 or green_ratio < 0.30 or bw < w * 0.55 or bh < h * 0.35:
+        return False
+
+    # White text inside the button
+    text_region = [1320, 930, 180, 55]
+    tx = int(text_region[0] * width_ratio)
+    ty = int(text_region[1] * height_ratio)
+    tw = int(text_region[2] * width_ratio)
+    th = int(text_region[3] * height_ratio)
+    text_crop = image[ty:ty + th, tx:tx + tw]
+    if text_crop.size == 0:
+        return False
+    text_hsv = cv2.cvtColor(text_crop, cv2.COLOR_BGR2HSV)
+    white_mask = cv2.inRange(
+        text_hsv,
+        np.array((0, 0, 180), dtype=np.uint8),
+        np.array((179, 90, 255), dtype=np.uint8),
+    )
+    white_pixels = cv2.countNonZero(white_mask)
+    if white_pixels < max(120, int(text_crop.shape[0] * text_crop.shape[1] * 0.08)):
+        return False
+
+    # Purple prestige background
+    prestige_purple = _count_hsv_in_region(
+        image,
+        [1080, 140, 620, 570],
+        (124, 80, 90),
+        (162, 255, 255),
+    )
+    return prestige_purple > 35000
 
 
 def get_state(screenshot, allow_reward_ocr=False):

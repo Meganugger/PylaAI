@@ -7,7 +7,7 @@ import threading
 import cv2
 import numpy as np
 
-from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center
+from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center, get_star_drop_type
 from trophy_observer import TrophyObserver
 from utils import find_template_center, extract_text_and_positions, load_toml_as_dict, notify_user, has_notification_webhook, \
     save_brawler_data, reader, to_bgr_array
@@ -140,6 +140,7 @@ class StageManager:
             'reward_claim': self.claim_reward,
             'trophy_reward': self.dismiss_trophy_reward,
             'player_title_reward': self.handle_player_title_reward,
+            'prestige_reward': self.handle_prestige_reward,
             'idle_disconnect': self.handle_idle_disconnect,
             'mode_selection': self.handle_mode_selection,
         }
@@ -1212,10 +1213,73 @@ class StageManager:
         print("[STAGE] Idle disconnect: RELOAD click failed after 5 attempts")
 
     def click_star_drop(self):
+        screenshot = self.window_controller.screenshot()
+        star_drop_type = get_star_drop_type(to_bgr_array(screenshot))
+        if star_drop_type in ("angelic", "demonic"):
+            print(f"{star_drop_type.capitalize()} star drop detected; forcing long press.")
+            self.window_controller.press_key("Q", 10)
+            return
+
+        if star_drop_type == "standard":
+            print("Standard star drop detected; fast tapping.")
+            for _ in range(5):
+                self.window_controller.press_key("Q")
+                time.sleep(0.08)
+            return
+
         if self.long_press_star_drop == "yes":
             self.window_controller.press_continue(hold_seconds=10, include_fallback_clicks=False)
         else:
             self.window_controller.press_continue()
+
+    def handle_prestige_reward(self, frame=None):
+        """Handle the prestige (1000-trophy) reward screen.
+
+        Clicks NEXT, advances to the next queued brawler if available,
+        then returns to the lobby and selects the new brawler.
+        """
+        print("[PRESTIGE] Prestige reward screen detected; clicking NEXT.")
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        self.window_controller.keys_up(list("wasd"))
+        self.window_controller.click(int(1410 * wr), int(990 * hr))
+        time.sleep(1.0)
+
+        if not self.brawlers_pick_data:
+            self.window_controller.press_key("Q")
+            return
+
+        current_brawler = self.brawlers_pick_data[0].get("brawler", "current")
+        print(f"[PRESTIGE] Treating {current_brawler} as completed (reached prestige).")
+
+        if len(self.brawlers_pick_data) <= 1:
+            print("[PRESTIGE] No next brawler queued. Continuing.")
+            self.window_controller.press_key("Q")
+            return
+
+        self.brawlers_pick_data.pop(0)
+        next_data = self.brawlers_pick_data[0]
+        self.Trophy_observer.change_trophies(next_data.get("trophies", 0))
+        save_brawler_data(self.brawlers_pick_data)
+
+        # Navigate back to lobby and select next brawler
+        screenshot = self.window_controller.screenshot()
+        current_state = get_state(screenshot)
+        attempts = 0
+        while current_state != "lobby" and attempts < 30:
+            self.window_controller.press_key("Q")
+            time.sleep(1.0)
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+            attempts += 1
+
+        if current_state == "lobby":
+            next_name = next_data.get("brawler")
+            if next_name and next_data.get("automatically_pick"):
+                self.Lobby_automation.select_brawler(next_name)
+                print(f"[PRESTIGE] Switched to {next_name}.")
+        else:
+            print("[PRESTIGE] Could not reach lobby after prestige reward.")
 
     def claim_reward(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
