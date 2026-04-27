@@ -7,7 +7,7 @@ import threading
 import cv2
 import numpy as np
 
-from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center
+from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center, get_star_drop_type
 from trophy_observer import TrophyObserver
 from utils import find_template_center, load_toml_as_dict, notify_user, has_notification_webhook, \
     save_brawler_data, reader, to_bgr_array
@@ -776,6 +776,20 @@ class StageManager:
             x, y = detection
             self.window_controller.click(x=x + 50, y=y)
     def click_star_drop(self):
+        screenshot = self.window_controller.screenshot()
+        star_drop_type = get_star_drop_type(to_bgr_array(screenshot))
+        if star_drop_type in ("angelic", "demonic"):
+            print(f"{star_drop_type.capitalize()} star drop detected; forcing long press.")
+            self.window_controller.press_key("Q", 10)
+            return
+
+        if star_drop_type == "standard":
+            print("Standard star drop detected; fast tapping.")
+            for _ in range(5):
+                self.window_controller.press_key("Q")
+                time.sleep(0.08)
+            return
+
         if self.long_press_star_drop == "yes":
             self.window_controller.press_continue(hold_seconds=10, include_fallback_clicks=False)
         else:

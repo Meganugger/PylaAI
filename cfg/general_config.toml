@@ -66,3 +66,6 @@ hp_critical_enter_pct = 20
 hp_critical_exit_pct = 26
 api_base_url = "localhost"
 current_emulator = "LDPlayer"
+scrcpy_max_fps = 30
+scrcpy_max_width = 960
+scrcpy_bitrate = 3000000

@@ -31,8 +31,7 @@ key_coords_dict = {
     "G": (1640, 990),
     "M": (1725, 800),
     "Q": (1660, 980),
-    "E": (1510, 880),
-    "F": (1360, 920),
+    "E": (1510, 880)
 }
 
 continue_fallback_targets = (
@@ -211,6 +210,15 @@ class WindowController:
             self.last_app_state_check = 0.0
             self.SCRCPY_START_RETRIES = 3
             self.SCRCPY_RETRY_DELAY = 0.5
+            self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 30))
+            if self.scrcpy_max_fps <= 0:
+                self.scrcpy_max_fps = None
+            self.scrcpy_max_width = int(general_config.get("scrcpy_max_width", 960))
+            if self.scrcpy_max_width < 0:
+                self.scrcpy_max_width = 0
+            self.scrcpy_bitrate = int(general_config.get("scrcpy_bitrate", 3000000))
+            if self.scrcpy_bitrate <= 0:
+                self.scrcpy_bitrate = 3000000
             self.start_scrcpy_client()
             atexit.register(self.close)
             print("Scrcpy client started successfully.")
@@ -312,7 +320,14 @@ class WindowController:
                     self.last_frame_time = time.time()
                     self.frame_condition.notify_all()
 
-        client = scrcpy.Client(device=self.device, max_width=0)
+        client_kwargs = {
+            "device": self.device,
+            "max_width": self.scrcpy_max_width,
+            "bitrate": self.scrcpy_bitrate,
+        }
+        if self.scrcpy_max_fps:
+            client_kwargs["max_fps"] = self.scrcpy_max_fps
+        client = scrcpy.Client(**client_kwargs)
         client.add_listener(scrcpy.EVENT_FRAME, on_frame)
         return client
 
@@ -363,6 +378,13 @@ class WindowController:
             return
         self.width = frame.shape[1]
         self.height = frame.shape[0]
+        expected_ratio = brawl_stars_width / brawl_stars_height
+        actual_ratio = self.width / max(1, self.height)
+        if abs(actual_ratio - expected_ratio) > 0.05:
+            print(
+                f"Unexpected aspect ratio: {self.width}x{self.height}. "
+                "Use a 16:9 landscape emulator resolution for best results."
+            )
         self.width_ratio = self.width / brawl_stars_width
         self.height_ratio = self.height / brawl_stars_height
         self.joystick_x, self.joystick_y = 220 * self.width_ratio, 870 * self.height_ratio
