@@ -1,6 +1,7 @@
 import os
 import sys
 from functools import lru_cache
+import math
 import time
 
 import cv2
@@ -409,17 +410,18 @@ def is_in_player_title_reward(image, allow_ocr=False) -> bool:
 
 
 def is_in_lobby(image) -> bool:
-    if is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"]):
-        return True
-    return is_lobby_play_button_visible(image)
+    return (
+        is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"])
+        or is_lobby_play_button_visible(image)
+    )
 
 
 def is_lobby_play_button_visible(image) -> bool:
-    """Detect the large yellow PLAY button in the lobby via HSV analysis.
+    """Detect the large yellow PLAY button in the lobby as a fallback.
 
-    This is a fallback for when the small menu template misses on some
-    emulator resolutions or skins, preventing the bot from falling into
-    the expensive match detection loop when it's actually in the lobby.
+    This prevents lobby frames from falling through to the expensive match
+    detection when the small menu template misses (e.g. different emulator
+    resolutions or UI skins).
     """
     current_height, current_width = image.shape[:2]
     width_ratio = current_width / orig_screen_width
@@ -470,22 +472,19 @@ def is_in_star_drop(image):
 
 
 def get_star_drop_type(image):
-    """Identify the star drop type: 'angelic', 'demonic', or 'standard'.
-
-    Returns None if no star drop is detected.
-    """
+    """Return 'angelic', 'demonic', or 'standard' if a star drop is detected, else None."""
     for image_filename in images_with_star_drop:
         if is_template_in_region(image, path + image_filename, region_data['star_drop']):
-            if "angelic" in image_filename.lower():
+            if "angelic" in image_filename:
                 return "angelic"
-            if "demonic" in image_filename.lower():
+            if "demonic" in image_filename:
                 return "demonic"
             return "standard"
     return None
 
 
 def _count_hsv_in_region(image, region, lower, upper):
-    """Count pixels matching an HSV range within a region."""
+    """Count pixels matching an HSV range within a scaled region."""
     current_height, current_width = image.shape[:2]
     orig_x, orig_y, orig_width, orig_height = region
     width_ratio = current_width / orig_screen_width
@@ -503,15 +502,16 @@ def _count_hsv_in_region(image, region, lower, upper):
 
 
 def is_in_prestige_reward(image):
-    """Detect the prestige (1k trophy) reward screen.
+    """Detect the prestige (1000-trophy) reward screen.
 
-    Identifies the green NEXT button and purple prestige background.
+    Checks for a green NEXT button in the lower-right area,
+    white text inside it, and a large purple background region.
     """
     current_height, current_width = image.shape[:2]
     width_ratio = current_width / orig_screen_width
     height_ratio = current_height / orig_screen_height
 
-    # Check for green NEXT button in the lower-right
+    # Green NEXT button region
     button_region = [1210, 895, 360, 135]
     x = int(button_region[0] * width_ratio)
     y = int(button_region[1] * height_ratio)
@@ -538,7 +538,7 @@ def is_in_prestige_reward(image):
     if area < crop_area * 0.35 or green_ratio < 0.30 or bw < w * 0.55 or bh < h * 0.35:
         return False
 
-    # Check for white text in the button
+    # White text inside the button
     text_region = [1320, 930, 180, 55]
     tx = int(text_region[0] * width_ratio)
     ty = int(text_region[1] * height_ratio)
@@ -557,7 +557,7 @@ def is_in_prestige_reward(image):
     if white_pixels < max(120, int(text_crop.shape[0] * text_crop.shape[1] * 0.08)):
         return False
 
-    # Check for purple prestige background
+    # Purple prestige background
     prestige_purple = _count_hsv_in_region(
         image,
         [1080, 140, 620, 570],
