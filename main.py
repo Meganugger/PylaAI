@@ -70,7 +70,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._pending_initial_brawler_select = bool(
                 self._startup_brawler_target and active_entry.get('automatically_pick', True)
             )
-            self.Play.current_brawler = self._startup_brawler_target
             self.no_detections_action_threshold = 60 * 8
             self.initialize_stage_manager()
             self._easyocr_warmup_started = False
@@ -146,12 +145,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             if not self._pending_initial_brawler_select:
                 return False
 
-            self._pending_initial_brawler_select = False
             if not self._easyocr_warmup_started:
                 self._start_easyocr_warmup()
                 self._easyocr_warmup_started = True
             target_brawler = str(self._startup_brawler_target or "").strip().lower()
             if not target_brawler:
+                self._pending_initial_brawler_select = False
                 return False
 
             print(f"[STARTUP] Selecting brawler '{target_brawler}' before first match")
@@ -160,15 +159,21 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 if selected is False:
                     print(
                         f"[STARTUP] Could not confirm selection for '{target_brawler}'. "
-                        "Continuing with the current lobby brawler."
+                        "Keeping lobby start blocked and retrying."
                     )
+                    self.Stage_manager.set_lobby_start_enabled(False)
+                    return False
                 else:
+                    self._pending_initial_brawler_select = False
+                    self.Stage_manager.set_lobby_start_enabled(True)
                     print(f"[STARTUP] Ready to play with '{target_brawler}'")
             except Exception as exc:
                 print(
                     f"[STARTUP] Brawler selection failed for '{target_brawler}': {exc}. "
-                    "Continuing with the current lobby brawler."
+                    "Keeping lobby start blocked and retrying."
                 )
+                self.Stage_manager.set_lobby_start_enabled(False)
+                return False
 
             now = time.time()
             self.Play.time_since_last_proceeding = now
@@ -197,9 +202,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 now - float(getattr(self.Play, "time_since_player_last_found", now) or now),
             )
             if self.Time_management.state_check():
+                try:
+                    reward_ocr_ready = self.Stage_manager._is_easyocr_ready()
+                except Exception:
+                    reward_ocr_ready = bool(reader.is_ready())
                 allow_reward_ocr = (
-                    runtime_state.startswith("end_")
-                    or runtime_state == "reward_claim"
+                    reward_ocr_ready
+                    and (
+                        runtime_state.startswith("end_")
+                        or runtime_state == "reward_claim"
+                    )
                 )
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 held_end_state = None
@@ -220,7 +232,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 ):
                     self._cancel_initial_brawler_select("match context was already detected")
                 if state == "lobby" and self._pending_initial_brawler_select:
-                    self._run_initial_brawler_select()
+                    if not self._run_initial_brawler_select():
+                        self.current_state = "lobby"
+                        self.Play._runtime_state = "lobby"
+                        self.Play.time_since_last_proceeding = time.time()
+                        return
                     try:
                         frame = self.window_controller.screenshot()
                         state = get_state(frame)

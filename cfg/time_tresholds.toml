@@ -1,4 +1,4 @@
-state_check = 5
+state_check = 1.5
 no_detections = 10
 idle = 5
 gadget = 0.5

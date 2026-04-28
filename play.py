@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from state_finder.main import get_state, find_game_result
 from detect import Detect
-from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
+from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info, reader
 
 brawl_stars_width, brawl_stars_height = 1920, 1080
 debug = load_toml_as_dict("cfg/general_config.toml").get("super_debug", "no") == "yes"
@@ -891,6 +891,8 @@ class Play(Movement):
         self.last_gadget_time = 0.0
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
+        self.ability_ready_memory_seconds = float(bot_config.get("ability_ready_memory_seconds", 0.75))
+        self._super_ready_seen_at = 0.0
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = float(
             bot_config.get("seconds_to_hold_attack_after_reaching_max", 0.5)
@@ -2160,10 +2162,23 @@ class Play(Movement):
             }
         return self._scaled_hud_cache["regions"]
 
+    def _scaled_pixel_threshold(self, base_threshold):
+        area_scale = (self.window_controller.width_ratio or 1.0) * (self.window_controller.height_ratio or 1.0)
+        return max(1.0, float(base_threshold) * max(area_scale, 0.05))
+
     def count_hud_hsv_pixels(self, hsv_frame, scaled_region, low_hsv, high_hsv, origin=(0, 0)):
+        if hsv_frame is None:
+            return 0
         sx1, sy1, sx2, sy2 = scaled_region
         ox, oy = origin
-        region_hsv = hsv_frame[sy1 - oy:sy2 - oy, sx1 - ox:sx2 - ox]
+        height, width = hsv_frame.shape[:2]
+        x1 = max(0, min(width, sx1 - ox))
+        y1 = max(0, min(height, sy1 - oy))
+        x2 = max(0, min(width, sx2 - ox))
+        y2 = max(0, min(height, sy2 - oy))
+        if x2 <= x1 or y2 <= y1:
+            return 0
+        region_hsv = hsv_frame[y1:y2, x1:x2]
         mask = cv2.inRange(
             region_hsv,
             low_hsv,
@@ -2187,7 +2202,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return purple_pixels > self.hypercharge_pixels_minimum
+        return purple_pixels > self._scaled_pixel_threshold(self.hypercharge_pixels_minimum)
 
     def check_if_gadget_ready(self, hsv_frame, hsv_origin):
         scaled_regions = self._get_scaled_hud_cache()
@@ -2199,7 +2214,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return green_pixels > self.gadget_pixels_minimum
+        return green_pixels > self._scaled_pixel_threshold(self.gadget_pixels_minimum)
 
     def check_if_super_ready(self, hsv_frame, hsv_origin):
         scaled_regions = self._get_scaled_hud_cache()
@@ -2211,7 +2226,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return yellow_pixels > self.super_pixels_minimum
+        return yellow_pixels > self._scaled_pixel_threshold(self.super_pixels_minimum)
 
     def get_tile_data(self, frame):
         tile_data = self.Detect_tile_detector.detect_objects(frame, conf_tresh=self.wall_detection_confidence)
@@ -2622,7 +2637,7 @@ class Play(Movement):
             # Strict-hittable brawlers (snipers) must NOT fire when blocked.
             attack_issued = False
             if style.get("strict_hittable") and not self.target_info["hittable"]:
-                pass  # Suppress the shot — wall blocks line of sight
+                pass  # Suppress the shot; wall blocks line of sight.
             elif is_hold_attack_brawler:
                 if self.time_since_holding_attack is None:
                     attack_issued = self.attack(touch_up=False, touch_down=True)
@@ -2653,6 +2668,191 @@ class Play(Movement):
                 if self._burst_mode and self.current_ammo <= 0:
                     self._burst_mode = False
                     self._last_burst_end_time = current_time
+        if self.is_super_ready:
+            super_type = brawler_info['super_type']
+            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
+            utility_super = super_type in {"spawnable", "other", "other_target"}
+            charge_super = super_type == "charge"
+            should_super = (
+                enemy_hittable and enemy_distance <= super_range
+            ) or (
+                utility_super and enemy_distance <= max(super_range, attack_range)
+            ) or (
+                charge_super
+                and enemy_distance <= max(super_range + attack_range, attack_range * 1.25)
+                and (enemy_hittable or close_range_contact or brawler in {"stu", "surge"})
+            )
+
+            if should_super and self.use_super():
+                self.time_since_super_checked = time.time()
+                self.is_super_ready = False
+                self._super_ready_seen_at = 0.0
+        return movement
+
+    def main(self, frame, brawler):
+        if brawler != self.current_brawler:
+            self.current_brawler = brawler
+            self.shot_timestamps = []
+            self.current_ammo = self.max_ammo
+            self._burst_mode = False
+            self._burst_start_time = 0.0
+            self._last_burst_end_time = 0.0
+            self.time_since_holding_attack = None
+        current_time = time.time()
+        runtime_state = str(getattr(self, "_runtime_state", "") or "")
+        data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
+        raw_supporting_entities = (
+            self._entity_count(data, "enemy")
+            + self._entity_count(data, "teammate")
+        )
+        if self.should_detect_walls and current_time - self.time_since_walls_checked > self.walls_treshold:
+
+            tile_data = self.get_tile_data(frame)
+
+            walls = self.process_tile_data(tile_data)
+
+            self.time_since_walls_checked = current_time
+            self.last_walls_data = walls
+            data['wall'] = walls
+        elif self.keep_walls_in_memory:
+            data['wall'] = self.last_walls_data
+
+        data = self._restore_recent_player_detection(data, current_time, runtime_state)
+
+        data = self.validate_game_data(data)
+        self.track_no_detections(data)
+        if data:
+            player_source = str(data.get("_player_source", "base") or "base")
+            self._last_live_player_source = player_source
+            self._allow_skill_inputs = (
+                player_source == "base"
+                or (player_source == "retry" and raw_supporting_entities > 0)
+            )
+            self._remember_player_detection(data, current_time)
+            if (
+                self._is_plausible_player_detection(data)
+                and (
+                    self._entity_count(data, "enemy") > 0
+                    or self._entity_count(data, "teammate") > 0
+                    or (
+                        runtime_state == "match"
+                        and (current_time - self._last_confirmed_match_time) <= 1.0
+                    )
+                )
+            ):
+                self._last_match_evidence_time = current_time
+            self.time_since_player_last_found = time.time()
+            if runtime_state != "match":
+                should_recheck_state = (
+                    current_time >= self._match_state_grace_until
+                    and (
+                        current_time - self._last_state_probe_time >= 0.35
+                        or runtime_state != self._last_state_probe_runtime
+                    )
+                )
+                if should_recheck_state:
+                    checked_state = get_state(frame)
+                    self._last_state_probe_time = current_time
+                    self._last_state_probe_runtime = runtime_state
+                    self._last_state_probe_result = checked_state
+                    if checked_state == "match":
+                        self.note_confirmed_match_state(current_time)
+                        self._match_state_grace_until = current_time + 2.0
+                    else:
+                        self._match_state_grace_until = 0.0
+                else:
+                    checked_state = self._last_state_probe_result or runtime_state
+                if self._should_promote_detected_match(data, runtime_state, checked_state, current_time):
+                    self._runtime_state = "match"
+                    self.note_confirmed_match_state(current_time)
+                    self._match_state_grace_until = current_time + 2.0
+                elif checked_state != "match":
+                    if debug and (current_time - self._last_state_guard_log_time >= 2.0):
+                        print(f"Player detected while state was '{runtime_state or 'unknown'}', rechecked as '{checked_state}'")
+                        self._last_state_guard_log_time = current_time
+                    data = None
+                else:
+                    self._reset_match_state_guard()
+                    self._runtime_state = "match"
+                    self.note_confirmed_match_state(current_time)
+        if not data:
+            self._allow_skill_inputs = False
+            self._reset_match_state_guard()
+            self._reset_wall_stuck_state(current_time)
+            self.escape_state["phase"] = None
+            player_missing_for = current_time - self.time_since_player_last_found
+            if (
+                runtime_state == "match"
+                and player_missing_for >= 0.6
+                and raw_supporting_entities <= 0
+                and (current_time - self._last_end_result_probe_time) >= 1.0
+            ):
+                self._last_end_result_probe_time = current_time
+                game_result = find_game_result(frame)
+                if game_result:
+                    print(f"[RESULT] play missing-player probe detected {game_result}")
+                    self._pending_end_result = game_result
+                    self._runtime_state = f"end_{game_result}"
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
+            if current_time - self.time_since_player_last_found > 1.0:
+                self.window_controller.keys_up(list("wasd"))
+            self.time_since_different_movement = time.time()
+            if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
+                current_state = get_state(frame)
+                allow_reward_ocr = (
+                    current_state == "match"
+                    and reader.is_ready()
+                    and (
+                        runtime_state == "reward_claim"
+                        or str(runtime_state).startswith("end_")
+                    )
+                )
+                if allow_reward_ocr:
+                    current_state = get_state(frame, allow_reward_ocr=True)
+                if isinstance(current_state, str) and current_state.startswith("end_"):
+                    print(f"[RESULT] play state probe detected {current_state}")
+                    self._pending_end_result = current_state.split("_", 1)[1]
+                    self._runtime_state = current_state
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
+                if current_state == "reward_claim":
+                    print("[RESULT] play state probe detected reward_claim")
+                    self._runtime_state = current_state
+                    self.window_controller.keys_up(list("wasd"))
+                    self.time_since_last_proceeding = current_time
+                    return
+                if current_state != "match":
+                    self.time_since_last_proceeding = current_time
+                else:
+                    if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                        print("haven't detected the player in a while proceeding")
+                        self._last_no_player_log_time = current_time
+                    self.window_controller.press_key("Q")
+                    self.time_since_last_proceeding = time.time()
+            return
+        self.time_since_last_proceeding = time.time()
+        wall_context = self.get_wall_context(data['wall'])
+        teammates = data.get('teammate') or []
+        self._teammate_positions = [self.get_enemy_pos(teammate) for teammate in teammates]
+        if not self._teammate_positions:
+            self._reset_showdown_teammate_lock()
+        enemies = data.get('enemy') or []
+        if enemies:
+            self._update_enemy_memory(enemies)
+            self._last_enemy_seen_at = current_time
+            self._no_enemy_duration = 0.0
+            self._search_target_switch_time = 0.0
+        else:
+            self._no_enemy_duration = current_time - self._last_enemy_seen_at
+        should_check_hypercharge = current_time - self.time_since_hypercharge_checked > self.hypercharge_treshold
+        should_check_gadget = current_time - self.time_since_gadget_checked > self.gadget_treshold
+        should_check_super = current_time - self.time_since_super_checked > self.super_treshold
+        hud_hsv = None
+        hud_origin = (0, 0)
+        if self._allow_skill_inputs and (should_check_hypercharge or should_check_gadget or should_check_super):
             hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
         if self._allow_skill_inputs and should_check_hypercharge:
@@ -2666,8 +2866,15 @@ class Play(Movement):
         else:
             self.is_gadget_ready = False
         if self._allow_skill_inputs and should_check_super:
-            self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
+            detected_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
+            if detected_super_ready:
+                self._super_ready_seen_at = current_time
+                self.is_super_ready = True
+            elif current_time - self._super_ready_seen_at > self.ability_ready_memory_seconds:
+                self.is_super_ready = False
             self.time_since_super_checked = current_time
+        elif self._super_ready_seen_at and current_time - self._super_ready_seen_at <= self.ability_ready_memory_seconds:
+            self.is_super_ready = True
         else:
             self.is_super_ready = False
 
