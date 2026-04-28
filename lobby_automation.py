@@ -47,6 +47,115 @@ class LobbyAutomation:
     def _can_select_brawler_in_state(state):
         return state in {"lobby", "brawler_selection"}
 
+    def _scroll_brawler_menu(self, direction="down", attempt=0):
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        x = 1450 if attempt % 2 == 0 else 1050
+        if direction == "up":
+            start_y, end_y = 330, 930
+        else:
+            start_y, end_y = 930, 300
+        self.window_controller.swipe(
+            int(x * wr),
+            int(start_y * hr),
+            int(x * wr),
+            int(end_y * hr),
+            duration=0.55,
+        )
+        time.sleep(0.35)
+
+    def _reset_brawler_menu_to_top(self):
+        for attempt in range(8):
+            self._scroll_brawler_menu(direction="up", attempt=attempt)
+
+    def _open_brawler_menu(self, brawler, current_frame, current_state, debug_enabled):
+        if current_state == "brawler_selection":
+            return True
+
+        if self.brawler_menu_template is None:
+            self.brawler_menu_template = load_image(
+                r'state_finder/images_to_detect/brawler_menu_btn.png',
+                self.window_controller.scale_factor
+            )
+
+        threshold = 0.8
+        while threshold >= 0.5:
+            brawler_menu_btn_coords = find_template_center(
+                current_frame,
+                self.brawler_menu_template,
+                threshold,
+            )
+            if brawler_menu_btn_coords:
+                self.window_controller.click(*brawler_menu_btn_coords)
+                time.sleep(0.8)
+                for _ in range(5):
+                    screenshot = self.window_controller.screenshot()
+                    state = get_state(screenshot)
+                    if state == "brawler_selection":
+                        return True
+                    if not self._can_select_brawler_in_state(state):
+                        print(
+                            f"WARNING: Aborting brawler selection for '{brawler}' because "
+                            f"the state changed to '{state}'."
+                        )
+                        return False
+                    time.sleep(0.25)
+                return True
+
+            if debug_enabled:
+                print("Brawler menu button not found, retrying...")
+            threshold -= 0.1
+            time.sleep(0.5)
+            current_frame = self.window_controller.screenshot()
+            current_state = get_state(current_frame)
+            if not self._can_select_brawler_in_state(current_state):
+                print(
+                    f"WARNING: Aborting brawler selection for '{brawler}' because "
+                    f"the state changed to '{current_state}'."
+                )
+                return False
+            if current_state == "brawler_selection":
+                return True
+
+        try:
+            current_frame.save(r'brawler_menu_btn_not_found.png')
+        except Exception:
+            pass
+        raise ValueError("Brawler menu button not found on screen, even at low threshold.")
+
+    def _find_visible_brawler_match(self, screenshot, target_key, ocr_scale, debug_enabled):
+        screenshot_full = np.array(screenshot)
+        screenshot_small = cv2.resize(
+            screenshot_full,
+            (int(screenshot_full.shape[1] * ocr_scale), int(screenshot_full.shape[0] * ocr_scale)),
+            interpolation=cv2.INTER_AREA,
+        )
+        if debug_enabled:
+            print("extracting text on current screen...")
+        results = extract_text_and_positions(screenshot_small)
+        reworked_results = {}
+        for key in results.keys():
+            orig_key = key
+            key = self.normalize_ocr_name(key)
+            key = self.resolve_ocr_typos(key)
+            reworked_results[key] = results[orig_key]
+        if debug_enabled:
+            print("All detected text while looking for brawler name:", reworked_results.keys())
+            print()
+
+        matches = []
+        for detected_name, text_box in reworked_results.items():
+            if self.names_match(detected_name, target_key):
+                score = self.name_match_score(detected_name, target_key)
+                matches.append((score, detected_name, text_box, screenshot_full.shape))
+
+        if not matches:
+            signature = tuple(sorted(reworked_results.keys()))
+            return None, signature
+
+        matches.sort(key=lambda item: item[0], reverse=True)
+        return matches[0], tuple(sorted(reworked_results.keys()))
+
     def select_brawler(self, brawler):
         brawler = str(brawler or "").strip().lower()
         if not brawler:
@@ -59,8 +168,6 @@ class LobbyAutomation:
             ocr_scale = 0.65
         ocr_scale = max(0.35, min(1.0, ocr_scale))
         target_key = self.normalize_ocr_name(brawler)
-        brawler_menu_treshold = 0.8
-        found = False
         current_frame = self.window_controller.screenshot()
         current_state = get_state(current_frame)
         if not self._can_select_brawler_in_state(current_state):
@@ -69,101 +176,81 @@ class LobbyAutomation:
                 f"the current state is '{current_state}'."
             )
             return False
-        if self.brawler_menu_template is None:
-            self.brawler_menu_template = load_image(
-                r'state_finder/images_to_detect/brawler_menu_btn.png',
-                self.window_controller.scale_factor
-            )
-        while not found:
-            brawler_menu_btn_coords = find_template_center(
-                current_frame,
-                self.brawler_menu_template,
-                brawler_menu_treshold
-            )
-            if brawler_menu_btn_coords:
-                found = True
-            else:
-                if debug: print("Brawler menu button not found, retrying...")
-                brawler_menu_treshold -= 0.1
-                time.sleep(1)
-                current_frame = self.window_controller.screenshot()
-                current_state = get_state(current_frame)
+
+        if not self._open_brawler_menu(brawler, current_frame, current_state, debug_enabled):
+            return False
+
+        for phase in ("current_position", "from_top"):
+            if phase == "from_top":
+                if debug_enabled:
+                    print(f"Resetting brawler menu to the top before searching for {brawler}")
+                self._reset_brawler_menu_to_top()
+
+            seen_signatures = set()
+            stagnant_scrolls = 0
+            for i in range(70):
+                screenshot = self.window_controller.screenshot()
+                current_state = get_state(screenshot)
                 if not self._can_select_brawler_in_state(current_state):
                     print(
                         f"WARNING: Aborting brawler selection for '{brawler}' because "
                         f"the state changed to '{current_state}'."
                     )
                     return False
-            if not found and brawler_menu_treshold < 0.5:
-                current_frame.save(r'brawler_menu_btn_not_found.png')
-                raise ValueError("Brawler menu button not found on screen, even at low threshold.")
-        x, y = brawler_menu_btn_coords
-        self.window_controller.click(x, y)
-        c = 0
-        found_brawler = False
-        for i in range(50):
-            screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot)
-            if not self._can_select_brawler_in_state(current_state):
-                print(
-                    f"WARNING: Aborting brawler selection for '{brawler}' because "
-                    f"the state changed to '{current_state}'."
+
+                match, signature = self._find_visible_brawler_match(
+                    screenshot,
+                    target_key,
+                    ocr_scale,
+                    debug_enabled,
                 )
-                return False
-            screenshot_full = np.array(screenshot)
-            screenshot = cv2.resize(
-                screenshot_full,
-                (int(screenshot_full.shape[1] * ocr_scale), int(screenshot_full.shape[0] * ocr_scale)),
-                interpolation=cv2.INTER_AREA,
-            )
-            if debug_enabled: print("extracting text on current screen...")
-            results = extract_text_and_positions(screenshot)
-            reworked_results = {}
-            for key in results.keys():
-                orig_key = key
-                key = self.normalize_ocr_name(key)
-                key = self.resolve_ocr_typos(key)
-                reworked_results[key] = results[orig_key]
-            if debug_enabled:
-                print("All detected text while looking for brawler name:", reworked_results.keys())
-                print()
-            matches = []
-            for detected_name, text_box in reworked_results.items():
-                if self.names_match(detected_name, target_key):
-                    score = self.name_match_score(detected_name, target_key)
-                    matches.append((score, detected_name, text_box))
-            if matches:
-                matches.sort(key=lambda item: item[0], reverse=True)
-                _, detected_name, text_box = matches[0]
-                x, y = text_box['center']
-                click_x = int(x / ocr_scale)
-                click_y = int((y / ocr_scale) - (95 * self.window_controller.height_ratio))
-                click_y = max(0, min(screenshot_full.shape[0] - 1, click_y))
-                if debug_enabled:
-                    print(f"Found brawler {brawler} (OCR: {detected_name})")
-                self.window_controller.click(click_x, click_y)
-                time.sleep(1)
-                select_x, select_y = self.coords_cfg['lobby']['select_btn'][0], self.coords_cfg['lobby']['select_btn'][1]
-                self.window_controller.click(select_x, select_y, already_include_ratio=False)
-                time.sleep(0.5)
-                if debug_enabled: print("Selected brawler ", brawler)
-                found_brawler = True
-                break
-            if c == 0:
-                wr = self.window_controller.width_ratio
-                hr = self.window_controller.height_ratio
-                self.window_controller.swipe(int(1700 * wr), int(900 * hr), int(1700 * wr), int(850 * hr), duration=0.8)
-                c += 1
-                continue
-            wr = self.window_controller.width_ratio
-            hr = self.window_controller.height_ratio
-            self.window_controller.swipe(int(1700 * wr), int(900 * hr), int(1700 * wr), int(650 * hr), duration=0.8)
-            time.sleep(1)
-        if not found_brawler:
-            print(f"WARNING: Brawler '{brawler}' was not found after 50 scroll attempts. "
-                  f"The bot will continue with the currently selected brawler.")
-            return False
-        return True
+                if match:
+                    _, detected_name, text_box, screenshot_shape = match
+                    x, y = text_box['center']
+                    click_x = int(x / ocr_scale)
+                    click_y = int((y / ocr_scale) - (95 * self.window_controller.height_ratio))
+                    click_y = max(0, min(screenshot_shape[0] - 1, click_y))
+                    if debug_enabled:
+                        print(f"Found brawler {brawler} (OCR: {detected_name})")
+                    self.window_controller.click(click_x, click_y)
+                    time.sleep(1)
+                    select_x, select_y = self.coords_cfg['lobby']['select_btn'][0], self.coords_cfg['lobby']['select_btn'][1]
+                    self.window_controller.click(select_x, select_y, already_include_ratio=False)
+                    for _ in range(8):
+                        time.sleep(0.35)
+                        confirm_frame = self.window_controller.screenshot()
+                        confirm_state = get_state(confirm_frame)
+                        if confirm_state == "lobby":
+                            if debug_enabled:
+                                print("Selected brawler ", brawler)
+                            return brawler
+                        if not self._can_select_brawler_in_state(confirm_state):
+                            print(
+                                f"WARNING: Could not confirm selection for '{brawler}' because "
+                                f"the state changed to '{confirm_state}'."
+                            )
+                            return False
+                    print(
+                        f"WARNING: Clicked '{brawler}' but the lobby did not confirm the selection. "
+                        "Keeping lobby start blocked."
+                    )
+                    return False
+
+                if signature in seen_signatures:
+                    stagnant_scrolls += 1
+                else:
+                    stagnant_scrolls = 0
+                    seen_signatures.add(signature)
+                if stagnant_scrolls >= 5:
+                    if debug_enabled:
+                        print(f"Brawler menu stopped changing while searching for {brawler}")
+                    break
+
+                self._scroll_brawler_menu(direction="down", attempt=i)
+
+        print(f"WARNING: Brawler '{brawler}' was not found after a full menu scan. "
+              f"The bot will keep waiting instead of starting with the wrong brawler.")
+        return False
 
     @staticmethod
     def resolve_ocr_typos(potential_brawler_name: str) -> str:

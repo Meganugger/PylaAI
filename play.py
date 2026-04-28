@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from state_finder.main import get_state, find_game_result
 from detect import Detect
-from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info
+from utils import load_toml_as_dict, count_hsv_pixels, load_brawlers_info, reader
 
 brawl_stars_width, brawl_stars_height = 1920, 1080
 debug = load_toml_as_dict("cfg/general_config.toml").get("super_debug", "no") == "yes"
@@ -890,6 +890,8 @@ class Play(Movement):
         self.last_gadget_time = 0.0
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
+        self.ability_ready_memory_seconds = float(bot_config.get("ability_ready_memory_seconds", 0.75))
+        self._super_ready_seen_at = 0.0
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = float(
             bot_config.get("seconds_to_hold_attack_after_reaching_max", 0.5)
@@ -2147,10 +2149,23 @@ class Play(Movement):
             }
         return self._scaled_hud_cache["regions"]
 
+    def _scaled_pixel_threshold(self, base_threshold):
+        area_scale = (self.window_controller.width_ratio or 1.0) * (self.window_controller.height_ratio or 1.0)
+        return max(1.0, float(base_threshold) * max(area_scale, 0.05))
+
     def count_hud_hsv_pixels(self, hsv_frame, scaled_region, low_hsv, high_hsv, origin=(0, 0)):
+        if hsv_frame is None:
+            return 0
         sx1, sy1, sx2, sy2 = scaled_region
         ox, oy = origin
-        region_hsv = hsv_frame[sy1 - oy:sy2 - oy, sx1 - ox:sx2 - ox]
+        height, width = hsv_frame.shape[:2]
+        x1 = max(0, min(width, sx1 - ox))
+        y1 = max(0, min(height, sy1 - oy))
+        x2 = max(0, min(width, sx2 - ox))
+        y2 = max(0, min(height, sy2 - oy))
+        if x2 <= x1 or y2 <= y1:
+            return 0
+        region_hsv = hsv_frame[y1:y2, x1:x2]
         mask = cv2.inRange(
             region_hsv,
             low_hsv,
@@ -2174,7 +2189,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return purple_pixels > self.hypercharge_pixels_minimum
+        return purple_pixels > self._scaled_pixel_threshold(self.hypercharge_pixels_minimum)
 
     def check_if_gadget_ready(self, hsv_frame, hsv_origin):
         scaled_regions = self._get_scaled_hud_cache()
@@ -2186,7 +2201,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return green_pixels > self.gadget_pixels_minimum
+        return green_pixels > self._scaled_pixel_threshold(self.gadget_pixels_minimum)
 
     def check_if_super_ready(self, hsv_frame, hsv_origin):
         scaled_regions = self._get_scaled_hud_cache()
@@ -2198,7 +2213,7 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return yellow_pixels > self.super_pixels_minimum
+        return yellow_pixels > self._scaled_pixel_threshold(self.super_pixels_minimum)
 
     def get_tile_data(self, frame):
         tile_data = self.Detect_tile_detector.detect_objects(frame, conf_tresh=self.wall_detection_confidence)
@@ -2609,7 +2624,7 @@ class Play(Movement):
             # Strict-hittable brawlers (snipers) must NOT fire when blocked.
             attack_issued = False
             if style.get("strict_hittable") and not self.target_info["hittable"]:
-                pass  # Suppress the shot — wall blocks line of sight
+                pass  # Suppress the shot; wall blocks line of sight.
             elif is_hold_attack_brawler:
                 if self.time_since_holding_attack is None:
                     attack_issued = self.attack(touch_up=False, touch_down=True)
@@ -2630,15 +2645,22 @@ class Play(Movement):
         if self.is_super_ready:
             super_type = brawler_info['super_type']
             enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
+            utility_super = super_type in {"spawnable", "other", "other_target"}
+            charge_super = super_type == "charge"
+            should_super = (
+                enemy_hittable and enemy_distance <= super_range
+            ) or (
+                utility_super and enemy_distance <= max(super_range, attack_range)
+            ) or (
+                charge_super
+                and enemy_distance <= max(super_range + attack_range, attack_range * 1.25)
+                and (enemy_hittable or close_range_contact or brawler in {"stu", "surge"})
+            )
 
-            if (enemy_hittable and
-                    (enemy_distance <= super_range
-                     or super_type in ["spawnable", "other"]
-                     or (brawler in ["stu", "surge"] and super_type == "charge" and enemy_distance <= super_range + attack_range)
-                    )):
-                self.use_super()
+            if should_super and self.use_super():
                 self.time_since_super_checked = time.time()
                 self.is_super_ready = False
+                self._super_ready_seen_at = 0.0
         return movement
 
     def main(self, frame, brawler):
@@ -2755,6 +2777,7 @@ class Play(Movement):
                 current_state = get_state(frame)
                 allow_reward_ocr = (
                     current_state == "match"
+                    and reader.is_ready()
                     and (
                         runtime_state == "reward_claim"
                         or str(runtime_state).startswith("end_")
@@ -2817,8 +2840,15 @@ class Play(Movement):
         else:
             self.is_gadget_ready = False
         if self._allow_skill_inputs and should_check_super:
-            self.is_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
+            detected_super_ready = self.check_if_super_ready(hud_hsv, hud_origin)
+            if detected_super_ready:
+                self._super_ready_seen_at = current_time
+                self.is_super_ready = True
+            elif current_time - self._super_ready_seen_at > self.ability_ready_memory_seconds:
+                self.is_super_ready = False
             self.time_since_super_checked = current_time
+        elif self._super_ready_seen_at and current_time - self._super_ready_seen_at <= self.ability_ready_memory_seconds:
+            self.is_super_ready = True
         else:
             self.is_super_ready = False
 
