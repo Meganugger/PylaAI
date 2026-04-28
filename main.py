@@ -105,20 +105,26 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.states_requiring_data = ["lobby", "popup", "end", "reward_claim"]
             active_entry = data[0] if data else {}
             startup_brawler = str(active_entry.get('brawler', '') or '').strip().lower()
-            if startup_brawler and active_entry.get('automatically_pick', True):
-                if debug: print("Picking brawler automatically")
-                try:
-                    self.lobby_automator.select_brawler(startup_brawler)
-                except Exception as e:
-                    print(f"WARNING: Brawler selection failed: {e}. Continuing with current brawler.")
-            self.Play.current_brawler = startup_brawler
+            self._startup_brawler_target = startup_brawler
+            self._pending_initial_brawler_select = bool(
+                startup_brawler and active_entry.get('automatically_pick', True)
+            )
+            self._skip_play_cycle = False
             self.no_detections_action_threshold = 60 * 5  # 5 min (was 2)
             self.initialize_stage_manager()
             # Register first brawler for session summary
             self.Stage_manager.Trophy_observer.start_session_brawler(
                 data[0]['brawler'], data[0].get('trophies', 0))
-            self._start_easyocr_warmup()
+            self._easyocr_warmup_started = False
+            if self._pending_initial_brawler_select:
+                self._start_easyocr_warmup()
+                self._easyocr_warmup_started = True
+                self.Stage_manager._delay_lobby_start(2.0, "waiting for initial brawler auto-select")
             self.state = None
+            try:
+                self.Time_management.states["state_check"] = 0.0
+            except Exception:
+                pass
             try:
                 self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
             except ValueError:
@@ -171,6 +177,58 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 reader.warm_up()
 
             threading.Thread(target=warm, name="easyocr-warmup", daemon=True).start()
+
+        def _run_initial_brawler_select(self):
+            if not self._pending_initial_brawler_select:
+                return True
+
+            target_brawler = str(self._startup_brawler_target or "").strip().lower()
+            if not target_brawler:
+                self._pending_initial_brawler_select = False
+                return True
+
+            if not self._easyocr_warmup_started:
+                self._start_easyocr_warmup()
+                self._easyocr_warmup_started = True
+
+            print(f"[STARTUP] Selecting brawler '{target_brawler}' before first match")
+            try:
+                selected = self.lobby_automator.select_brawler(target_brawler)
+                if not selected:
+                    print(
+                        f"[STARTUP] Could not confirm selection for '{target_brawler}'. "
+                        "Keeping lobby start blocked and retrying."
+                    )
+                    self.Stage_manager._delay_lobby_start(2.0, "waiting for initial brawler auto-select")
+                    return False
+            except Exception as exc:
+                print(
+                    f"[STARTUP] Brawler selection failed for '{target_brawler}': {exc}. "
+                    "Keeping lobby start blocked and retrying."
+                )
+                self.Stage_manager._delay_lobby_start(2.0, "waiting for initial brawler auto-select")
+                return False
+
+            self._pending_initial_brawler_select = False
+            self.Stage_manager._lobby_start_blocked_until = 0.0
+            self.Stage_manager._lobby_start_block_reason = ""
+            now = time.time()
+            self.Play.time_since_last_proceeding = now
+            for key in getattr(self.Play, "time_since_detections", {}):
+                self.Play.time_since_detections[key] = now
+            print(f"[STARTUP] Ready to play with '{target_brawler}'")
+            return True
+
+        def _cancel_initial_brawler_select(self, reason):
+            if not self._pending_initial_brawler_select:
+                return
+            self._pending_initial_brawler_select = False
+            target_brawler = str(self._startup_brawler_target or "").strip().lower()
+            if reason:
+                print(
+                    f"[STARTUP] Skipping initial brawler selection for "
+                    f"'{target_brawler}' because {reason}."
+                )
 
         def _start_hotkey_listener(self):
             """Poll F9 (stop), F8 (pause/resume), F7 (toggle overlay) via Windows API.
@@ -295,6 +353,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
 
         def manage_time_tasks(self, frame):
             now = time.time()
+            self._skip_play_cycle = False
             if (
                 str(getattr(self.Play, "_runtime_state", "") or "") == "match"
                 and now - self._last_fast_result_probe >= 0.6
@@ -310,11 +369,23 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     return
 
             if self.Time_management.state_check():
-                state = get_state(frame)
+                runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+                try:
+                    reward_ocr_ready = self.Stage_manager._is_easyocr_ready()
+                except Exception:
+                    reward_ocr_ready = bool(reader.is_ready())
+                allow_reward_ocr = (
+                    reward_ocr_ready
+                    and (
+                        runtime_state.startswith("end_")
+                        or runtime_state == "reward_claim"
+                    )
+                )
+                state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
                 if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
                     try:
                         screenshot = self.window_controller.screenshot()
-                        confirmed_state = get_state(screenshot)
+                        confirmed_state = get_state(screenshot, allow_reward_ocr=allow_reward_ocr)
                         if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
                             state = confirmed_state
                             frame = screenshot
@@ -322,6 +393,27 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             frame = screenshot
                     except Exception:
                         pass
+                if (
+                    self._pending_initial_brawler_select
+                    and (
+                        state == "match"
+                        or runtime_state == "match"
+                        or self.Stage_manager._match_in_progress
+                    )
+                ):
+                    self._cancel_initial_brawler_select("match context was already detected")
+                if state == "lobby" and self._pending_initial_brawler_select:
+                    if not self._run_initial_brawler_select():
+                        self.state = "lobby"
+                        self.Play._runtime_state = "lobby"
+                        self.Play.time_since_last_proceeding = time.time()
+                        self._skip_play_cycle = True
+                        return
+                    try:
+                        frame = self.window_controller.screenshot()
+                        state = get_state(frame)
+                    except Exception:
+                        state = "lobby"
                 self.state = state
                 self.Play._runtime_state = state
                 if state != "match":
@@ -430,6 +522,9 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
 
                 try:
                     self.manage_time_tasks(frame)
+                    if self._skip_play_cycle:
+                        c += 1
+                        continue
 
                     # push current state to visual overlay so it auto-hides
                     #    outside of a match (lobby, shop, brawler_selection, etc.)

@@ -172,6 +172,8 @@ class StageManager:
         self.dynamic_rotation_every = int(_bot_cfg.get("dynamic_rotation_every", 20))
         # Flag set by end_game when a brawler switch is queued for the next lobby visit
         self._pending_brawler_switch = False
+        self._pending_farm_completed_restore = None
+        self._pending_dynamic_rotation_restore = None
         self._awaiting_lobby_result_sync = False
         self._result_applied_for_active_match = False
         self._match_in_progress = False
@@ -254,6 +256,69 @@ class StageManager:
         self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
         self._lobby_start_block_reason = reason or self._lobby_start_block_reason
         self._start_wait_logged_at = 0.0
+
+    def _reset_lobby_result_sync_state(self):
+        self._awaiting_lobby_result_sync = False
+        self._match_in_progress = False
+        self._lobby_sync_started_at = 0.0
+        self._pending_verified_result = None
+        self._api_lobby_sync_attempts = 0
+        self._last_api_lobby_sync_attempt_at = 0.0
+
+    def _finish_pending_result_sync(self, reason=""):
+        result_ready = bool(self._result_applied_for_active_match)
+        if self._pending_verified_result and not result_ready:
+            print(
+                f"[RESULT] lobby verification skipped; applying pending "
+                f"{self._pending_verified_result}"
+            )
+            result_ready = bool(self._apply_match_result(self._pending_verified_result))
+
+        if result_ready:
+            if reason:
+                print(f"[RESULT] {reason}; keeping predicted progress")
+            self._commit_active_brawler_progress(queue_milestone=True)
+        elif reason:
+            print(f"[RESULT] {reason}; no committed result was available")
+
+        self._reset_lobby_result_sync_state()
+        return result_ready
+
+    def _select_brawler_or_delay(self, brawler_name, reason="brawler auto-select", prefix="[SELECT]"):
+        brawler_name = str(brawler_name or "").strip().lower()
+        if not brawler_name:
+            return True
+
+        self.window_controller.keys_up(list("wasd"))
+        screenshot = self.window_controller.screenshot()
+        current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
+        max_attempts = 30
+        attempts = 0
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        while current_state != "lobby" and attempts < max_attempts:
+            self.window_controller.click(int(100 * wr), int(60 * hr))
+            if debug:
+                print("Pressed back arrow to return to lobby")
+            time.sleep(1)
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
+            attempts += 1
+
+        if current_state != "lobby":
+            print(f"{prefix} Failed to reach lobby before selecting {brawler_name}.")
+            self._delay_lobby_start(5.0, reason)
+            return False
+
+        if not self.Lobby_automation.select_brawler(brawler_name):
+            print(
+                f"{prefix} Could not confirm brawler switch to '{brawler_name}'. "
+                "Keeping lobby start blocked until retry."
+            )
+            self._delay_lobby_start(5.0, reason)
+            return False
+
+        return True
 
     def _recover_from_brawler_selection(self):
         now = time.time()
@@ -383,6 +448,7 @@ class StageManager:
 
         # Remove the current (completed) brawler
         completed = self.brawlers_pick_data.pop(0)
+        self._pending_farm_completed_restore = completed
         completed_summary = self._build_live_summary(completed['brawler'])
         self._send_webhook(
             "brawler_completed",
@@ -417,6 +483,24 @@ class StageManager:
               f"({next_b.get('trophies', 0)} trophies)")
         return True
 
+    def _restore_pending_farm_rotation(self):
+        completed = getattr(self, "_pending_farm_completed_restore", None)
+        if not completed:
+            return False
+        completed_name = completed.get("brawler")
+        if completed_name and (
+            not self.brawlers_pick_data
+            or self.brawlers_pick_data[0].get("brawler") != completed_name
+        ):
+            self.brawlers_pick_data.insert(0, completed)
+            self.Trophy_observer.change_trophies(completed.get('trophies', 0))
+            self.Trophy_observer.current_wins = self._coerce_int(completed.get('wins'), 0)
+            self.Trophy_observer.win_streak = self._coerce_int(completed.get('win_streak'), 0)
+            save_brawler_data(self.brawlers_pick_data)
+            print(f"[FARM] Restored active brawler to {completed_name.title()} until selection succeeds.")
+        self._pending_farm_completed_restore = None
+        return True
+
     def _dynamic_rotate_to_lowest(self):
         """Dynamic rotation: re-sort all brawlers by trophies (ascending) and move
         the one with the fewest trophies to the front, WITHOUT removing any brawler
@@ -428,6 +512,7 @@ class StageManager:
             return False
 
         current_brawler = self.brawlers_pick_data[0]['brawler']
+        previous_order = list(self.brawlers_pick_data)
         self.brawlers_pick_data.sort(key=lambda x: x.get('trophies', 0))
         new_brawler = self.brawlers_pick_data[0]['brawler']
 
@@ -441,6 +526,21 @@ class StageManager:
         self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
         self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
         save_brawler_data(self.brawlers_pick_data)
+        self._pending_dynamic_rotation_restore = previous_order
+        return True
+
+    def _restore_pending_dynamic_rotation(self):
+        previous_order = getattr(self, "_pending_dynamic_rotation_restore", None)
+        if not previous_order:
+            return False
+        self.brawlers_pick_data = previous_order
+        active = self.brawlers_pick_data[0]
+        self.Trophy_observer.change_trophies(active.get('trophies', 0))
+        self.Trophy_observer.current_wins = self._coerce_int(active.get('wins'), 0)
+        self.Trophy_observer.win_streak = self._coerce_int(active.get('win_streak'), 0)
+        save_brawler_data(self.brawlers_pick_data)
+        self._pending_dynamic_rotation_restore = None
+        print(f"[FARM] Restored dynamic rotation to {active.get('brawler', 'current').title()} until selection succeeds.")
         return True
 
     def _handle_quest_rotation(self):
@@ -495,28 +595,27 @@ class StageManager:
             self.window_controller.close()
             sys.exit(0)
 
-        # Pop completed brawler and move to next
-        completed = self.brawlers_pick_data.pop(0)
+        completed = self.brawlers_pick_data[0]
+        next_data = self.brawlers_pick_data[1]
+        if not self._select_brawler_or_delay(next_data['brawler'], "waiting for quest brawler auto-select", prefix="[QUEST]"):
+            return
+
         completed_summary = self._build_live_summary(completed['brawler'])
         self._send_webhook(
             "brawler_completed",
             subject=completed['brawler'],
             live_summary=completed_summary,
         )
+        self.brawlers_pick_data.pop(0)
         print(f"[QUEST] Switching from {completed['brawler'].title()} -> "
               f"{self.brawlers_pick_data[0]['brawler'].title()} "
               f"({len(self.brawlers_pick_data)} remaining)")
 
         # Load next brawler data
-        next_data = self.brawlers_pick_data[0]
         self.Trophy_observer.change_trophies(next_data.get('trophies', 0))
         self.Trophy_observer.current_wins = 0
         self.Trophy_observer.win_streak = 0
         save_brawler_data(self.brawlers_pick_data)
-
-        # Navigate to lobby and select next brawler
-        self._ensure_lobby()
-        self.Lobby_automation.select_brawler(next_data['brawler'])
 
     def _ensure_lobby(self):
         """Navigate back to the lobby using the back arrow (NOT Q, which starts a match)."""
@@ -724,7 +823,13 @@ class StageManager:
         )
 
     def mark_match_started(self):
-        if self._match_in_progress or self._awaiting_lobby_result_sync:
+        if self._awaiting_lobby_result_sync:
+            if self._result_applied_for_active_match or self._pending_verified_result:
+                self._finish_pending_result_sync("new match started before lobby verification")
+            else:
+                print("[RESULT] clearing unresolved lobby sync because a new match started")
+                self._reset_lobby_result_sync_state()
+        if self._match_in_progress:
             return False
         if debug:
             active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
@@ -899,14 +1004,26 @@ class StageManager:
 
             ocr_ready = self._is_easyocr_ready()
             has_api_settings = self.Trophy_observer.has_brawlstars_api_settings()
-            if not ocr_ready and not has_api_settings:
+            finalized_without_verification = False
+            if (
+                not ocr_ready
+                and not has_api_settings
+                and (self._result_applied_for_active_match or self._pending_verified_result)
+            ):
+                self._finish_pending_result_sync("lobby verification unavailable without API/OCR")
+                self._restart_lobby_settle_window()
+                self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
+                finalized_without_verification = True
+            elif not ocr_ready and not has_api_settings:
                 self._ensure_lobby_ocr_warmup(delay_seconds=0.0)
 
-            synced = self._sync_lobby_result(
-                data,
-                allow_ocr=ocr_ready,
-                api_timeout=3.0,
-            )
+            synced = finalized_without_verification
+            if not synced and self._awaiting_lobby_result_sync:
+                synced = self._sync_lobby_result(
+                    data,
+                    allow_ocr=ocr_ready,
+                    api_timeout=3.0,
+                )
 
             if synced:
                 self._restart_lobby_settle_window()
@@ -988,7 +1105,12 @@ class StageManager:
             self._pending_brawler_switch = False
             next_brawler_name = self.brawlers_pick_data[0]['brawler']
             print(f"[FARM] Executing queued brawler switch → {next_brawler_name.title()}")
-            self.Lobby_automation.select_brawler(next_brawler_name)
+            if not self._select_brawler_or_delay(next_brawler_name, "waiting for queued brawler auto-select", prefix="[FARM]"):
+                restored = self._restore_pending_farm_rotation() or self._restore_pending_dynamic_rotation()
+                self._pending_brawler_switch = not restored
+                return
+            self._pending_farm_completed_restore = None
+            self._pending_dynamic_rotation_restore = None
             # Start the match immediately — do NOT re-check targets (avoids double rotation)
             self.window_controller.keys_up(list("wasd"))
             try:
@@ -1049,9 +1171,16 @@ class StageManager:
                     current_state = get_state(screenshot)
                     attempts += 1
                 if attempts < max_attempts:
-                    self.Lobby_automation.select_brawler(next_brawler_name)
+                    if not self.Lobby_automation.select_brawler(next_brawler_name):
+                        self._restore_pending_farm_rotation()
+                        self._delay_lobby_start(5.0, "waiting for farm brawler auto-select")
+                        return
+                    self._pending_farm_completed_restore = None
                 else:
                     print("[FARM] Failed to reach lobby for brawler switch")
+                    self._restore_pending_farm_rotation()
+                    self._delay_lobby_start(5.0, "waiting for farm lobby recovery")
+                    return
             else:
                 # original sequential rotation
                 if len(self.brawlers_pick_data) <= 1:
@@ -1068,9 +1197,20 @@ class StageManager:
                     self.window_controller.keys_up(list("wasd"))
                     self.window_controller.close()
                     sys.exit(0)
-                screenshot = self.window_controller.screenshot()
                 completed_brawler = self.brawlers_pick_data[0]["brawler"]
                 completed_summary = self._build_live_summary(completed_brawler)
+                next_data = self.brawlers_pick_data[1]
+                next_brawler_name = next_data['brawler']
+                screenshot = self.window_controller.screenshot()
+                if next_data.get("automatically_pick", True):
+                    if debug:
+                        print("Picking next automatically picked brawler")
+                    if not self._select_brawler_or_delay(next_brawler_name, "waiting for brawler auto-select", prefix="[RESULT]"):
+                        return
+                else:
+                    print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
+                    time.sleep(10)
+
                 self._send_webhook(
                     "brawler_completed",
                     screenshot=screenshot,
@@ -1078,34 +1218,10 @@ class StageManager:
                     live_summary=completed_summary,
                 )
                 self.brawlers_pick_data.pop(0)
-                self.Trophy_observer.change_trophies(self.brawlers_pick_data[0]['trophies'])
-                self.Trophy_observer.current_wins = self._coerce_int(self.brawlers_pick_data[0].get('wins'), 0)
-                self.Trophy_observer.win_streak = self._coerce_int(self.brawlers_pick_data[0].get('win_streak'), 0)
-                next_brawler_name = self.brawlers_pick_data[0]['brawler']
-                if self.brawlers_pick_data[0]["automatically_pick"]:
-                    if debug: print("Picking next automatically picked brawler")
-                    screenshot = self.window_controller.screenshot()
-                    current_state = get_state(screenshot)
-                    if current_state != "lobby":
-                        print("Trying to reach the lobby to switch brawler")
-
-                    max_attempts = 30
-                    attempts = 0
-                    wr = self.window_controller.width_ratio or 1.0
-                    hr = self.window_controller.height_ratio or 1.0
-                    while current_state != "lobby" and attempts < max_attempts:
-                        self.window_controller.click(int(100 * wr), int(60 * hr))
-                        if debug: print("Pressed back arrow to return to lobby")
-                        time.sleep(1)
-                        screenshot = self.window_controller.screenshot()
-                        current_state = get_state(screenshot)
-                        attempts += 1
-                    if attempts >= max_attempts:
-                        print("Failed to reach lobby after max attempts")
-                    else:
-                        self.Lobby_automation.select_brawler(next_brawler_name)
-                else:
-                    print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
+                self.Trophy_observer.change_trophies(next_data.get('trophies', 0))
+                self.Trophy_observer.current_wins = self._coerce_int(next_data.get('wins'), 0)
+                self.Trophy_observer.win_streak = self._coerce_int(next_data.get('win_streak'), 0)
+                save_brawler_data(self.brawlers_pick_data)
 
         # q btn is over the start btn
         self.window_controller.keys_up(list("wasd"))
@@ -1257,29 +1373,19 @@ class StageManager:
             self.window_controller.press_key("Q")
             return
 
+        next_data = self.brawlers_pick_data[1]
+        next_name = next_data.get("brawler")
+        if next_name and next_data.get("automatically_pick"):
+            if not self._select_brawler_or_delay(next_name, "waiting for prestige brawler auto-select", prefix="[PRESTIGE]"):
+                print(f"[PRESTIGE] Could not confirm switch to {next_name}; keeping current queue active.")
+                return
+            print(f"[PRESTIGE] Switched to {next_name}.")
+
         self.brawlers_pick_data.pop(0)
-        next_data = self.brawlers_pick_data[0]
         self.Trophy_observer.change_trophies(next_data.get("trophies", 0))
+        self.Trophy_observer.current_wins = self._coerce_int(next_data.get("wins"), 0)
+        self.Trophy_observer.win_streak = self._coerce_int(next_data.get("win_streak"), 0)
         save_brawler_data(self.brawlers_pick_data)
-
-        # Navigate back to lobby and select next brawler
-        screenshot = self.window_controller.screenshot()
-        current_state = get_state(screenshot)
-        attempts = 0
-        while current_state != "lobby" and attempts < 30:
-            self.window_controller.press_key("Q")
-            time.sleep(1.0)
-            screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot)
-            attempts += 1
-
-        if current_state == "lobby":
-            next_name = next_data.get("brawler")
-            if next_name and next_data.get("automatically_pick"):
-                self.Lobby_automation.select_brawler(next_name)
-                print(f"[PRESTIGE] Switched to {next_name}.")
-        else:
-            print("[PRESTIGE] Could not reach lobby after prestige reward.")
 
     def claim_reward(self, frame=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()

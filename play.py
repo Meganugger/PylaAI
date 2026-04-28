@@ -1931,6 +1931,7 @@ class Movement:
         self._force_wall_refresh = True  # Force fresh tile scan after super
         self.window_controller.press_key("E")
         self.time_since_super_used = now
+        self._super_ready_seen_at = 0.0
         return True
 
     @staticmethod
@@ -2263,6 +2264,8 @@ class Play(Movement):
         self.is_hypercharge_ready = False
         self.is_gadget_ready = False
         self.is_super_ready = False
+        self.ability_ready_memory_seconds = float(bot_config.get("ability_ready_memory_seconds", 0.75))
+        self._super_ready_seen_at = 0.0
         self.brawlers_info = load_brawlers_info()
         self.brawler_ranges = None
         self.time_since_detections = {
@@ -3313,21 +3316,25 @@ class Play(Movement):
     def check_if_hypercharge_ready(self, frame):
         screenshot = frame.crop((int(1350 * self.window_controller.width_ratio), int(940 * self.window_controller.height_ratio), int(1450 * self.window_controller.width_ratio), int(1050 * self.window_controller.height_ratio)))
         purple_pixels = count_hsv_pixels(screenshot, (120, 100, 100), (179, 255, 255))
-        if purple_pixels > self.hypercharge_pixels_minimum:
+        if purple_pixels > self._scaled_pixel_threshold(self.hypercharge_pixels_minimum):
             return True
         return False
 
     def check_if_gadget_ready(self, frame):
         screenshot = frame.crop((int(1580 * self.window_controller.width_ratio), int(930 * self.window_controller.height_ratio), int(1700 * self.window_controller.width_ratio), int(1050 * self.window_controller.height_ratio)))
         green_pixels = count_hsv_pixels(screenshot, (40, 150, 100), (80, 255, 255))
-        if green_pixels > self.gadget_pixels_minimum:
+        if green_pixels > self._scaled_pixel_threshold(self.gadget_pixels_minimum):
             return True
         return False
+
+    def _scaled_pixel_threshold(self, base_threshold):
+        area_scale = (self.window_controller.width_ratio or 1.0) * (self.window_controller.height_ratio or 1.0)
+        return max(1.0, float(base_threshold) * max(area_scale, 0.05))
 
     def check_if_super_ready(self, frame):
         screenshot = frame.crop((int(1460 * self.window_controller.width_ratio), int(830 * self.window_controller.height_ratio), int(1560 * self.window_controller.width_ratio), int(930 * self.window_controller.height_ratio)))
         yellow_pixels = count_hsv_pixels(screenshot, (15, 120, 150), (35, 255, 255))
-        if yellow_pixels > self.super_pixels_minimum:
+        if yellow_pixels > self._scaled_pixel_threshold(self.super_pixels_minimum):
             return True
         return False
 
@@ -5068,6 +5075,7 @@ class Play(Movement):
                 )
                 allow_reward_ocr = (
                     current_state == "match"
+                    and shared_reader.is_ready()
                     and (
                         runtime_state == "reward_claim"
                         or str(runtime_state).startswith("end_")
@@ -5122,8 +5130,17 @@ class Play(Movement):
             self.is_gadget_ready = self.check_if_gadget_ready(frame)
             self.time_since_gadget_checked = current_time
         if current_time - self.time_since_super_checked > self.super_treshold:
-            self.is_super_ready = self.check_if_super_ready(frame)
+            detected_super_ready = self.check_if_super_ready(frame)
+            if detected_super_ready:
+                self._super_ready_seen_at = current_time
+                self.is_super_ready = True
+            elif current_time - self._super_ready_seen_at > self.ability_ready_memory_seconds:
+                self.is_super_ready = False
             self.time_since_super_checked = current_time
+        elif self._super_ready_seen_at and current_time - self._super_ready_seen_at <= self.ability_ready_memory_seconds:
+            self.is_super_ready = True
+        else:
+            self.is_super_ready = False
 
         # Read health bars + target info BEFORE combat decisions (so data is fresh)
         # === HP DETECTION THROTTLING (IPS optimization) ===
