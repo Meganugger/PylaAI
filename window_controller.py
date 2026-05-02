@@ -26,9 +26,11 @@ key_coords_dict = {
 }
 
 continue_fallback_targets = (
-    (960, 540),
-    (960, 950),
     (1660, 980),
+    (1450, 950),
+    (1180, 950),
+    (960, 950),
+    (960, 540),
 )
 
 directions_xy_deltas_dict = {

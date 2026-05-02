@@ -7,10 +7,18 @@ import threading
 import cv2
 import numpy as np
 
-from state_finder.main import get_state, find_game_result, find_reward_claim_action, get_reward_claim_button_center, get_star_drop_type
+from state_finder.main import (
+    get_state,
+    find_game_result,
+    find_reward_claim_action,
+    get_reward_claim_button_center,
+    get_star_drop_type,
+    is_lobby_play_button_visible,
+)
 from trophy_observer import TrophyObserver
 from utils import find_template_center, extract_text_and_positions, load_toml_as_dict, notify_user, has_notification_webhook, \
-    save_brawler_data, reader, to_bgr_array
+    save_brawler_data, reader, to_bgr_array, load_brawl_stars_api_config, fetch_brawl_stars_player, \
+    normalize_brawler_name
 
 from difflib import SequenceMatcher
 
@@ -194,8 +202,18 @@ class StageManager:
         self._post_result_lobby_delay = 1.5
         self._unexpected_brawler_selection_delay = 2.5
         self._last_brawler_menu_recovery_at = 0.0
+        self._end_transition_started_at = 0.0
+        self._end_transition_last_action_at = 0.0
+        self._end_transition_last_result = None
+        self._end_transition_hold_match_until = 0.0
+        self._end_transition_action_interval = 0.75
+        self._end_transition_hold_seconds = float(self.bot_config.get("post_match_dismiss_hold_seconds", 10.0))
+        self._end_transition_timeout = 12.0
         self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
         self._consecutive_lobby_start_fails = 0
+        self.push_all_needs_selection = False
+        self._last_push_all_refresh_at = 0.0
+        self._push_all_refresh_interval = float(self.bot_config.get("push_all_api_refresh_interval", 8.0))
 
     def _is_easyocr_ready(self):
         try:
@@ -256,6 +274,59 @@ class StageManager:
         self._lobby_start_blocked_until = max(self._lobby_start_blocked_until, now + max(0.0, float(seconds)))
         self._lobby_start_block_reason = reason or self._lobby_start_block_reason
         self._start_wait_logged_at = 0.0
+
+    @staticmethod
+    def _is_endish_state(state):
+        return isinstance(state, str) and (
+            state.startswith("end")
+            or state in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward", "star_drop"}
+        )
+
+    def _begin_end_transition(self, result=None, now=None):
+        if now is None:
+            now = time.time()
+        result = str(result or "").strip() or None
+        if result != self._end_transition_last_result:
+            self._end_transition_last_action_at = 0.0
+        if not self._end_transition_started_at or result != self._end_transition_last_result:
+            self._end_transition_started_at = now
+        self._end_transition_last_result = result
+        # Some post-match reward/proceed screens fall through to "match" while
+        # EasyOCR or API sync is still catching up. Keep the result context for
+        # the full transition window so gameplay never starts on those screens.
+        self._end_transition_hold_match_until = max(
+            self._end_transition_hold_match_until,
+            now + max(4.0, self._end_transition_hold_seconds, self._end_transition_timeout),
+        )
+
+    def _clear_end_transition(self):
+        self._end_transition_started_at = 0.0
+        self._end_transition_last_action_at = 0.0
+        self._end_transition_last_result = None
+        self._end_transition_hold_match_until = 0.0
+
+    def has_recent_end_transition(self, now=None):
+        if now is None:
+            now = time.time()
+        if not self._end_transition_started_at:
+            return False
+        return (now - self._end_transition_started_at) < self._end_transition_timeout
+
+    def get_end_transition_state(self):
+        if self._end_transition_last_result:
+            return f"end_{self._end_transition_last_result}"
+        if self._end_transition_started_at:
+            return "end"
+        return ""
+
+    def should_hold_match_probe(self, now=None):
+        if now is None:
+            now = time.time()
+        return (
+            self._awaiting_lobby_result_sync
+            and self.has_recent_end_transition(now)
+            and now < self._end_transition_hold_match_until
+        )
 
     def _reset_lobby_result_sync_state(self):
         self._awaiting_lobby_result_sync = False
@@ -341,6 +412,30 @@ class StageManager:
         print("[START] Unexpected brawler menu opened; backing out before retrying")
         return True
 
+    def _is_safe_lobby_to_start(self):
+        try:
+            screenshot = self.window_controller.screenshot()
+            current_state = get_state(screenshot)
+        except Exception as exc:
+            print(f"[START] Could not verify lobby before pressing Q: {exc}")
+            return False
+
+        if current_state == "brawler_selection":
+            self._recover_from_brawler_selection()
+            return False
+        if current_state != "lobby":
+            print(f"[START] Start blocked because verified state is '{current_state}', not lobby.")
+            return False
+
+        try:
+            if not is_lobby_play_button_visible(to_bgr_array(screenshot)):
+                print("[START] Start blocked because the lobby PLAY button was not confirmed.")
+                return False
+        except Exception as exc:
+            print(f"[START] Could not verify lobby PLAY button before pressing Q: {exc}")
+            return False
+        return True
+
     def _try_press_lobby_start(self, prefix="[RESULT]"):
         now = time.time()
         self._note_lobby_visible(now)
@@ -369,17 +464,8 @@ class StageManager:
         if self._last_start_press_at and (now - self._last_start_press_at) < self._lobby_start_retry_delay:
             return False
 
-        try:
-            probe = self.window_controller.screenshot()
-            verified_state = get_state(probe, allow_reward_ocr=self._is_easyocr_ready())
-        except Exception:
-            verified_state = "lobby"
-        if verified_state != "lobby":
-            self._delay_lobby_start(1.0, f"waiting for confirmed lobby ({verified_state})")
-            if verified_state == "brawler_selection":
-                self._recover_from_brawler_selection()
-            elif debug:
-                print(f"[START] skipped Q press because lobby recheck saw {verified_state}")
+        if not self._is_safe_lobby_to_start():
+            self._delay_lobby_start(1.0, "waiting for confirmed lobby play button")
             return False
 
         self.window_controller.keys_up(list("wasd"))
@@ -401,6 +487,10 @@ class StageManager:
             return int(value)
         except (TypeError, ValueError):
             return default
+
+    @classmethod
+    def _number_or_default(cls, value, default=0):
+        return cls._coerce_int(value, default)
 
     def _resolve_push_progress(self):
         active = self.brawlers_pick_data[0] if self.brawlers_pick_data else {}
@@ -782,6 +872,181 @@ class StageManager:
         save_brawler_data(self.brawlers_pick_data)
         return True
 
+    def _prepare_next_push_all_brawler(self, target, type_of_push="trophies"):
+        """Drop completed rows and promote the next brawler, sorting Push All by lowest trophies."""
+        if not self.brawlers_pick_data:
+            return False
+
+        target = self._number_or_default(target, 1000 if type_of_push == "trophies" else 300)
+        current_row = dict(self.brawlers_pick_data[0])
+        current_row[type_of_push] = self._number_or_default(
+            getattr(self.Trophy_observer, f"current_{type_of_push}", current_row.get(type_of_push, 0)),
+            current_row.get(type_of_push, 0),
+        )
+        current_row["win_streak"] = self._number_or_default(self.Trophy_observer.win_streak, 0)
+
+        remaining = [dict(row) for row in self.brawlers_pick_data[1:]]
+        if type_of_push == "trophies":
+            remaining = [
+                row for row in remaining
+                if self._number_or_default(row.get("trophies", 0), 0) < target
+            ]
+        else:
+            remaining = [
+                row for row in remaining
+                if self._number_or_default(row.get("wins", 0), 0) < target
+            ]
+
+        if not remaining:
+            self.brawlers_pick_data = []
+            save_brawler_data(self.brawlers_pick_data)
+            return False
+
+        if any(row.get("selection_method") == "lowest_trophies" for row in remaining):
+            remaining.sort(
+                key=lambda row: (
+                    self._number_or_default(row.get(type_of_push, 0), 0),
+                    str(row.get("brawler", "")),
+                )
+            )
+            for row in remaining:
+                row["selection_method"] = "lowest_trophies"
+                row["automatically_pick"] = True
+
+        self.brawlers_pick_data = remaining
+        next_data = self.brawlers_pick_data[0]
+        self.Trophy_observer.change_trophies(self._number_or_default(next_data.get("trophies", 0), 0))
+        self.Trophy_observer.current_wins = self._number_or_default(next_data.get("wins", 0), 0)
+        self.Trophy_observer.win_streak = self._number_or_default(next_data.get("win_streak", 0), 0)
+        save_brawler_data(self.brawlers_pick_data)
+        return True
+
+    @staticmethod
+    def fetch_push_all_player_data(force_token_refresh=False):
+        api_config = load_brawl_stars_api_config(
+            "cfg/brawl_stars_api.toml",
+            force_refresh=force_token_refresh,
+        )
+        return fetch_brawl_stars_player(
+            api_config.get("api_token", "").strip(),
+            api_config.get("player_tag", "").strip(),
+            int(api_config.get("timeout_seconds", 15)),
+        )
+
+    def refresh_push_all_trophies_from_api(self):
+        if not self.brawlers_pick_data:
+            return False
+        if self.brawlers_pick_data[0].get("type", "trophies") != "trophies":
+            return False
+        if not any(row.get("selection_method") == "lowest_trophies" for row in self.brawlers_pick_data):
+            return False
+        now = time.time()
+        if now - self._last_push_all_refresh_at < self._push_all_refresh_interval:
+            return False
+        self._last_push_all_refresh_at = now
+
+        old_front_brawler = self.brawlers_pick_data[0].get("brawler")
+        try:
+            player_data = self.fetch_push_all_player_data(force_token_refresh=False)
+        except ValueError as exc:
+            if debug:
+                print(f"Push All API trophy refresh skipped: {exc}")
+            return False
+        except RuntimeError as exc:
+            if "accessDenied" not in str(exc):
+                print(f"Push All API trophy refresh failed; using local trophies. {exc}")
+                return False
+            try:
+                print("Push All API token was rejected; refreshing token for current public IP and retrying.")
+                player_data = self.fetch_push_all_player_data(force_token_refresh=True)
+            except Exception as retry_error:
+                print(f"Push All API trophy refresh failed after token refresh; using local trophies. {retry_error}")
+                return False
+        except Exception as exc:
+            print(f"Push All API trophy refresh failed; using local trophies. {exc}")
+            return False
+
+        trophies_by_brawler = {
+            normalize_brawler_name(brawler.get("name", "")): int(brawler.get("trophies", 0))
+            for brawler in player_data.get("brawlers", [])
+        }
+        target = self._number_or_default(self.brawlers_pick_data[0].get("push_until", 1000), 1000)
+        refreshed_rows = []
+        changed = False
+
+        for row in self.brawlers_pick_data:
+            refreshed_row = dict(row)
+            key = normalize_brawler_name(refreshed_row.get("brawler", ""))
+            if key in trophies_by_brawler:
+                api_trophies = trophies_by_brawler[key]
+                if refreshed_row.get("brawler") == old_front_brawler:
+                    local_trophies = self._number_or_default(
+                        getattr(self.Trophy_observer, "current_trophies", refreshed_row.get("trophies", 0)),
+                        refreshed_row.get("trophies", 0),
+                    )
+                    api_trophies = max(api_trophies, local_trophies)
+                if refreshed_row.get("trophies") != api_trophies:
+                    refreshed_row["trophies"] = api_trophies
+                    changed = True
+            if self._number_or_default(refreshed_row.get("trophies", 0), 0) < target:
+                refreshed_rows.append(refreshed_row)
+
+        current_row = next((row for row in refreshed_rows if row.get("brawler") == old_front_brawler), None)
+        remaining_rows = [row for row in refreshed_rows if row.get("brawler") != old_front_brawler]
+
+        if current_row is not None:
+            remaining_rows.sort(
+                key=lambda row: (
+                    self._number_or_default(row.get("trophies", 0), 0),
+                    str(row.get("brawler", "")),
+                )
+            )
+            refreshed_rows = [current_row] + remaining_rows
+            self.push_all_needs_selection = False
+        else:
+            remaining_rows.sort(
+                key=lambda row: (
+                    self._number_or_default(row.get("trophies", 0), 0),
+                    str(row.get("brawler", "")),
+                )
+            )
+            refreshed_rows = remaining_rows
+            self.push_all_needs_selection = bool(refreshed_rows)
+
+        if refreshed_rows:
+            refreshed_rows[0]["automatically_pick"] = False
+            refreshed_rows[0]["selection_method"] = "lowest_trophies"
+            for row in refreshed_rows[1:]:
+                if row.get("automatically_pick") is not True:
+                    changed = True
+                row["automatically_pick"] = True
+                row["selection_method"] = "lowest_trophies"
+
+        old_order = [row.get("brawler") for row in self.brawlers_pick_data]
+        new_order = [row.get("brawler") for row in refreshed_rows]
+        if old_order != new_order or len(refreshed_rows) != len(self.brawlers_pick_data):
+            changed = True
+
+        if not refreshed_rows:
+            self.brawlers_pick_data = []
+            save_brawler_data(self.brawlers_pick_data)
+            print("Push All API trophies refreshed: all brawlers reached target.")
+            return True
+
+        self.brawlers_pick_data = refreshed_rows
+        current_trophies = self._number_or_default(self.brawlers_pick_data[0].get("trophies", 0), 0)
+        if getattr(self.Trophy_observer, "current_trophies", None) != current_trophies:
+            self.Trophy_observer.change_trophies(current_trophies)
+            changed = True
+
+        if changed:
+            if self.push_all_needs_selection:
+                print("Push All API trophies refreshed; current brawler reached target, selecting next lowest.")
+            else:
+                print("Push All API trophies refreshed; keeping current brawler until target.")
+            save_brawler_data(self.brawlers_pick_data)
+        return changed
+
     def _current_brawler_name(self):
         if not self.brawlers_pick_data:
             return None
@@ -1076,6 +1341,13 @@ class StageManager:
                 self._pending_verified_result = None
                 self._restart_lobby_settle_window()
                 self._delay_lobby_start(self._post_result_lobby_delay, "post-match UI sync")
+        self.push_all_needs_selection = False
+        self.refresh_push_all_trophies_from_api()
+        if not self.brawlers_pick_data:
+            print("Bot stopping: all Push All targets completed.")
+            self.window_controller.keys_up(list("wasd"))
+            self.window_controller.close()
+            sys.exit(0)
         self._flush_webhook_milestone(data)
 
         # quest Farm Mode: check if current brawler's quest is done
@@ -1222,7 +1494,16 @@ class StageManager:
                 if next_data.get("automatically_pick", True):
                     if debug:
                         print("Picking next automatically picked brawler")
-                    if not self._select_brawler_or_delay(next_brawler_name, "waiting for brawler auto-select", prefix="[RESULT]"):
+                    if next_data.get("selection_method") == "lowest_trophies":
+                        if not self.Lobby_automation.select_lowest_trophy_brawler():
+                            print(
+                                "WARNING: Could not confirm lowest-trophy brawler selection. "
+                                "Keeping lobby start blocked until retry."
+                            )
+                            self.window_controller.keys_up(list("wasd"))
+                            self._delay_lobby_start(5.0, "waiting for lowest-trophy brawler auto-select")
+                            return
+                    elif not self._select_brawler_or_delay(next_brawler_name, "waiting for brawler auto-select", prefix="[RESULT]"):
                         return
                 else:
                     print("Next brawler is in manual mode, waiting 10 seconds to let user switch.")
@@ -1239,6 +1520,15 @@ class StageManager:
                 self.Trophy_observer.current_wins = self._coerce_int(next_data.get('wins'), 0)
                 self.Trophy_observer.win_streak = self._coerce_int(next_data.get('win_streak'), 0)
                 save_brawler_data(self.brawlers_pick_data)
+        elif self.push_all_needs_selection:
+            print("Push All queue changed from API; selecting the new lowest trophy brawler.")
+            selected = bool(self.Lobby_automation.select_lowest_trophy_brawler())
+            if not selected:
+                print("Could not confirm the API-refreshed brawler selection reached lobby; delaying match start.")
+                self.window_controller.keys_up(list("wasd"))
+                self._delay_lobby_start(5.0, "waiting for API-refreshed brawler auto-select")
+                return
+            self.push_all_needs_selection = False
 
         # q btn is over the start btn
         self.window_controller.keys_up(list("wasd"))
@@ -1667,6 +1957,7 @@ class StageManager:
         current_state = get_state(screenshot, allow_reward_ocr=True)
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
         if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
+            self._begin_end_transition(known_result, time.time())
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
             current_state = f"end_{known_result}"
 
@@ -1696,6 +1987,7 @@ class StageManager:
             state_result = None
             if isinstance(current_state, str) and current_state.startswith("end_"):
                 state_result = current_state.split("_", 1)[1]
+                self._begin_end_transition(state_result, time.time())
 
             should_probe_result = (
                 not found_game_result
@@ -1712,6 +2004,7 @@ class StageManager:
                         game_result=state_result,
                     )
                     if detected_result:
+                        self._begin_end_transition(detected_result, time.time())
                         found_game_result = (
                             detected_result
                             if self._apply_or_defer_detected_result(detected_result, source="ocr-fallback")
@@ -1905,8 +2198,17 @@ class StageManager:
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]
             state = "end"
-        if state == "match" and self._awaiting_lobby_result_sync and not self._match_in_progress:
+        now = time.time()
+        if state == "lobby":
+            self._clear_end_transition()
+        elif state == "match" and (
+            self.should_hold_match_probe(now)
+            or (self._awaiting_lobby_result_sync and not self._match_in_progress)
+        ):
             state = "end"
+            known_result = self._end_transition_last_result or known_result
+        elif not self._is_endish_state(state):
+            self._clear_end_transition()
         if state == "brawler_selection":
             recent_start_press = self._last_start_press_at and (time.time() - self._last_start_press_at) <= 4.0
             self._delay_lobby_start(self._unexpected_brawler_selection_delay, "recovering from accidental brawler menu")

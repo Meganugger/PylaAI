@@ -252,6 +252,59 @@ class LobbyAutomation:
               f"The bot will keep waiting instead of starting with the wrong brawler.")
         return False
 
+    def press_back(self):
+        if hasattr(self.window_controller, "android_back"):
+            try:
+                if self.window_controller.android_back():
+                    return True
+            except Exception:
+                pass
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+        self.window_controller.click(int(88 * wr), int(62 * hr))
+        return True
+
+    def ensure_lobby_after_selection(self, timeout=6.0):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            try:
+                state = get_state(self.window_controller.screenshot())
+            except Exception as exc:
+                print(f"Could not verify lobby after brawler selection: {exc}")
+                return False
+            if state == "lobby":
+                return True
+            if state == "brawler_selection":
+                self.window_controller.click(
+                    int(260 * (self.window_controller.width_ratio or 1.0)),
+                    int(991 * (self.window_controller.height_ratio or 1.0)),
+                )
+            time.sleep(0.35)
+        return False
+
+    def select_lowest_trophy_brawler(self):
+        wr = self.window_controller.width_ratio or 1.0
+        hr = self.window_controller.height_ratio or 1.0
+
+        def tap(x, y, wait=0.6):
+            self.window_controller.click(int(x * wr), int(y * hr))
+            time.sleep(wait)
+
+        print("Selecting next brawler by sorting lowest trophies.")
+        tap(128, 500, 1.4)   # Brawlers button in lobby.
+        tap(1210, 45, 0.6)   # Sort dropdown.
+        tap(1210, 426, 1.0)  # Least Trophies.
+        tap(422, 359, 1.0)   # First brawler card after sorting.
+        tap(260, 991, 1.0)   # Select.
+        if self.ensure_lobby_after_selection():
+            return True
+
+        print("Lowest-trophy brawler selection did not return to lobby; trying one recovery pass.")
+        self.press_back()
+        time.sleep(0.8)
+        tap(260, 991, 1.0)
+        return self.ensure_lobby_after_selection()
+
     @staticmethod
     def resolve_ocr_typos(potential_brawler_name: str) -> str:
         """
