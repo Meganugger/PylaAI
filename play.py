@@ -892,6 +892,8 @@ class Play(Movement):
         self.super_cooldown = float(bot_config.get("super_cooldown", 1.0))
         self.last_super_time = 0.0
         self.ability_ready_memory_seconds = float(bot_config.get("ability_ready_memory_seconds", 0.75))
+        self._gadget_ready_seen_at = 0.0
+        self._hypercharge_ready_seen_at = 0.0
         self._super_ready_seen_at = 0.0
         self.time_since_holding_attack = None
         self.seconds_to_hold_attack_after_reaching_max = float(
@@ -2625,13 +2627,15 @@ class Play(Movement):
 
         if enemy_distance <= attack_range:
             if self.should_use_gadget == True and self.is_gadget_ready:
-                self.use_gadget()
-                self.time_since_gadget_checked = time.time()
-                self.is_gadget_ready = False
+                if self.use_gadget():
+                    self.time_since_gadget_checked = time.time()
+                    self.is_gadget_ready = False
+                    self._gadget_ready_seen_at = 0.0
             if self.is_hypercharge_ready and self.is_super_ready:
-                self.use_hypercharge()
-                self.time_since_hypercharge_checked = time.time()
-                self.is_hypercharge_ready = False
+                if self.use_hypercharge():
+                    self.time_since_hypercharge_checked = time.time()
+                    self.is_hypercharge_ready = False
+                    self._hypercharge_ready_seen_at = 0.0
         if can_attack_now and (self.target_info["hittable"] or close_range_contact or style.get("fires_over_walls", False)):
             # Throwers can fire at unhittable targets (over walls).
             # Strict-hittable brawlers (snipers) must NOT fire when blocked.
@@ -2856,13 +2860,27 @@ class Play(Movement):
             hud_hsv, hud_origin = self.get_hud_hsv(frame)
 
         if self._allow_skill_inputs and should_check_hypercharge:
-            self.is_hypercharge_ready = self.check_if_hypercharge_ready(hud_hsv, hud_origin)
+            detected_hypercharge = self.check_if_hypercharge_ready(hud_hsv, hud_origin)
+            if detected_hypercharge:
+                self._hypercharge_ready_seen_at = current_time
+                self.is_hypercharge_ready = True
+            elif current_time - self._hypercharge_ready_seen_at > self.ability_ready_memory_seconds:
+                self.is_hypercharge_ready = False
             self.time_since_hypercharge_checked = current_time
+        elif self._hypercharge_ready_seen_at and current_time - self._hypercharge_ready_seen_at <= self.ability_ready_memory_seconds:
+            self.is_hypercharge_ready = True
         else:
             self.is_hypercharge_ready = False
         if self._allow_skill_inputs and should_check_gadget:
-            self.is_gadget_ready = self.check_if_gadget_ready(hud_hsv, hud_origin)
+            detected_gadget = self.check_if_gadget_ready(hud_hsv, hud_origin)
+            if detected_gadget:
+                self._gadget_ready_seen_at = current_time
+                self.is_gadget_ready = True
+            elif current_time - self._gadget_ready_seen_at > self.ability_ready_memory_seconds:
+                self.is_gadget_ready = False
             self.time_since_gadget_checked = current_time
+        elif self._gadget_ready_seen_at and current_time - self._gadget_ready_seen_at <= self.ability_ready_memory_seconds:
+            self.is_gadget_ready = True
         else:
             self.is_gadget_ready = False
         if self._allow_skill_inputs and should_check_super:

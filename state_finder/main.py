@@ -319,8 +319,6 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "shop"
     if is_in_offer_popup(image):
         return "popup"
-    if is_in_lobby(image):
-        return "lobby"
     if is_in_brawler_selection(image):
         return "brawler_selection"
     if is_in_brawl_pass(image) or is_in_star_road(image):
@@ -333,6 +331,8 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "player_title_reward"
     if is_in_reward_claim(image, allow_ocr=allow_reward_ocr):
         return "reward_claim"
+    if is_in_lobby(image):
+        return "lobby"
     return "match"
 
 
