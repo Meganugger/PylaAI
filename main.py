@@ -102,7 +102,19 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             main_module = sys.modules.get('__main__')
             if main_module:
                 main_module._active_stage_manager = self.Stage_manager
-            self.states_requiring_data = ["lobby", "popup", "end", "reward_claim"]
+            self._reward_context_states = {
+                "reward_claim",
+                "trophy_reward",
+                "player_title_reward",
+                "prestige_reward",
+                "star_drop",
+            }
+            self.states_requiring_data = [
+                "lobby",
+                "popup",
+                "end",
+                *sorted(self._reward_context_states),
+            ]
             active_entry = data[0] if data else {}
             startup_brawler = str(active_entry.get('brawler', '') or '').strip().lower()
             self._startup_brawler_target = startup_brawler
@@ -116,9 +128,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager.Trophy_observer.start_session_brawler(
                 data[0]['brawler'], data[0].get('trophies', 0))
             self._easyocr_warmup_started = False
+            self._ensure_easyocr_warmup()
             if self._pending_initial_brawler_select:
-                self._start_easyocr_warmup()
-                self._easyocr_warmup_started = True
                 self.Stage_manager._delay_lobby_start(2.0, "waiting for initial brawler auto-select")
             self.state = None
             try:
@@ -178,6 +189,36 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
 
             threading.Thread(target=warm, name="easyocr-warmup", daemon=True).start()
 
+        def _ensure_easyocr_warmup(self):
+            if self._easyocr_warmup_started:
+                return
+            self._start_easyocr_warmup()
+            self._easyocr_warmup_started = True
+
+        def _post_match_context_active(self, now=None, runtime_state=None):
+            if now is None:
+                now = time.time()
+            if runtime_state is None:
+                runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+            if runtime_state.startswith("end") or runtime_state in self._reward_context_states:
+                return True
+            pending = getattr(self.Stage_manager, "is_post_match_resolution_pending", None)
+            if callable(pending):
+                return bool(pending(now))
+            return bool(
+                getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(self.Stage_manager, "_match_in_progress", False)
+            )
+
+        def _normalize_post_match_state(self, state, runtime_state, now):
+            if (
+                state == "match"
+                and getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(self.Stage_manager, "_match_in_progress", False)
+            ):
+                return runtime_state if str(runtime_state).startswith("end") else "end"
+            return state
+
         def _run_initial_brawler_select(self):
             if not self._pending_initial_brawler_select:
                 return True
@@ -187,9 +228,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self._pending_initial_brawler_select = False
                 return True
 
-            if not self._easyocr_warmup_started:
-                self._start_easyocr_warmup()
-                self._easyocr_warmup_started = True
+            self._ensure_easyocr_warmup()
 
             print(f"[STARTUP] Selecting brawler '{target_brawler}' before first match")
             try:
@@ -354,8 +393,32 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
         def manage_time_tasks(self, frame):
             now = time.time()
             self._skip_play_cycle = False
+            runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+            post_match_context = self._post_match_context_active(now, runtime_state)
+            if post_match_context and not reader.is_ready():
+                self._ensure_easyocr_warmup()
+            if post_match_context and now - self._last_fast_result_probe >= 0.35:
+                self._last_fast_result_probe = now
+                reward_ocr_ready = reader.is_ready()
+                fast_state = get_state(frame, allow_reward_ocr=reward_ocr_ready)
+                fast_state = self._normalize_post_match_state(fast_state, runtime_state, now)
+                if fast_state != "match" or (
+                    getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                    and not getattr(self.Stage_manager, "_match_in_progress", False)
+                ):
+                    self.state = fast_state
+                    self.Play._runtime_state = fast_state
+                    if fast_state != "match":
+                        self.Play.time_since_last_proceeding = now
+                    frame_data = frame if (
+                        fast_state in self.states_requiring_data
+                        or str(fast_state).startswith("end")
+                    ) else None
+                    self.Stage_manager.do_state(fast_state, frame_data)
+                    self._skip_play_cycle = True
+                    return
             if (
-                str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+                runtime_state == "match"
                 and now - self._last_fast_result_probe >= 0.6
             ):
                 self._last_fast_result_probe = now
@@ -366,27 +429,29 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     self.state = end_state
                     self.Play._runtime_state = end_state
                     self.Stage_manager.do_state(end_state, frame)
+                    self._skip_play_cycle = True
                     return
 
             if self.Time_management.state_check():
-                runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
                 try:
                     reward_ocr_ready = self.Stage_manager._is_easyocr_ready()
                 except Exception:
                     reward_ocr_ready = bool(reader.is_ready())
                 allow_reward_ocr = (
                     reward_ocr_ready
-                    and (
-                        runtime_state.startswith("end_")
-                        or runtime_state == "reward_claim"
-                    )
+                    and self._post_match_context_active(now, runtime_state)
                 )
                 state = get_state(frame, allow_reward_ocr=allow_reward_ocr)
+                state = self._normalize_post_match_state(state, runtime_state, now)
                 if self.Stage_manager._awaiting_lobby_result_sync and state in {"lobby", "match"}:
                     try:
                         screenshot = self.window_controller.screenshot()
-                        confirmed_state = get_state(screenshot, allow_reward_ocr=allow_reward_ocr)
+                        confirmed_state = get_state(screenshot, allow_reward_ocr=reward_ocr_ready)
+                        confirmed_state = self._normalize_post_match_state(confirmed_state, runtime_state, time.time())
                         if isinstance(confirmed_state, str) and confirmed_state.startswith("end_"):
+                            state = confirmed_state
+                            frame = screenshot
+                        elif confirmed_state in self._reward_context_states or confirmed_state == "end":
                             state = confirmed_state
                             frame = screenshot
                         elif confirmed_state == "lobby":
@@ -436,6 +501,14 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         return
                 frame_data = frame if (state in self.states_requiring_data or str(state).startswith("end_")) else None
                 self.Stage_manager.do_state(state, frame_data)
+                if (
+                    state != "match"
+                    or (
+                        getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                        and not getattr(self.Stage_manager, "_match_in_progress", False)
+                    )
+                ):
+                    self._skip_play_cycle = True
 
             if self.state == "match" and self.Time_management.no_detections_check():
                 frame_data = self.Play.time_since_detections
@@ -517,12 +590,42 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     time.sleep(1)
                     continue
 
+                if (
+                    self.state == "match"
+                    and hasattr(self.window_controller, "is_connection_healthy")
+                    and not self.window_controller.is_connection_healthy()
+                ):
+                    self.Play.window_controller.keys_up(list("wasd"))
+                    print("Frozen scrcpy feed detected -- restarting feed before issuing inputs")
+                    try:
+                        self.window_controller.restart_scrcpy_client()
+                    except Exception:
+                        self.restart_brawl_stars()
+                    self.last_processed_frame_time = 0.0
+                    time.sleep(1)
+                    continue
+
                 self.last_processed_frame_time = frame_time
                 frame = FrameData(frame_bgr[:, :, ::-1].copy())
 
                 try:
                     self.manage_time_tasks(frame)
                     if self._skip_play_cycle:
+                        c += 1
+                        continue
+
+                    runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
+                    post_match_pending = (
+                        getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                        and not getattr(self.Stage_manager, "_match_in_progress", False)
+                    )
+                    if (
+                        self.state != "match"
+                        or runtime_state.startswith("end")
+                        or runtime_state in self._reward_context_states
+                        or post_match_pending
+                    ):
+                        self.window_controller.keys_up(list("wasd"))
                         c += 1
                         continue
 

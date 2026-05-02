@@ -284,6 +284,9 @@ class StageManager:
         self._reset_lobby_result_sync_state()
         return result_ready
 
+    def is_post_match_resolution_pending(self, now=None):
+        return bool(self._awaiting_lobby_result_sync and not self._match_in_progress)
+
     def _select_brawler_or_delay(self, brawler_name, reason="brawler auto-select", prefix="[SELECT]"):
         brawler_name = str(brawler_name or "").strip().lower()
         if not brawler_name:
@@ -364,6 +367,19 @@ class StageManager:
             return False
 
         if self._last_start_press_at and (now - self._last_start_press_at) < self._lobby_start_retry_delay:
+            return False
+
+        try:
+            probe = self.window_controller.screenshot()
+            verified_state = get_state(probe, allow_reward_ocr=self._is_easyocr_ready())
+        except Exception:
+            verified_state = "lobby"
+        if verified_state != "lobby":
+            self._delay_lobby_start(1.0, f"waiting for confirmed lobby ({verified_state})")
+            if verified_state == "brawler_selection":
+                self._recover_from_brawler_selection()
+            elif debug:
+                print(f"[START] skipped Q press because lobby recheck saw {verified_state}")
             return False
 
         self.window_controller.keys_up(list("wasd"))
@@ -1024,6 +1040,7 @@ class StageManager:
                     allow_ocr=ocr_ready,
                     api_timeout=3.0,
                 )
+                elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else elapsed
 
             if synced:
                 self._restart_lobby_settle_window()
@@ -1887,6 +1904,8 @@ class StageManager:
         known_result = None
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]
+            state = "end"
+        if state == "match" and self._awaiting_lobby_result_sync and not self._match_in_progress:
             state = "end"
         if state == "brawler_selection":
             recent_start_press = self._last_start_press_at and (time.time() - self._last_start_press_at) <= 4.0
