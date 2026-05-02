@@ -3,7 +3,13 @@ from __future__ import annotations
 from copy import deepcopy
 from pathlib import Path
 import json
-import tomllib
+
+try:
+    import tomllib
+    _USE_STDLIB_TOML = True
+except ModuleNotFoundError:
+    import toml as tomllib
+    _USE_STDLIB_TOML = False
 
 try:
     import toml
@@ -67,7 +73,10 @@ def _read_toml(path: str) -> dict:
     file_path = Path(path)
     if not file_path.exists():
         return {}
-    with file_path.open("rb") as handle:
+    if _USE_STDLIB_TOML:
+        with file_path.open("rb") as handle:
+            return dict(tomllib.load(handle))
+    with file_path.open("r", encoding="utf-8") as handle:
         return dict(tomllib.load(handle))
 
 

@@ -1,9 +1,15 @@
 import tempfile
-import tomllib
 import unittest
 from pathlib import Path
 
 from performance_profile import apply_performance_profile
+
+try:
+    import tomllib
+    _USE_STDLIB_TOML = True
+except ModuleNotFoundError:
+    import toml as tomllib
+    _USE_STDLIB_TOML = False
 
 
 def workspace_tempdir():
@@ -13,7 +19,10 @@ def workspace_tempdir():
 
 
 def read_toml(path):
-    with Path(path).open("rb") as handle:
+    if _USE_STDLIB_TOML:
+        with Path(path).open("rb") as handle:
+            return tomllib.load(handle)
+    with Path(path).open("r", encoding="utf-8") as handle:
         return tomllib.load(handle)
 
 
