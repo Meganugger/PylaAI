@@ -180,7 +180,13 @@ class StageManager:
         if not self._end_transition_started_at or result != self._end_transition_last_result:
             self._end_transition_started_at = now
         self._end_transition_last_result = result
-        self._end_transition_hold_match_until = max(self._end_transition_hold_match_until, now + 4.0)
+        # Some post-match reward/proceed screens fall through to "match" while
+        # EasyOCR or API sync is still catching up. Keep the result context for
+        # the full transition window so gameplay never starts on those screens.
+        self._end_transition_hold_match_until = max(
+            self._end_transition_hold_match_until,
+            now + self._end_transition_timeout,
+        )
 
     def _clear_end_transition(self):
         self._end_transition_started_at = 0.0
@@ -239,6 +245,14 @@ class StageManager:
             and now < self._end_transition_hold_match_until
         )
 
+    def is_post_match_resolution_pending(self, now=None):
+        if now is None:
+            now = time.time()
+        return (
+            (self._awaiting_lobby_result_sync and not self._match_in_progress)
+            or self.has_recent_end_transition(now)
+        )
+
     def _recover_from_brawler_selection(self):
         now = time.time()
         if now - self._last_brawler_menu_recovery_at < 0.9:
@@ -283,6 +297,19 @@ class StageManager:
             return False
 
         if self._last_start_press_at and (now - self._last_start_press_at) < self._lobby_start_retry_delay:
+            return False
+
+        try:
+            probe = self.window_controller.screenshot()
+            verified_state = get_state(probe)
+        except Exception:
+            verified_state = "lobby"
+        if verified_state != "lobby":
+            self._delay_lobby_start(1.0, f"waiting for confirmed lobby ({verified_state})")
+            if verified_state == "brawler_selection":
+                self._recover_from_brawler_selection()
+            elif debug:
+                print(f"[START] skipped Q press because lobby recheck saw {verified_state}")
             return False
 
         self.window_controller.keys_up(list("wasd"))
@@ -716,6 +743,7 @@ class StageManager:
                     allow_ocr=ocr_ready,
                     api_timeout=3.0,
                 )
+                elapsed = time.time() - self._lobby_sync_started_at if self._lobby_sync_started_at else elapsed
 
             if synced:
                 self._restart_lobby_settle_window()
@@ -1071,7 +1099,10 @@ class StageManager:
         now = time.time()
         if state == "lobby":
             self._clear_end_transition()
-        elif state == "match" and self.should_hold_match_probe(now):
+        elif state == "match" and (
+            self.should_hold_match_probe(now)
+            or (self._awaiting_lobby_result_sync and not self._match_in_progress)
+        ):
             state = "end"
             known_result = self._end_transition_last_result or known_result
         elif not self._is_endish_state(state):
