@@ -704,7 +704,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     print("Frozen scrcpy feed detected -- restarting feed before issuing inputs")
                     try:
                         self.window_controller.restart_scrcpy_client()
-                    except Exception:
+                    except Exception as exc:
+                        print(f"Could not restart scrcpy after frozen frame detection: {exc}")
                         self.window_controller.ensure_brawl_stars_running(force=True)
                     self.last_processed_frame_time = 0.0
                     time.sleep(1)

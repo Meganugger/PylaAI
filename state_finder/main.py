@@ -323,8 +323,9 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "brawler_selection"
     if is_in_brawl_pass(image) or is_in_star_road(image):
         return "shop"
-    if is_in_star_drop(image):
-        return "star_drop"
+    # Star drops are dismissed by the normal post-match continue flow. Surfacing
+    # them as a runtime state caused false positives during matches and lobby
+    # transitions.
     if is_in_trophy_reward(image):
         return "trophy_reward"
     if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
@@ -407,7 +408,43 @@ def is_in_player_title_reward(image, allow_ocr=False) -> bool:
 
 
 def is_in_lobby(image) -> bool:
-    return is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"])
+    return (
+        is_template_in_region(image, path + 'lobby_menu.png', region_data["lobby_menu"])
+        or is_lobby_play_button_visible(image)
+    )
+
+
+def is_lobby_play_button_visible(image) -> bool:
+    current_height, current_width = image.shape[:2]
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+
+    region = [1260, 820, 610, 225]
+    x = int(region[0] * width_ratio)
+    y = int(region[1] * height_ratio)
+    w = int(region[2] * width_ratio)
+    h = int(region[3] * height_ratio)
+    crop = image[y:y + h, x:x + w]
+    if crop.size == 0:
+        return False
+
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    yellow_mask = cv2.inRange(
+        hsv,
+        np.array((15, 90, 120), dtype=np.uint8),
+        np.array((42, 255, 255), dtype=np.uint8),
+    )
+    yellow_pixels = cv2.countNonZero(yellow_mask)
+    yellow_ratio = yellow_pixels / max(1, crop.shape[0] * crop.shape[1])
+    if yellow_ratio < 0.28:
+        return False
+
+    contours, _ = cv2.findContours(yellow_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return False
+    largest = max(contours, key=cv2.contourArea)
+    bx, by, bw, bh = cv2.boundingRect(largest)
+    return bw > w * 0.45 and bh > h * 0.35
 
 
 def is_in_end_of_a_match(image):
