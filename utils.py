@@ -28,6 +28,10 @@ import onnxruntime as ort
 
 configure_opencv_threads(cv2)
 
+DEVELOPER_API_BASE_URL = "https://developer.brawlstars.com/api/"
+_brawl_stars_api_refresh_done = False
+_brawl_stars_api_refresh_signature = None
+
 def to_bgr_array(image):
     if isinstance(image, Image.Image):
         return cv2.cvtColor(np.asarray(image), cv2.COLOR_RGB2BGR)
@@ -351,6 +355,236 @@ def find_template_center(main_img, template, threshold=0.8):
 def save_dict_as_toml(data, file_path):
     with open(file_path, 'w') as f:
         toml.dump(data, f)
+
+
+def _config_bool(value, default=False):
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _extract_api_token(value):
+    if isinstance(value, dict):
+        return str(value.get("key") or value.get("token") or "").strip()
+    return str(value or "").strip()
+
+
+def _developer_api_post(session, endpoint, payload, timeout):
+    response = session.post(
+        DEVELOPER_API_BASE_URL + endpoint,
+        json=payload,
+        timeout=timeout,
+        headers={
+            "Accept": "application/json, text/plain, */*",
+            "Origin": "https://developer.brawlstars.com",
+            "Referer": "https://developer.brawlstars.com/",
+        },
+    )
+    if response.status_code == 200:
+        try:
+            return response.json()
+        except ValueError:
+            return {}
+    try:
+        error_payload = response.json()
+        reason = error_payload.get("description") or error_payload.get("message") or response.text
+    except ValueError:
+        reason = response.text
+    raise RuntimeError(f"Developer portal error {response.status_code} at {endpoint}: {reason}")
+
+
+def get_public_ip(service_url="https://api.ipify.org"):
+    response = requests.get(service_url, timeout=15)
+    response.raise_for_status()
+    ip_address = response.text.strip()
+    if not re.match(r"^\d{1,3}(\.\d{1,3}){3}$", ip_address):
+        raise RuntimeError(f"Public IP service returned an invalid IPv4 address: {ip_address}")
+    return ip_address
+
+
+def get_config_player_tag(config):
+    tag = str(config.get("player_tag", "") or "").strip()
+    if tag and tag.upper() != "#YOURTAG":
+        return tag
+    general_config = load_toml_as_dict("cfg/general_config.toml")
+    general_tag = str(general_config.get("brawlstars_player_tag", "") or "").strip()
+    if general_tag and general_tag.upper() != "#YOURTAG":
+        return general_tag
+    legacy_tag = str(general_config.get("player_tag", "") or "").strip()
+    if legacy_tag and legacy_tag.upper() != "#YOURTAG":
+        return legacy_tag
+    return tag
+
+
+def _general_brawlstars_api_config():
+    general_config = load_toml_as_dict("cfg/general_config.toml")
+    return {
+        "api_token": str(general_config.get("brawlstars_api_key", "") or "").strip(),
+        "player_tag": get_config_player_tag({}),
+        "timeout_seconds": 15,
+        "auto_refresh_token": "no",
+    }
+
+
+def refresh_brawl_stars_api_token_if_enabled(config, file_path="cfg/brawl_stars_api.toml", force=False):
+    global _brawl_stars_api_refresh_done, _brawl_stars_api_refresh_signature
+
+    if not _config_bool(config.get("auto_refresh_token"), False):
+        return config
+
+    email = str(config.get("developer_email", "") or "").strip()
+    password = str(config.get("developer_password", "") or "").strip()
+    player_tag = str(config.get("player_tag", "") or "").strip()
+    existing_token = _extract_api_token(config.get("api_token", ""))
+    refresh_signature = (str(file_path), email, password, player_tag)
+
+    if (
+        not force
+        and _brawl_stars_api_refresh_done
+        and _brawl_stars_api_refresh_signature == refresh_signature
+        and existing_token
+    ):
+        return config
+
+    if not email or not password:
+        _brawl_stars_api_refresh_done = False
+        _brawl_stars_api_refresh_signature = None
+        print(
+            "Brawl Stars API auto-refresh is enabled but developer_email/developer_password "
+            "are missing in cfg/brawl_stars_api.toml; using the saved API token if present."
+        )
+        return config
+
+    timeout = int(config.get("timeout_seconds", 15) or 15)
+    key_name_prefix = str(config.get("key_name_prefix", "PylaAI Auto") or "PylaAI Auto").strip()
+    delete_old_auto_tokens = _config_bool(config.get("delete_old_auto_tokens"), True)
+    delete_all_tokens = _config_bool(config.get("delete_all_tokens"), False)
+    public_ip_service = str(config.get("public_ip_service", "https://api.ipify.org") or "").strip()
+
+    session = requests.Session()
+    public_ip = get_public_ip(public_ip_service or "https://api.ipify.org")
+    _developer_api_post(session, "login", {"email": email, "password": password}, timeout)
+    account = _developer_api_post(session, "account/load", {}, timeout)
+    developer = account.get("developer", {})
+    scopes = developer.get("allowedScopes") or ["brawlstars"]
+
+    existing_keys = _developer_api_post(session, "apikey/list", {}, timeout).get("keys", [])
+    if delete_all_tokens or delete_old_auto_tokens:
+        for api_key in existing_keys:
+            key_name = str(api_key.get("name", ""))
+            if delete_all_tokens or key_name.startswith(key_name_prefix):
+                key_id = api_key.get("id")
+                if key_id:
+                    _developer_api_post(session, "apikey/revoke", {"id": key_id}, timeout)
+
+    key_name = f"{key_name_prefix} {time.strftime('%Y-%m-%d %H:%M:%S')}"
+    description = str(config.get("key_description", "Auto-generated by PylaAI for the current public IP."))
+    created = _developer_api_post(
+        session,
+        "apikey/create",
+        {
+            "name": key_name,
+            "description": description,
+            "cidrRanges": [public_ip],
+            "scopes": scopes,
+        },
+        timeout,
+    )
+
+    new_token = _extract_api_token(created.get("key") or created.get("token"))
+    if not new_token:
+        refreshed_keys = _developer_api_post(session, "apikey/list", {}, timeout).get("keys", [])
+        matching_keys = [api_key for api_key in refreshed_keys if api_key.get("name") == key_name]
+        if matching_keys:
+            new_token = _extract_api_token(matching_keys[0].get("key") or matching_keys[0].get("token"))
+    if not new_token:
+        raise RuntimeError("Created a Brawl Stars developer key, but could not read the returned API token.")
+
+    config["api_token"] = new_token
+    config["player_tag"] = player_tag
+    config["last_public_ip"] = public_ip
+    save_dict_as_toml(config, file_path)
+    _brawl_stars_api_refresh_done = True
+    _brawl_stars_api_refresh_signature = refresh_signature
+    print(f"Refreshed Brawl Stars API token for public IP {public_ip}.")
+    return config
+
+
+def load_brawl_stars_api_config(file_path="cfg/brawl_stars_api.toml", force_refresh=False):
+    fallback = _general_brawlstars_api_config()
+    resolved_file_path = globals().get("resolve_runtime_path", lambda value: value)(file_path)
+    if not os.path.exists(resolved_file_path):
+        return fallback
+
+    try:
+        config = dict(load_toml_as_dict(file_path) or {})
+    except toml.TomlDecodeError:
+        with open(resolved_file_path, "r", encoding="utf-8-sig") as f:
+            text = f.read()
+        config = {}
+        token_match = re.search(r'api_token\s*=\s*"(.*?)"', text, re.DOTALL)
+        if token_match:
+            config["api_token"] = "".join(token_match.group(1).split())
+        tag_match = re.search(r'player_tag\s*=\s*"([^"]*)"', text)
+        if tag_match:
+            config["player_tag"] = tag_match.group(1).strip()
+        timeout_match = re.search(r"timeout_seconds\s*=\s*(\d+)", text)
+        if timeout_match:
+            config["timeout_seconds"] = int(timeout_match.group(1))
+        auto_refresh_match = re.search(r"auto_refresh_token\s*=\s*(true|false|\"yes\"|\"no\")", text, re.IGNORECASE)
+        if auto_refresh_match:
+            config["auto_refresh_token"] = auto_refresh_match.group(1).strip('"').lower()
+        for key in (
+            "developer_email",
+            "developer_password",
+            "public_ip_service",
+            "key_name_prefix",
+            "key_description",
+            "last_public_ip",
+        ):
+            match = re.search(rf'{key}\s*=\s*"([^"]*)"', text)
+            if match:
+                config[key] = match.group(1)
+
+    config["api_token"] = _extract_api_token(config.get("api_token")) or fallback.get("api_token", "")
+    config["player_tag"] = get_config_player_tag(config)
+    config["timeout_seconds"] = int(config.get("timeout_seconds") or fallback.get("timeout_seconds", 15) or 15)
+
+    try:
+        return refresh_brawl_stars_api_token_if_enabled(config, file_path, force=force_refresh)
+    except Exception as exc:
+        print(f"Brawl Stars API token refresh failed; using saved token if available. {exc}")
+        return config
+
+
+def fetch_brawl_stars_player(api_token, player_tag, timeout=15):
+    api_token = _extract_api_token(api_token)
+    cleaned_tag = str(player_tag or "").strip().upper()
+    if not api_token:
+        raise ValueError("Missing Brawl Stars API token.")
+    if not cleaned_tag or cleaned_tag == "#YOURTAG":
+        raise ValueError("Missing Brawl Stars player tag.")
+    if not cleaned_tag.startswith("#"):
+        cleaned_tag = f"#{cleaned_tag}"
+
+    encoded_tag = cleaned_tag.replace("#", "%23")
+    response = requests.get(
+        f"https://api.brawlstars.com/v1/players/{encoded_tag}",
+        headers={"Authorization": f"Bearer {api_token}"},
+        timeout=timeout,
+    )
+    if response.status_code == 200:
+        return response.json()
+    try:
+        error_payload = response.json()
+        reason = error_payload.get("reason") or error_payload.get("message") or response.text
+    except ValueError:
+        reason = response.text
+    if response.status_code == 403:
+        raise RuntimeError("Brawl Stars API accessDenied. The token is not valid for the current public IP.")
+    raise RuntimeError(f"Brawl Stars API error {response.status_code}: {reason}")
 
 
 def update_toml_file(path, new_data):

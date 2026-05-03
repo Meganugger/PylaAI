@@ -520,6 +520,86 @@ class Movement:
         self.window_controller.press_key("E")
         return True
 
+    def clear_ability_ready(self, ability_name):
+        setattr(self, f"_{ability_name}_ready_seen_at", 0.0)
+        setattr(self, f"is_{ability_name}_ready", False)
+
+    def release_held_attack_for_super(self):
+        if self.time_since_holding_attack is None:
+            return
+        try:
+            self.window_controller.press_key("M", touch_up=True, touch_down=False)
+        except Exception as exc:
+            print(f"Could not release held attack before super: {exc}")
+        self.time_since_holding_attack = None
+
+    @staticmethod
+    def should_use_super_on_enemy(
+        brawler,
+        super_type,
+        enemy_distance,
+        attack_range,
+        super_range,
+        enemy_hittable,
+        close_range_contact=False,
+    ):
+        if enemy_distance is None:
+            return False
+        combat_range = max(float(super_range or 0), float(attack_range or 0))
+        near_range = max(180.0, min(combat_range, float(attack_range or 0) * 1.05))
+        if close_range_contact or enemy_distance <= min(260.0, near_range):
+            return True
+        if not enemy_hittable:
+            return False
+        if super_type == "damage" and enemy_distance <= max(float(super_range or 0), float(attack_range or 0) * 0.9):
+            return True
+        if super_type in {"spawnable", "other", "other_target"} and enemy_distance <= near_range:
+            return True
+        if (
+            super_type == "charge"
+            and enemy_distance <= max(float(super_range or 0), float(attack_range or 0) * 1.25)
+            and (enemy_hittable or brawler in {"stu", "surge"})
+        ):
+            return True
+        return False
+
+    def try_use_super_on_enemy(
+        self,
+        brawler,
+        brawler_info,
+        player_pos,
+        enemy_coords,
+        enemy_distance,
+        wall_context,
+        close_range_contact=False,
+    ):
+        if not self.is_super_ready or enemy_coords is None:
+            return False
+        super_type = brawler_info.get("super_type", "")
+        _, attack_range, super_range = self.get_brawler_range(brawler)
+        enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
+        if not self.should_use_super_on_enemy(
+            brawler,
+            super_type,
+            enemy_distance,
+            attack_range,
+            super_range,
+            enemy_hittable,
+            close_range_contact=close_range_contact,
+        ):
+            return False
+
+        self.release_held_attack_for_super()
+        if self.is_hypercharge_ready:
+            if self.use_hypercharge():
+                self.time_since_hypercharge_checked = time.time()
+                self.clear_ability_ready("hypercharge")
+        if self.use_super():
+            self.time_since_super_checked = time.time()
+            self.clear_ability_ready("super")
+            return True
+        return False
+
     @staticmethod
     def get_random_attack_key():
         random_movement = random.choice(["A", "W", "S", "D"])
@@ -2215,7 +2295,15 @@ class Play(Movement):
             high_hsv,
             origin=hsv_origin
         )
-        return yellow_pixels > self._scaled_pixel_threshold(self.super_pixels_minimum)
+        orange_pixels = self.count_hud_hsv_pixels(
+            hsv_frame,
+            scaled_regions["super"],
+            np.array((8, 120, 150), dtype=np.uint8),
+            np.array((38, 255, 255), dtype=np.uint8),
+            origin=hsv_origin
+        )
+        threshold = self._scaled_pixel_threshold(self.super_pixels_minimum)
+        return yellow_pixels > threshold or orange_pixels > threshold * 1.15
 
     def get_tile_data(self, frame):
         tile_data = self.Detect_tile_detector.detect_objects(frame, conf_tresh=self.wall_detection_confidence)
@@ -2646,25 +2734,15 @@ class Play(Movement):
                 if self._burst_mode and self.current_ammo <= 0:
                     self._burst_mode = False
                     self._last_burst_end_time = current_time
-        if self.is_super_ready:
-            super_type = brawler_info['super_type']
-            enemy_hittable = self.is_enemy_hittable(player_pos, enemy_coords, wall_context, "super")
-            utility_super = super_type in {"spawnable", "other", "other_target"}
-            charge_super = super_type == "charge"
-            should_super = (
-                enemy_hittable and enemy_distance <= super_range
-            ) or (
-                utility_super and enemy_distance <= max(super_range, attack_range)
-            ) or (
-                charge_super
-                and enemy_distance <= max(super_range + attack_range, attack_range * 1.25)
-                and (enemy_hittable or close_range_contact or brawler in {"stu", "surge"})
-            )
-
-            if should_super and self.use_super():
-                self.time_since_super_checked = time.time()
-                self.is_super_ready = False
-                self._super_ready_seen_at = 0.0
+        self.try_use_super_on_enemy(
+            brawler,
+            brawler_info,
+            player_pos,
+            enemy_coords,
+            enemy_distance,
+            wall_context,
+            close_range_contact=close_range_contact,
+        )
         return movement
 
     def main(self, frame, brawler):

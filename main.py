@@ -1,4 +1,5 @@
 import asyncio
+import gc
 import sys
 import threading
 import time
@@ -111,6 +112,17 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.last_visual_freeze_check = 0.0
             self.last_visual_change_time = time.time()
             self.last_visual_sample = None
+            self.match_ready_at = 0.0
+            self.low_ips_threshold = float(time_thresholds.get("low_ips_recovery_threshold", 4.0))
+            self.low_ips_startup_grace_seconds = float(time_thresholds.get("low_ips_startup_grace_seconds", 60))
+            self.low_ips_match_grace_seconds = float(time_thresholds.get("low_ips_match_grace_seconds", 12))
+            self.low_ips_recovery_seconds = float(time_thresholds.get("low_ips_recovery_seconds", 45))
+            self.low_ips_recovery_cooldown = float(time_thresholds.get("low_ips_recovery_cooldown", 35))
+            self.low_ips_app_restart_after = int(time_thresholds.get("low_ips_app_restart_after", 3))
+            self.low_ips_emulator_restart_after = int(time_thresholds.get("low_ips_emulator_restart_after", 6))
+            self.low_ips_since = None
+            self.last_low_ips_recovery = 0.0
+            self.low_ips_recovery_attempts = 0
             self._ensure_easyocr_warmup()
             self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
             self._last_dashboard_history_revision = int(
@@ -210,6 +222,78 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.restart_brawl_stars()
             self.reset_visual_freeze_watchdog()
             self.last_processed_frame_time = 0.0
+            return True
+
+        def reset_low_ips_watchdog(self, recovered=True):
+            self.low_ips_since = None
+            if recovered:
+                self.low_ips_recovery_attempts = 0
+
+        def recover_low_ips(self, current_ips):
+            if current_ips <= 0:
+                return False
+            if self.max_ips and self.max_ips <= self.low_ips_threshold:
+                return False
+
+            now = time.time()
+            if now - self.start_time < self.low_ips_startup_grace_seconds:
+                return False
+            if self.current_state == "match" and self.match_ready_at and now - self.match_ready_at < self.low_ips_match_grace_seconds:
+                return False
+            if current_ips >= self.low_ips_threshold:
+                if self.low_ips_since is not None:
+                    print(f"IPS recovered to {current_ips:.2f}; clearing low-IPS watchdog.")
+                self.reset_low_ips_watchdog(recovered=True)
+                return False
+
+            if self.low_ips_since is None:
+                self.low_ips_since = now
+                return False
+
+            low_for = now - self.low_ips_since
+            if low_for < self.low_ips_recovery_seconds:
+                return False
+            if now - self.last_low_ips_recovery < self.low_ips_recovery_cooldown:
+                return False
+
+            self.last_low_ips_recovery = now
+            self.low_ips_recovery_attempts += 1
+            self.window_controller.keys_up(list("wasd"))
+            print(
+                f"IPS stayed low ({current_ips:.2f}) for {low_for:.1f}s; "
+                f"recovery attempt {self.low_ips_recovery_attempts}."
+            )
+
+            if (
+                self.low_ips_recovery_attempts >= self.low_ips_emulator_restart_after
+                and hasattr(self.window_controller, "restart_emulator_profile")
+            ):
+                print("Low IPS persisted after app/scrcpy recoveries; restarting emulator profile.")
+                try:
+                    if self.window_controller.restart_emulator_profile():
+                        self.low_ips_recovery_attempts = 0
+                    else:
+                        self.restart_brawl_stars()
+                except Exception as exc:
+                    print(f"Emulator restart failed; restarting Brawl Stars instead. {exc}")
+                    self.restart_brawl_stars()
+            elif self.low_ips_recovery_attempts >= self.low_ips_app_restart_after:
+                print("Low IPS persisted; restarting Brawl Stars and scrcpy.")
+                self.restart_brawl_stars()
+                try:
+                    self.window_controller.restart_scrcpy_client()
+                except Exception:
+                    pass
+            else:
+                print("Low IPS detected; restarting scrcpy feed.")
+                try:
+                    self.window_controller.restart_scrcpy_client()
+                except Exception:
+                    self.window_controller.ensure_brawl_stars_running(force=True)
+
+            self.last_processed_frame_time = 0.0
+            self.low_ips_since = now
+            gc.collect()
             return True
 
         @staticmethod
@@ -388,10 +472,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                             frame = screenshot
                     except Exception:
                         pass
+                previous_state = self.current_state
                 self.current_state = state
                 self.Play._runtime_state = state
                 if state == "match":
-                    self.Stage_manager.mark_match_started()
+                    if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
+                        if self.Stage_manager.mark_match_started():
+                            self.match_ready_at = now
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                 frame_data = frame if (state in self.states_requiring_frame_data or str(state).startswith("end_")) else None
@@ -624,6 +711,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self.current_ips = c / elapsed
                         if debug:
                             print(f"{self.current_ips:.2f} IPS")
+                        if self.recover_low_ips(self.current_ips):
+                            s_time = ips_now
+                            c = 0
+                            continue
                     s_time = ips_now
                     c = 0
 
@@ -727,8 +818,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 play_started_at = time.perf_counter()
                 self.Play.main(frame, brawler)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
-                if getattr(self.Play, "_runtime_state", "") == "match":
-                    self.Stage_manager.mark_match_started()
                 pending_result = getattr(self.Play, "_pending_end_result", None)
                 if pending_result:
                     print(f"[RESULT] play.py queued pending result {pending_result}")
