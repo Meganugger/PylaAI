@@ -254,6 +254,41 @@ class QtBridge(QObject):
     def _slug_name(value):
         return re.sub(r"[^a-z0-9]", "", str(value or "").lower())
 
+    def _canonical_brawler_name(self, value, scan_data=None):
+        target = self._slug_name(value)
+        if not target:
+            return ""
+        sources = list(self._all_brawlers)
+        sources.extend(
+            entry.get("brawler", "") for entry in self.brawlers_data
+            if isinstance(entry, dict)
+        )
+        if isinstance(scan_data, dict):
+            sources.extend(scan_data.keys())
+        for name in sources:
+            if self._slug_name(name) == target:
+                return str(name).strip().lower()
+        return str(value or "").strip().lower()
+
+    def _scan_entry_for_brawler(self, brawler, scan_data=None):
+        data = scan_data if isinstance(scan_data, dict) else self._brawler_scan_data()
+        direct = data.get(brawler)
+        if isinstance(direct, dict):
+            return direct
+        target = self._slug_name(brawler)
+        for scan_name, scan_entry in data.items():
+            if self._slug_name(scan_name) == target and isinstance(scan_entry, dict):
+                return scan_entry
+        return {}
+
+    def _normalize_brawler_set(self, values, scan_data=None):
+        return {
+            canonical for canonical in (
+                self._canonical_brawler_name(value, scan_data=scan_data) for value in values
+            )
+            if canonical
+        }
+
     def _resolve_internal_brawler_name(self, external_name):
         target = self._slug_name(external_name)
         if not target:
@@ -349,11 +384,10 @@ class QtBridge(QObject):
             source.update(overrides)
         target = max(0, self._as_int(source.get("trophy_farm_target", 500), 500))
         strategy = self._normalize_farm_strategy(source.get("trophy_farm_strategy", "lowest_first"))
-        excluded = {
-            str(item or "").strip().lower()
-            for item in source.get("trophy_farm_excluded", [])
-            if str(item or "").strip()
-        }
+        excluded = self._normalize_brawler_set(
+            source.get("trophy_farm_excluded", []),
+            scan_data=self._brawler_scan_data(),
+        )
         return {
             "target": target,
             "strategy": strategy,
@@ -367,7 +401,7 @@ class QtBridge(QObject):
         excluded = farm_settings["excluded"]
         scan_data = self._brawler_scan_data()
         roster_lookup = {
-            str(entry.get("brawler", "")).strip().lower(): entry
+            self._canonical_brawler_name(entry.get("brawler", ""), scan_data=scan_data): entry
             for entry in self.brawlers_data
             if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
         }
@@ -375,14 +409,15 @@ class QtBridge(QObject):
         queue = []
 
         if scan_data:
-            source_brawlers = {
-                brawler for brawler in self._all_brawlers
-                if scan_data.get(brawler, {}).get("unlocked") is True
-            }
-            for brawler in roster_lookup:
-                scan_entry = scan_data.get(brawler, {})
-                if scan_entry.get("unlocked") is not False:
-                    source_brawlers.add(brawler)
+            source_brawlers = set()
+            for brawler in self._all_brawlers:
+                canonical = self._canonical_brawler_name(brawler, scan_data=scan_data)
+                if canonical and self._scan_entry_for_brawler(canonical, scan_data).get("unlocked") is True:
+                    source_brawlers.add(canonical)
+            for scan_name, scan_entry in scan_data.items():
+                canonical = self._canonical_brawler_name(scan_name, scan_data=scan_data)
+                if canonical and isinstance(scan_entry, dict) and scan_entry.get("unlocked") is True:
+                    source_brawlers.add(canonical)
         else:
             source_brawlers = set(roster_lookup)
 
@@ -390,10 +425,8 @@ class QtBridge(QObject):
             if brawler in excluded:
                 continue
 
-            scan_entry = scan_data.get(brawler, {})
-            if not isinstance(scan_entry, dict):
-                scan_entry = {}
-            if scan_entry and scan_entry.get("unlocked") is False:
+            scan_entry = self._scan_entry_for_brawler(brawler, scan_data)
+            if scan_data and scan_entry.get("unlocked") is not True:
                 continue
 
             selected_entry = roster_lookup.get(brawler, {})
@@ -655,14 +688,14 @@ class QtBridge(QObject):
         self.bot_config["trophy_farm_target"] = self._as_int(payload.get("trophy_farm_target", self.bot_config.get("trophy_farm_target", 500)), 500)
         excluded = payload.get("trophy_farm_excluded", self.bot_config.get("trophy_farm_excluded", []))
         if isinstance(excluded, list):
-            self.bot_config["trophy_farm_excluded"] = sorted({str(item).lower() for item in excluded if item})
+            self.bot_config["trophy_farm_excluded"] = sorted(self._normalize_brawler_set(excluded))
 
         if self.capabilities.get("quest_farm"):
             self.bot_config["quest_farm_enabled"] = "yes" if self._is_enabled(payload.get("quest_farm_enabled", self.bot_config.get("quest_farm_enabled", "no"))) else "no"
             self.bot_config["quest_farm_mode"] = str(payload.get("quest_farm_mode", self.bot_config.get("quest_farm_mode", "games")))
             quest_excluded = payload.get("quest_farm_excluded", self.bot_config.get("quest_farm_excluded", []))
             if isinstance(quest_excluded, list):
-                self.bot_config["quest_farm_excluded"] = sorted({str(item).lower() for item in quest_excluded if item})
+                self.bot_config["quest_farm_excluded"] = sorted(self._normalize_brawler_set(quest_excluded))
 
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
         self._emit_state()
