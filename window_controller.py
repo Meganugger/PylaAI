@@ -205,7 +205,7 @@ class WindowController:
             self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
             self._last_frame_hash = None
             self._consecutive_identical_frames = 0
-            self._frozen_frame_threshold = 5  # trigger restart after this many identical frames
+            self._frozen_frame_threshold = 300
             self._last_healthy_frame_time = 0.0
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
@@ -221,6 +221,7 @@ class WindowController:
             self.scrcpy_bitrate = int(general_config.get("scrcpy_bitrate", 3000000))
             if self.scrcpy_bitrate <= 0:
                 self.scrcpy_bitrate = 3000000
+            self.capture_fallback_level = 0
             self.start_scrcpy_client()
             atexit.register(self.close)
             print("Scrcpy client started successfully.")
@@ -359,6 +360,33 @@ class WindowController:
 
         raise ConnectionError(f"Failed to start scrcpy after {retries} attempt(s): {last_error}")
 
+    def reduce_capture_load_for_slow_feed(self):
+        """Lower scrcpy capture cost after repeated low-IPS recoveries."""
+        previous = (self.scrcpy_max_width, self.scrcpy_max_fps, self.scrcpy_bitrate)
+        if self.capture_fallback_level == 0:
+            self.scrcpy_max_width = min(self.scrcpy_max_width or 960, 854)
+            self.scrcpy_max_fps = min(self.scrcpy_max_fps or 60, 30)
+            self.scrcpy_bitrate = min(self.scrcpy_bitrate or 3000000, 2000000)
+            self.capture_fallback_level = 1
+        elif self.capture_fallback_level == 1:
+            self.scrcpy_max_width = min(self.scrcpy_max_width or 854, 720)
+            self.scrcpy_max_fps = min(self.scrcpy_max_fps or 30, 30)
+            self.scrcpy_bitrate = min(self.scrcpy_bitrate or 2000000, 1500000)
+            self.capture_fallback_level = 2
+        else:
+            return False
+
+        current = (self.scrcpy_max_width, self.scrcpy_max_fps, self.scrcpy_bitrate)
+        if current == previous:
+            return False
+        print(
+            "Slow emulator feed fallback:",
+            f"scrcpy_max_width={self.scrcpy_max_width}",
+            f"scrcpy_max_fps={self.scrcpy_max_fps}",
+            f"scrcpy_bitrate={self.scrcpy_bitrate}",
+        )
+        return True
+
     def restart_scrcpy_client(self):
         print("Restarting scrcpy client...")
         old_client = self.scrcpy_client
@@ -483,8 +511,6 @@ class WindowController:
         frame_age = time.time() - self.last_frame_time if self.last_frame_time > 0 else float("inf")
         if frame_age > self.FRAME_STALE_TIMEOUT:
             return False
-        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
-            return False
         return True
 
     def screenshot(self, array=False):
@@ -498,19 +524,6 @@ class WindowController:
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
-
-        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
-            print(
-                f"WARNING: {self._consecutive_identical_frames} consecutive identical frames "
-                f"detected -- restarting scrcpy to recover"
-            )
-            try:
-                self.restart_scrcpy_client()
-                frame, frame_time = self.get_current_frame(copy_frame=True, timeout=10.0)
-                if frame is None:
-                    raise ConnectionError("No frame after frozen-frame scrcpy restart")
-            except Exception as exc:
-                print(f"Could not recover from frozen frames: {exc}")
 
         if array:
             return cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)

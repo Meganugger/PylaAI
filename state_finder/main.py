@@ -327,9 +327,9 @@ def get_in_game_state(image, allow_reward_ocr=False):
     # Star drops are dismissed by the normal post-match continue flow. Surfacing
     # them as a runtime state caused false positives during matches and lobby
     # transitions.
-    if is_in_trophy_reward(image):
+    if allow_reward_ocr and is_in_trophy_reward(image):
         return "trophy_reward"
-    if is_in_prestige_reward(image):
+    if allow_reward_ocr and is_in_prestige_reward(image):
         return "prestige_reward"
     if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
         return "player_title_reward"
