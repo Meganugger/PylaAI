@@ -672,10 +672,20 @@ class StageManager:
         return int(numbers)
 
     def mark_match_started(self):
+        now = time.time()
+        recent_start_press = bool(self._last_start_press_at and (now - self._last_start_press_at) <= 12.0)
         if self._awaiting_lobby_result_sync:
             if self._result_applied_for_active_match or self._pending_verified_result:
+                if not recent_start_press:
+                    if debug:
+                        print("[RESULT] ignoring match-start probe while post-match sync is still pending")
+                    return False
                 self._finish_pending_result_sync("new match started before lobby verification")
             else:
+                if not recent_start_press:
+                    if debug:
+                        print("[RESULT] ignoring match-start probe with unresolved lobby sync")
+                    return False
                 print("[RESULT] clearing unresolved lobby sync because a new match started")
                 self._reset_lobby_result_sync_state()
         if self._match_in_progress:
