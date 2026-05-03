@@ -185,6 +185,7 @@ class StageManager:
         self._awaiting_lobby_result_sync = False
         self._result_applied_for_active_match = False
         self._match_in_progress = False
+        self._last_match_started_at = 0.0
         self._lobby_sync_started_at = 0.0
         self._pending_verified_result = None
         self._api_lobby_sync_attempts = 0
@@ -232,6 +233,9 @@ class StageManager:
                 if delay_seconds > 0:
                     time.sleep(delay_seconds)
                 if self._match_in_progress or not self._awaiting_lobby_result_sync:
+                    self._lobby_ocr_warmup_started = False
+                    return
+                if self._last_match_started_at and (time.time() - self._last_match_started_at) < 20.0:
                     self._lobby_ocr_warmup_started = False
                     return
                 if self._last_start_press_at and (time.time() - self._last_start_press_at) < 1.0:
@@ -729,7 +733,7 @@ class StageManager:
         wr = self.window_controller.width_ratio or 1.0
         hr = self.window_controller.height_ratio or 1.0
         screenshot = self.window_controller.screenshot()
-        current_state = get_state(screenshot, allow_reward_ocr=True)
+        current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
         attempts = 0
         while current_state != "lobby" and attempts < 30:
             # Use back arrow instead of Q (Q maps to START MATCH button)
@@ -1134,6 +1138,7 @@ class StageManager:
             active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
             print(f"[RESULT] mark_match_started for {active_name}")
         self._match_in_progress = True
+        self._last_match_started_at = now
         self._awaiting_lobby_result_sync = True
         self._result_applied_for_active_match = False
         self._last_result_applied_at = 0.0
@@ -1763,14 +1768,14 @@ class StageManager:
                 self.states[current_state](screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
                 end_attempts += 1
                 continue
             if current_state == "star_drop":
                 self.click_star_drop()
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
                 end_attempts += 1
                 continue
             state_result = None
@@ -1994,7 +1999,7 @@ class StageManager:
                 self.states[current_state](screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
                 end_attempts += 1
                 continue
             if current_state == "star_drop":
@@ -2121,18 +2126,22 @@ class StageManager:
 
             if (
                 self.play_again_on_win
-                and self._result_applied_for_active_match
-                and self.Trophy_observer._last_game_result == "victory"
+                and (
+                    found_game_result == "victory"
+                    or state_result == "victory"
+                    or known_result == "victory"
+                    or self.Trophy_observer._last_game_result == "victory"
+                )
             ):
                 self.window_controller.press_play_again()
-                print("[PLAY-AGAIN] Pressed Play Again")
+                print("[PLAY-AGAIN] Pressed R for Play Again")
             else:
                 self.window_controller.press_key("Q")
                 if debug:
                     print("Game has ended, pressing Q")
             time.sleep(0.45)
             screenshot = self.window_controller.screenshot()
-            current_state = get_state(screenshot, allow_reward_ocr=True)
+            current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
             end_attempts += 1
 
         if end_attempts >= max_end_attempts:
@@ -2143,7 +2152,6 @@ class StageManager:
 
         if (
             self.play_again_on_win
-            and self._result_applied_for_active_match
             and self.Trophy_observer._last_game_result == "victory"
         ):
             print("[PLAY-AGAIN] Waiting for new match to start...")

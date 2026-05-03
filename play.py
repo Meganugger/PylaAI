@@ -2318,6 +2318,7 @@ class Play(Movement):
         self._last_no_player_log_time = 0.0
         self._last_end_result_probe_time = 0.0
         self._pending_end_result = None
+        self._last_missing_player_recovery_at = 0.0
 
         # --- Visual tracking overlay (transparent window over game) ---
         try:
@@ -2507,6 +2508,24 @@ class Play(Movement):
             pass
         return None
 
+    def _is_brawl_ball_mode(self):
+        return self.game_mode_name in ("brawlball", "brawl_ball", "brawl ball", "brawll ball")
+
+    def _recover_missing_player_in_match(self, current_time):
+        if current_time - self._last_missing_player_recovery_at < 0.65:
+            return True
+        self._last_missing_player_recovery_at = current_time
+        try:
+            primary = "w" if self.game_mode == 3 or self._is_brawl_ball_mode() else "d"
+            self.window_controller.keys_down([primary])
+            self.window_controller.keys_up([key for key in ["w", "a", "s", "d"] if key != primary])
+            if current_time - self.time_since_last_attack >= max(0.8, self.attack_cooldown):
+                self.attack()
+        except Exception as exc:
+            if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                print(f"[MATCH] missing-player recovery input failed: {exc}")
+        return True
+
     def no_enemy_movement(self, player_data, walls, playstyle="fighter", teammates=None):
         player_position = self.get_player_pos(player_data)
         style = PLAYSTYLE_CONFIG.get(playstyle, PLAYSTYLE_CONFIG["fighter"])
@@ -2627,6 +2646,23 @@ class Play(Movement):
                         self.last_decision_reason = f"ADVANCE TOGETHER: team grouped ({int(nearest_tm_dist)}px)"
                         return advance_move
 
+        if self._is_brawl_ball_mode():
+            center_x = brawl_stars_width * self.window_controller.width_ratio * 0.50
+            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.50
+            dx = center_x - player_position[0]
+            dy = center_y - player_position[1]
+            if math.hypot(dx, dy) > 120:
+                h_key = 'D' if dx > 30 else ('A' if dx < -30 else '')
+                v_key = 'S' if dy > 30 else ('W' if dy < -30 else '')
+                for move in [v_key + h_key, v_key, h_key]:
+                    if move and not self.is_path_blocked(player_position, move, walls):
+                        self.last_decision_reason = "BRAWL BALL: hold center lane"
+                        return move
+                pf_move = self._get_pathfinder_movement(player_position, (center_x, center_y))
+                if pf_move:
+                    self.last_decision_reason = "A* BRAWL BALL: center lane"
+                    return pf_move
+
         # --- HUNT LAST KNOWN ENEMY (only after confirming we're near teammates) ---
         # Skip hunting if: recently killed, OR enemy position is stale (>2s)
         recently_killed = (now - self._last_enemy_kill_time) < self._enemy_death_cooldown
@@ -2713,7 +2749,9 @@ class Play(Movement):
         width = brawl_stars_width * self.window_controller.width_ratio
         height = brawl_stars_height * self.window_controller.height_ratio
 
-        if self._spawn_side == 'left':
+        if self._is_brawl_ball_mode():
+            ratios = [(0.50, 0.50), (0.50, 0.38), (0.44, 0.44), (0.56, 0.44), (0.44, 0.56), (0.56, 0.56)]
+        elif self._spawn_side == 'left':
             ratios = [(0.58, 0.50), (0.70, 0.30), (0.70, 0.70), (0.85, 0.50), (0.55, 0.20), (0.55, 0.80)]
         elif self._spawn_side == 'right':
             ratios = [(0.42, 0.50), (0.30, 0.30), (0.30, 0.70), (0.15, 0.50), (0.45, 0.20), (0.45, 0.80)]
@@ -2776,6 +2814,20 @@ class Play(Movement):
     def _get_patrol_movement(self, player_pos, walls, playstyle):
         """Active enemy search: sweep-advance pattern toward enemy side."""
         now = time.time()
+
+        if self._is_brawl_ball_mode():
+            center_x = brawl_stars_width * self.window_controller.width_ratio * 0.50
+            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.50
+            dx = center_x - player_pos[0]
+            dy = center_y - player_pos[1]
+            if math.hypot(dx, dy) > 115:
+                h_key = 'D' if dx > 30 else ('A' if dx < -30 else '')
+                v_key = 'S' if dy > 30 else ('W' if dy < -30 else '')
+                for move in [v_key + h_key, v_key, h_key]:
+                    if move and not self.is_path_blocked(player_pos, move, walls):
+                        self.last_decision_reason = "BRAWL BALL SEARCH: center"
+                        return move
+            return 'W' if not self.is_path_blocked(player_pos, 'W', walls) else None
 
         # Determine primary advance direction based on game mode and spawn
         if self.game_mode == 3:  # Knockout
@@ -2891,6 +2943,17 @@ class Play(Movement):
         center_h = 'D' if dx > 50 else ('A' if dx < -50 else '')
         center_v = 'S' if dy > 50 else ('W' if dy < -50 else '')
         center_move = center_v + center_h
+
+        if self._is_brawl_ball_mode():
+            priority = []
+            if center_move:
+                priority.append(center_move)
+            priority.extend(['W', 'WA', 'WD'])
+            for move in priority:
+                if move and not self.is_path_blocked(player_pos, move, walls):
+                    self.last_decision_reason = "BRAWL BALL: center pressure"
+                    return move
+            return None
 
         if self._spawn_side == 'left':
             forward_moves = ['D', 'DW', 'DS']
@@ -5071,7 +5134,8 @@ class Play(Movement):
             # Release all movement keys immediately when player is not detected
             # (round ended, dead, or transition screen)
             time_since_player = current_time - self.time_since_player_last_found
-            if time_since_player > 0.5:
+            recovery_active = runtime_state == "match" and self._recover_missing_player_in_match(current_time)
+            if time_since_player > 0.5 and not recovery_active:
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
@@ -5111,7 +5175,7 @@ class Play(Movement):
                     if debug and (current_time - self._last_no_player_log_time >= 2.0):
                         print("haven't detected the player in a while proceeding")
                         self._last_no_player_log_time = current_time
-                    self.window_controller.press_key("Q")
+                    self._recover_missing_player_in_match(current_time)
                     self.time_since_last_proceeding = time.time()
             # Show debug overlay even when no player detected
             self._show_debug_overlay(frame, {}, "NO PLAYER", brawler,
