@@ -412,7 +412,19 @@ class QtBridge(QObject):
         history = self._match_history_map()
         queue = []
 
-        for brawler in self._all_brawlers:
+        if scan_data:
+            source_brawlers = {
+                brawler for brawler in self._all_brawlers
+                if scan_data.get(brawler, {}).get("unlocked") is True
+            }
+            for brawler in roster_lookup:
+                scan_entry = scan_data.get(brawler, {})
+                if scan_entry.get("unlocked") is not False:
+                    source_brawlers.add(brawler)
+        else:
+            source_brawlers = set(roster_lookup)
+
+        for brawler in sorted(source_brawlers):
             if brawler in excluded:
                 continue
 

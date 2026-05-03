@@ -37,9 +37,13 @@ class DummyTrophyObserver:
         self.current_trophies = trophies
         self.current_wins = 0
         self.win_streak = 0
+        self.begin_count = 0
 
     def change_trophies(self, value):
         self.current_trophies = value
+
+    def begin_match(self, _brawler):
+        self.begin_count += 1
 
 
 class OPPortedRecoveryTests(unittest.TestCase):
@@ -91,6 +95,39 @@ class OPPortedRecoveryTests(unittest.TestCase):
         self.assertTrue(manager.should_hold_match_probe(now=109.5))
         self.assertTrue(manager.should_hold_match_probe(now=111.5))
         self.assertFalse(manager.should_hold_match_probe(now=112.5))
+
+    def test_mark_match_started_does_not_reset_active_match_every_frame(self):
+        manager = object.__new__(StageManager)
+        manager._match_in_progress = True
+        manager._awaiting_lobby_result_sync = True
+        manager._result_applied_for_active_match = False
+        manager._pending_verified_result = None
+        manager.Trophy_observer = DummyTrophyObserver()
+        manager.brawlers_pick_data = [{"brawler": "darryl"}]
+
+        self.assertFalse(manager.mark_match_started())
+        self.assertTrue(manager._match_in_progress)
+        self.assertTrue(manager._awaiting_lobby_result_sync)
+        self.assertEqual(manager.Trophy_observer.begin_count, 0)
+
+    def test_mark_match_started_registers_only_first_match_frame(self):
+        manager = object.__new__(StageManager)
+        manager._match_in_progress = False
+        manager._awaiting_lobby_result_sync = True
+        manager._result_applied_for_active_match = False
+        manager._pending_verified_result = None
+        manager._lobby_sync_started_at = 0.0
+        manager._api_lobby_sync_attempts = 0
+        manager._last_api_lobby_sync_attempt_at = 0.0
+        manager._reset_lobby_start_tracking = lambda *args, **kwargs: None
+        manager.Trophy_observer = DummyTrophyObserver()
+        manager.brawlers_pick_data = [{"brawler": "darryl"}]
+
+        self.assertTrue(manager.mark_match_started())
+        self.assertFalse(manager.mark_match_started())
+        self.assertTrue(manager._match_in_progress)
+        self.assertTrue(manager._awaiting_lobby_result_sync)
+        self.assertEqual(manager.Trophy_observer.begin_count, 1)
 
     @patch("stage_manager.save_brawler_data")
     @patch.object(StageManager, "fetch_push_all_player_data")
