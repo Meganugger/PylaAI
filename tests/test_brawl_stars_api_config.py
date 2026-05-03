@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-from utils import load_brawl_stars_api_config, normalize_brawler_name
+from utils import load_brawl_stars_api_config, load_toml_as_dict, normalize_brawler_name
 
 
 class BrawlStarsApiConfigTests(unittest.TestCase):
@@ -18,6 +18,15 @@ class BrawlStarsApiConfigTests(unittest.TestCase):
         self.assertEqual(config["api_token"], "abcdef")
         self.assertEqual(config["player_tag"], "#P123")
         self.assertEqual(config["timeout_seconds"], 7)
+
+    def test_toml_loader_accepts_utf8_bom(self):
+        with tempfile.NamedTemporaryFile("w", suffix=".toml", delete=False, encoding="utf-8-sig") as handle:
+            handle.write('idle_pixels_minimum = 1234\n')
+            path = handle.name
+
+        config = load_toml_as_dict(path)
+
+        self.assertEqual(config["idle_pixels_minimum"], 1234)
 
     @patch("utils.refresh_brawl_stars_api_token_if_enabled")
     def test_force_refresh_flows_to_token_refresher(self, mock_refresh):

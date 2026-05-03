@@ -431,6 +431,31 @@ class Dashboard(ctk.CTk):
         # handle login
         self._handle_login()
 
+    def _farm_candidate_brawlers(self):
+        """Return brawlers that are safe to show/use for farm queues.
+
+        If a scan exists, locked brawlers are excluded. Without scan data we only
+        trust brawlers already selected in the session instead of assuming every
+        known brawler is unlocked.
+        """
+        selected_names = {
+            str(entry.get("brawler", "")).strip().lower()
+            for entry in self.brawlers_data
+            if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
+        }
+        has_scan_data = bool(self._brawler_scan_data)
+        if has_scan_data:
+            candidates = {
+                brawler for brawler in self.all_brawlers
+                if self._brawler_scan_data.get(brawler, {}).get("unlocked") is True
+            }
+            for brawler in selected_names:
+                scan_info = self._brawler_scan_data.get(brawler, {})
+                if scan_info.get("unlocked") is not False:
+                    candidates.add(brawler)
+            return sorted(candidates)
+        return sorted(selected_names)
+
     # --- cONFIG DEFAULTS ---
 
     def _apply_defaults(self):
@@ -2503,7 +2528,7 @@ class Dashboard(ctk.CTk):
 
         cols = 8
         col = row = 0
-        for brawler in sorted(self.all_brawlers):
+        for brawler in self._farm_candidate_brawlers():
             excluded = brawler in self._trophy_farm_excluded
             var = tk.BooleanVar(value=excluded)
             self._farm_exclude_vars[brawler] = var
@@ -2553,9 +2578,10 @@ class Dashboard(ctk.CTk):
             target = 500
         strategy = self._farm_strat_var.get()
         has_scan_data = bool(self._brawler_scan_data)
+        candidate_brawlers = self._farm_candidate_brawlers()
 
         queue = []
-        for brawler in self.all_brawlers:
+        for brawler in candidate_brawlers:
             if brawler in self._trophy_farm_excluded:
                 continue
 
@@ -2879,7 +2905,8 @@ class Dashboard(ctk.CTk):
 
         cols = 8
         col = row = 0
-        for brawler in sorted(self.all_brawlers):
+        quest_candidates = sorted(set(self._quest_brawlers or self._farm_candidate_brawlers()))
+        for brawler in quest_candidates:
             excluded = brawler in self._quest_farm_excluded
             var = tk.BooleanVar(value=excluded)
             self._quest_exclude_vars[brawler] = var
