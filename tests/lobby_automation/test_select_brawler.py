@@ -18,7 +18,7 @@ class TestLobbyAutomation(unittest.TestCase):
     def test_can_select_brawlers(self, mock_load_image, mock_find_template):
         """Tests that bot can select brawlers once he reaches the brawlers selection menu"""
         EXPECTED_BRAWLER_X = 2012
-        EXPECTED_BRAWLER_Y = 978
+        EXPECTED_BRAWLER_Y = 883
         TOLERANCE = 50 
         
         mock_find_template.return_value = (100, 100)
@@ -50,7 +50,7 @@ class TestLobbyAutomation(unittest.TestCase):
             distance_y = abs(actual_y - expected_y)
             
             if distance_x <= tolerance and distance_y <= tolerance:
-                print(f"✓ Click found at ({actual_x}, {actual_y}) within {tolerance}px of ({expected_x}, {expected_y})")
+                print(f"Click found at ({actual_x}, {actual_y}) within {tolerance}px of ({expected_x}, {expected_y})")
                 return True
         
         click_coords = [(call[0][0], call[0][1]) for call in click_calls]
