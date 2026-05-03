@@ -262,8 +262,9 @@ class Dashboard(ctk.CTk):
         self._brawler_grid_refresh_after_id = self.after(150, self._refresh_brawler_grid)
 
     def _get_selected_brawler_entry(self, brawler):
+        target = self._brawler_key(brawler)
         for entry in self.brawlers_data:
-            if entry.get("brawler") == brawler:
+            if self._brawler_key(entry.get("brawler")) == target:
                 return entry
         return None
 
@@ -418,18 +419,51 @@ class Dashboard(ctk.CTk):
         """Load excluded brawlers from bot_config."""
         excluded = self.bot_config.get("trophy_farm_excluded", [])
         if isinstance(excluded, list):
-            self._trophy_farm_excluded = set(excluded)
+            self._trophy_farm_excluded = self._normalize_brawler_name_set(excluded)
         else:
             self._trophy_farm_excluded = set()
 
         quest_excluded = self.bot_config.get("quest_farm_excluded", [])
         if isinstance(quest_excluded, list):
-            self._quest_farm_excluded = set(quest_excluded)
+            self._quest_farm_excluded = self._normalize_brawler_name_set(quest_excluded)
         else:
             self._quest_farm_excluded = set()
 
         # handle login
         self._handle_login()
+
+    @staticmethod
+    def _brawler_key(name):
+        return re.sub(r"[^a-z0-9]+", "", str(name or "").strip().lower())
+
+    def _canonical_brawler_name(self, name):
+        key = self._brawler_key(name)
+        if not key:
+            return ""
+        for source_name in list(getattr(self, "all_brawlers", []) or []) + [
+            entry.get("brawler", "") for entry in getattr(self, "brawlers_data", []) or []
+            if isinstance(entry, dict)
+        ] + list((getattr(self, "_brawler_scan_data", {}) or {}).keys()):
+            if self._brawler_key(source_name) == key:
+                return str(source_name).strip().lower()
+        return str(name or "").strip().lower()
+
+    def _normalize_brawler_name_set(self, names):
+        return {
+            canonical for canonical in (self._canonical_brawler_name(item) for item in names)
+            if canonical
+        }
+
+    def _scan_entry_for_brawler(self, brawler):
+        scan_data = self._brawler_scan_data if isinstance(self._brawler_scan_data, dict) else {}
+        direct = scan_data.get(brawler)
+        if isinstance(direct, dict):
+            return direct
+        target = self._brawler_key(brawler)
+        for scan_name, scan_entry in scan_data.items():
+            if self._brawler_key(scan_name) == target and isinstance(scan_entry, dict):
+                return scan_entry
+        return {}
 
     def _farm_candidate_brawlers(self):
         """Return brawlers that are safe to show/use for farm queues.
@@ -439,20 +473,21 @@ class Dashboard(ctk.CTk):
         known brawler is unlocked.
         """
         selected_names = {
-            str(entry.get("brawler", "")).strip().lower()
+            self._canonical_brawler_name(entry.get("brawler", ""))
             for entry in self.brawlers_data
             if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
         }
         has_scan_data = bool(self._brawler_scan_data)
         if has_scan_data:
-            candidates = {
-                brawler for brawler in self.all_brawlers
-                if self._brawler_scan_data.get(brawler, {}).get("unlocked") is True
-            }
-            for brawler in selected_names:
-                scan_info = self._brawler_scan_data.get(brawler, {})
-                if scan_info.get("unlocked") is not False:
-                    candidates.add(brawler)
+            candidates = set()
+            for brawler in self.all_brawlers:
+                canonical = self._canonical_brawler_name(brawler)
+                if canonical and self._scan_entry_for_brawler(canonical).get("unlocked") is True:
+                    candidates.add(canonical)
+            for scan_name, scan_info in self._brawler_scan_data.items():
+                canonical = self._canonical_brawler_name(scan_name)
+                if canonical and isinstance(scan_info, dict) and scan_info.get("unlocked") is True:
+                    candidates.add(canonical)
             return sorted(candidates)
         return sorted(selected_names)
 
@@ -2582,32 +2617,32 @@ class Dashboard(ctk.CTk):
 
         queue = []
         for brawler in candidate_brawlers:
-            if brawler in self._trophy_farm_excluded:
+            canonical_brawler = self._canonical_brawler_name(brawler)
+            if canonical_brawler in self._trophy_farm_excluded:
                 continue
 
-            # Skip locked brawlers if we have scan data
-            scan_info = self._brawler_scan_data.get(brawler, {})
-            if has_scan_data and not scan_info.get("unlocked", False):
+            scan_info = self._scan_entry_for_brawler(canonical_brawler)
+            if has_scan_data and scan_info.get("unlocked") is not True:
                 continue
 
             # Priority for trophies: active session data > scan data > 0
-            selected_entry = self._get_selected_brawler_entry(brawler)
+            selected_entry = self._get_selected_brawler_entry(canonical_brawler)
             trophies, _ = self._get_effective_trophies(
-                brawler,
+                canonical_brawler,
                 selected_entry=selected_entry,
                 scan_entry=scan_info,
             )
             if not isinstance(trophies, int):
                 trophies = 0
-            hist = self.match_history.get(brawler, {})
 
             if trophies < target:
+                hist = self.match_history.get(canonical_brawler, {})
                 wins = hist.get("victory", 0) if isinstance(hist, dict) else 0
                 losses = hist.get("defeat", 0) if isinstance(hist, dict) else 0
                 total = wins + losses
                 wr = round(100 * wins / total) if total > 0 else 50
                 queue.append({
-                    "brawler": brawler,
+                    "brawler": canonical_brawler,
                     "trophies": trophies,
                     "winrate": wr,
                     "total_games": total,
@@ -2729,7 +2764,8 @@ class Dashboard(ctk.CTk):
         except ValueError:
             bc["trophy_farm_target"] = 500
         bc["trophy_farm_strategy"] = self._farm_strat_var.get()
-        bc["trophy_farm_excluded"] = sorted(list(self._trophy_farm_excluded))
+        self._trophy_farm_excluded = self._normalize_brawler_name_set(self._trophy_farm_excluded)
+        bc["trophy_farm_excluded"] = sorted(self._trophy_farm_excluded)
         save_dict_as_toml(bc, "cfg/bot_config.toml")
 
         self._trophy_farm_active = self._farm_enabled_var.get() == "yes"
