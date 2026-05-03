@@ -47,6 +47,22 @@ class LobbyAutomation:
     def _can_select_brawler_in_state(state):
         return state in {"lobby", "brawler_selection"}
 
+    @staticmethod
+    def _coerce_scalar(value, default=0.0):
+        if isinstance(value, np.ndarray):
+            flat = value.reshape(-1)
+            if flat.size == 0:
+                return default
+            value = flat[0]
+        elif isinstance(value, (list, tuple)):
+            if not value:
+                return default
+            value = value[0]
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return default
+
     def _scroll_brawler_menu(self, direction="down", attempt=0):
         wr = self.window_controller.width_ratio or 1.0
         hr = self.window_controller.height_ratio or 1.0
@@ -207,8 +223,11 @@ class LobbyAutomation:
                 if match:
                     _, detected_name, text_box, screenshot_shape = match
                     x, y = text_box['center']
+                    x = self._coerce_scalar(x)
+                    y = self._coerce_scalar(y)
+                    hr = self._coerce_scalar(getattr(self.window_controller, "height_ratio", 1.0), 1.0)
                     click_x = int(x / ocr_scale)
-                    click_y = int((y / ocr_scale) - (95 * self.window_controller.height_ratio))
+                    click_y = int((y / ocr_scale) - (95 * hr))
                     click_y = max(0, min(screenshot_shape[0] - 1, click_y))
                     if debug_enabled:
                         print(f"Found brawler {brawler} (OCR: {detected_name})")

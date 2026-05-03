@@ -123,7 +123,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.low_ips_since = None
             self.last_low_ips_recovery = 0.0
             self.low_ips_recovery_attempts = 0
-            self._ensure_easyocr_warmup()
             self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
             self._last_dashboard_history_revision = int(
                 getattr(self.Stage_manager.Trophy_observer, "history_revision", 0) or 0
@@ -171,12 +170,24 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 and not getattr(self.Stage_manager, "_match_in_progress", False)
             )
 
+        def _should_warm_post_match_ocr(self, now=None):
+            checker = getattr(self.Stage_manager, "should_warm_post_match_ocr", None)
+            if callable(checker):
+                return bool(checker(now))
+            return bool(
+                getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(self.Stage_manager, "_result_applied_for_active_match", False)
+            )
+
         def _normalize_post_match_state(self, state, runtime_state, now):
             if (
                 state == "match"
                 and getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
                 and not getattr(self.Stage_manager, "_match_in_progress", False)
             ):
+                should_hold = getattr(self.Stage_manager, "should_hold_match_probe", None)
+                if callable(should_hold) and not should_hold(now):
+                    return state
                 held_state = ""
                 getter = getattr(self.Stage_manager, "get_end_transition_state", None)
                 if callable(getter):
@@ -386,7 +397,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 0.0,
                 now - float(getattr(self.Play, "time_since_player_last_found", now) or now),
             )
-            if post_match_context and not reader.is_ready():
+            if post_match_context and self._should_warm_post_match_ocr(now) and not reader.is_ready():
                 self._ensure_easyocr_warmup()
             if post_match_context and (now - self._last_fast_result_probe) >= 0.35:
                 self._last_fast_result_probe = now
