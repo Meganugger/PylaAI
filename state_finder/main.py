@@ -415,6 +415,7 @@ def is_in_lobby(image) -> bool:
 
 
 def is_lobby_play_button_visible(image) -> bool:
+    """Detect the large yellow PLAY button in the lobby as a low-risk fallback."""
     current_height, current_width = image.shape[:2]
     width_ratio = current_width / orig_screen_width
     height_ratio = current_height / orig_screen_height
@@ -443,7 +444,7 @@ def is_lobby_play_button_visible(image) -> bool:
     if not contours:
         return False
     largest = max(contours, key=cv2.contourArea)
-    bx, by, bw, bh = cv2.boundingRect(largest)
+    _bx, _by, bw, bh = cv2.boundingRect(largest)
     return bw > w * 0.45 and bh > h * 0.35
 
 

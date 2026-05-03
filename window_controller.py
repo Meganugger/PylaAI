@@ -212,6 +212,16 @@ class WindowController:
             self.last_app_state_check = 0.0
             self.SCRCPY_START_RETRIES = 3
             self.SCRCPY_RETRY_DELAY = 0.5
+            self.scrcpy_max_fps = int(general_config.get("scrcpy_max_fps", 30))
+            if self.scrcpy_max_fps <= 0:
+                self.scrcpy_max_fps = None
+            self.scrcpy_max_width = int(general_config.get("scrcpy_max_width", 960))
+            if self.scrcpy_max_width < 0:
+                self.scrcpy_max_width = 0
+            self.scrcpy_bitrate = int(general_config.get("scrcpy_bitrate", 3000000))
+            if self.scrcpy_bitrate <= 0:
+                self.scrcpy_bitrate = 3000000
+            self.capture_fallback_level = 0
             self.start_scrcpy_client()
             atexit.register(self.close)
             print("Scrcpy client started successfully.")
@@ -313,7 +323,14 @@ class WindowController:
                     self.last_frame_time = time.time()
                     self.frame_condition.notify_all()
 
-        client = scrcpy.Client(device=self.device, max_width=0)
+        client_kwargs = {
+            "device": self.device,
+            "max_width": self.scrcpy_max_width,
+            "bitrate": self.scrcpy_bitrate,
+        }
+        if self.scrcpy_max_fps:
+            client_kwargs["max_fps"] = self.scrcpy_max_fps
+        client = scrcpy.Client(**client_kwargs)
         client.add_listener(scrcpy.EVENT_FRAME, on_frame)
         return client
 
@@ -345,6 +362,33 @@ class WindowController:
                 time.sleep(self.SCRCPY_RETRY_DELAY * attempt)
 
         raise ConnectionError(f"Failed to start scrcpy after {retries} attempt(s): {last_error}")
+
+    def reduce_capture_load_for_slow_feed(self):
+        """Lower scrcpy capture cost after repeated low-IPS recoveries."""
+        previous = (self.scrcpy_max_width, self.scrcpy_max_fps, self.scrcpy_bitrate)
+        if self.capture_fallback_level == 0:
+            self.scrcpy_max_width = min(self.scrcpy_max_width or 960, 854)
+            self.scrcpy_max_fps = min(self.scrcpy_max_fps or 60, 30)
+            self.scrcpy_bitrate = min(self.scrcpy_bitrate or 3000000, 2000000)
+            self.capture_fallback_level = 1
+        elif self.capture_fallback_level == 1:
+            self.scrcpy_max_width = min(self.scrcpy_max_width or 854, 720)
+            self.scrcpy_max_fps = min(self.scrcpy_max_fps or 30, 30)
+            self.scrcpy_bitrate = min(self.scrcpy_bitrate or 2000000, 1500000)
+            self.capture_fallback_level = 2
+        else:
+            return False
+
+        current = (self.scrcpy_max_width, self.scrcpy_max_fps, self.scrcpy_bitrate)
+        if current == previous:
+            return False
+        print(
+            "Slow emulator feed fallback:",
+            f"scrcpy_max_width={self.scrcpy_max_width}",
+            f"scrcpy_max_fps={self.scrcpy_max_fps}",
+            f"scrcpy_bitrate={self.scrcpy_bitrate}",
+        )
+        return True
 
     def restart_scrcpy_client(self):
         print("Restarting scrcpy client...")
