@@ -469,14 +469,20 @@ class Dashboard(ctk.CTk):
         """Return brawlers that are safe to show/use for farm queues.
 
         If a scan exists, locked brawlers are excluded. Without scan data we only
-        trust brawlers already selected in the session instead of assuming every
-        known brawler is unlocked.
+        have no reliable locked/unlocked signal, so show the local roster and let
+        the user exclude anything they do not want farmed.
         """
         selected_names = {
             self._canonical_brawler_name(entry.get("brawler", ""))
             for entry in self.brawlers_data
             if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
         }
+        known_names = {
+            self._canonical_brawler_name(brawler)
+            for brawler in self.all_brawlers
+            if str(brawler or "").strip()
+        }
+        known_names = {name for name in known_names if name}
         has_scan_data = bool(self._brawler_scan_data)
         if has_scan_data:
             candidates = set()
@@ -488,8 +494,9 @@ class Dashboard(ctk.CTk):
                 canonical = self._canonical_brawler_name(scan_name)
                 if canonical and isinstance(scan_info, dict) and scan_info.get("unlocked") is True:
                     candidates.add(canonical)
+            candidates.update(selected_names)
             return sorted(candidates)
-        return sorted(selected_names)
+        return sorted(known_names or selected_names)
 
     # --- cONFIG DEFAULTS ---
 
@@ -505,6 +512,9 @@ class Dashboard(ctk.CTk):
         bc.setdefault("unstuck_movement_hold_time", 1.5)
         bc.setdefault("seconds_to_hold_attack_after_reaching_max", 1.5)
         bc.setdefault("play_again_on_win", "no")
+        bc.setdefault("post_play_again_match_hold_seconds", 2.0)
+        bc.setdefault("brawl_ball_patrol_hold_time", 2.8)
+        bc.setdefault("brawl_ball_patrol_arrival_radius", 95.0)
         bc.setdefault("smart_trophy_farm", "no")
         bc.setdefault("trophy_farm_target", 500)
         bc.setdefault("trophy_farm_strategy", "lowest_first")

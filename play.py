@@ -278,12 +278,27 @@ class Movement:
     @classmethod
     def _should_detect_walls_for_mode(cls, gamemode):
         normalized = cls._normalize_gamemode_name(gamemode)
-        return "showdown" in normalized or normalized in {"brawlball", "brawl ball", "brawll ball"}
+        return (
+            "showdown" in normalized
+            or normalized in {
+                "brawlball",
+                "brawl ball",
+                "brawll ball",
+                "brawlball 5v5",
+                "brawl ball 5v5",
+            }
+        )
 
     @classmethod
     def _is_brawl_ball_mode(cls, gamemode):
         normalized = cls._normalize_gamemode_name(gamemode)
-        return normalized in {"brawlball", "brawl ball", "brawll ball"}
+        return normalized in {
+            "brawlball",
+            "brawl ball",
+            "brawll ball",
+            "brawlball 5v5",
+            "brawl ball 5v5",
+        }
 
     def _uses_analog_movement(self):
         return self.is_showdown_mode or self._is_brawl_ball_mode(self.selected_gamemode)
@@ -874,6 +889,10 @@ class Play(Movement):
         self._last_enemy_seen_at = time.time()
         self._search_target_idx = 0
         self._search_target_switch_time = 0.0
+        self._brawl_ball_patrol_idx = 0
+        self._brawl_ball_patrol_switch_time = 0.0
+        self._brawl_ball_patrol_hold_time = float(bot_config.get("brawl_ball_patrol_hold_time", 2.8))
+        self._brawl_ball_patrol_arrival_radius = float(bot_config.get("brawl_ball_patrol_arrival_radius", 95.0))
         self.target_info = {
             "name": None,
             "distance": 0,
@@ -1299,12 +1318,13 @@ class Play(Movement):
 
         if self._uses_analog_movement():
             if self._is_brawl_ball_mode(self.selected_gamemode):
-                center_target = (self.window_controller.width * 0.50, self.window_controller.height * 0.50)
-                if self.get_distance(center_target, player_position) > 130:
-                    center_move = self._get_move_toward(player_position, center_target, wall_context, allow_detour=True)
-                    if center_move is not None:
-                        return self._plan_analog_reason(center_move, "search")
-                desired_angle = 270.0
+                brawl_ball_move = self._get_brawl_ball_roam_movement(player_position, wall_context)
+                if brawl_ball_move is not None:
+                    return self._plan_analog_reason(brawl_ball_move, "search")
+                desired_angle = self.angle_from_direction(
+                    self.window_controller.width * 0.50 - player_position[0],
+                    self.window_controller.height * 0.50 - player_position[1],
+                )
             else:
                 desired_angle = 270.0 if self.game_mode == 3 else 0.0
             return self._plan_analog_reason(
@@ -1876,11 +1896,11 @@ class Play(Movement):
         if self._is_brawl_ball_mode(self.selected_gamemode):
             return [
                 (width * 0.50, height * 0.50),
-                (width * 0.50, height * 0.38),
-                (width * 0.44, height * 0.44),
-                (width * 0.56, height * 0.44),
-                (width * 0.44, height * 0.56),
-                (width * 0.56, height * 0.56),
+                (width * 0.50, height * 0.39),
+                (width * 0.43, height * 0.46),
+                (width * 0.57, height * 0.46),
+                (width * 0.46, height * 0.58),
+                (width * 0.54, height * 0.58),
             ]
         if self.game_mode == 3:
             return [
@@ -1893,6 +1913,53 @@ class Play(Movement):
             (width * 0.72, height * 0.3),
             (width * 0.72, height * 0.7),
         ]
+
+    def _get_brawl_ball_roam_movement(self, player_pos, wall_context):
+        width = max(1.0, float(getattr(self.window_controller, "width", brawl_stars_width) or brawl_stars_width))
+        height = max(1.0, float(getattr(self.window_controller, "height", brawl_stars_height) or brawl_stars_height))
+        center_target = (width * 0.50, height * 0.50)
+
+        safe_left = width * 0.30
+        safe_right = width * 0.70
+        safe_top = height * 0.30
+        safe_bottom = height * 0.66
+        outside_midfield = (
+            player_pos[0] < safe_left
+            or player_pos[0] > safe_right
+            or player_pos[1] < safe_top
+            or player_pos[1] > safe_bottom
+        )
+
+        targets = self._get_search_targets()
+        now = time.time()
+        if outside_midfield:
+            self._brawl_ball_patrol_switch_time = now
+            target = center_target
+        else:
+            if self._brawl_ball_patrol_switch_time == 0.0:
+                self._brawl_ball_patrol_idx = min(
+                    range(len(targets)),
+                    key=lambda idx: self.get_distance(targets[idx], player_pos),
+                )
+                self._brawl_ball_patrol_switch_time = now
+
+            idx = self._brawl_ball_patrol_idx % len(targets)
+            target = targets[idx]
+            target_distance = self.get_distance(target, player_pos)
+            target_stale = (now - self._brawl_ball_patrol_switch_time) > self._brawl_ball_patrol_hold_time
+            if target_distance <= self._brawl_ball_patrol_arrival_radius or target_stale:
+                self._brawl_ball_patrol_idx = (self._brawl_ball_patrol_idx + 1) % len(targets)
+                self._brawl_ball_patrol_switch_time = now
+                target = targets[self._brawl_ball_patrol_idx]
+
+        movement = self._get_move_toward(player_pos, target, wall_context, allow_detour=True)
+        if movement is not None:
+            return movement
+        return self._find_best_angle(
+            player_pos,
+            self.angle_from_direction(center_target[0] - player_pos[0], center_target[1] - player_pos[1]),
+            wall_context,
+        )
 
     def _get_search_movement(self, player_pos, wall_context):
         targets = self._get_search_targets()
@@ -2500,7 +2567,7 @@ class Play(Movement):
                     )
                     if team_move:
                         return self._plan_analog_reason(team_move, "team_regroup")
-                search_move = self._get_search_movement(player_pos, wall_context)
+                search_move = self._get_brawl_ball_roam_movement(player_pos, wall_context)
                 if search_move:
                     return self._plan_analog_reason(search_move, "search")
                 return self.no_enemy_movement(player_data, wall_context)
