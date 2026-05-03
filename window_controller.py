@@ -33,6 +33,7 @@ key_coords_dict = {
     "Q": (1660, 980),
     "E": (1510, 880),
     "F": (1390, 930),
+    "R": (1390, 930),
 }
 
 continue_fallback_targets = (
@@ -657,6 +658,8 @@ class WindowController:
             time.sleep(0.5)
 
     def press_play_again(self):
+        self.press_key("R", delay=0.03)
+        time.sleep(0.12)
         for x, y in play_again_targets:
             self.click(x, y, 0.02, already_include_ratio=False)
             time.sleep(0.12)

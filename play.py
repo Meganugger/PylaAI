@@ -980,6 +980,8 @@ class Play(Movement):
         self._last_retry_player_log_time = 0.0
         self._last_retry_detection_time = 0.0
         self._last_start_request_time = 0.0
+        self._last_missing_player_recovery_at = 0.0
+        self._missing_player_recovery_toggle = False
         self._last_live_player_source = "base"
         self._allow_skill_inputs = True
 
@@ -1142,6 +1144,31 @@ class Play(Movement):
             self._last_no_player_log_time = current_time
         return restored
 
+    def _recover_missing_player_in_match(self, current_time):
+        if not self._can_issue_live_input(current_time):
+            return False
+        if current_time - self._last_missing_player_recovery_at < 0.65:
+            return True
+        self._last_missing_player_recovery_at = current_time
+        self._missing_player_recovery_toggle = not self._missing_player_recovery_toggle
+        try:
+            if self._uses_analog_movement():
+                if self._is_brawl_ball_mode(self.selected_gamemode):
+                    angle = 270.0
+                else:
+                    angle = 270.0 if self.game_mode == 3 else 0.0
+                self.window_controller.move_joystick_angle(angle, radius=self._analog_movement_radius * 0.72)
+            else:
+                primary = "w" if self.game_mode == 3 else "d"
+                self.window_controller.keys_down([primary])
+                self.window_controller.keys_up([key for key in ["w", "a", "s", "d"] if key != primary])
+            if current_time - self.time_since_last_attack >= max(0.8, self.attack_cooldown):
+                self.attack()
+        except Exception as exc:
+            if debug and (current_time - self._last_no_player_log_time >= 2.0):
+                print(f"[MATCH] missing-player recovery input failed: {exc}")
+        return True
+
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
             brawlers_info = load_brawlers_info()
@@ -1259,9 +1286,12 @@ class Play(Movement):
 
         if self._uses_analog_movement():
             if self._is_brawl_ball_mode(self.selected_gamemode):
-                # Brawl Ball: push forward toward the enemy goal aggressively.
-                # The enemy goal is at the top for game_mode 3.
-                desired_angle = 270.0  # up = toward enemy goal
+                center_target = (self.window_controller.width * 0.50, self.window_controller.height * 0.50)
+                if self.get_distance(center_target, player_position) > 130:
+                    center_move = self._get_move_toward(player_position, center_target, wall_context, allow_detour=True)
+                    if center_move is not None:
+                        return self._plan_analog_reason(center_move, "search")
+                desired_angle = 270.0
             else:
                 desired_angle = 270.0 if self.game_mode == 3 else 0.0
             return self._plan_analog_reason(
@@ -1269,9 +1299,10 @@ class Play(Movement):
                 "roam",
             )
 
-        # Brawl Ball WASD: prefer forward movement (W) to push toward goal.
         if self._is_brawl_ball_mode(self.selected_gamemode):
-            preferred_movement = 'W'
+            center_target = (self.window_controller.width * 0.50, self.window_controller.height * 0.50)
+            center_move = self._get_move_toward(player_position, center_target, wall_context, allow_detour=True)
+            preferred_movement = center_move or 'W'
         else:
             preferred_movement = 'W' if self.game_mode == 3 else 'D'
 
@@ -1828,6 +1859,15 @@ class Play(Movement):
                 (width * 0.40, height * 0.56),
                 (width * 0.60, height * 0.56),
                 (width * 0.50, height * 0.68),
+            ]
+        if self._is_brawl_ball_mode(self.selected_gamemode):
+            return [
+                (width * 0.50, height * 0.50),
+                (width * 0.50, height * 0.38),
+                (width * 0.44, height * 0.44),
+                (width * 0.56, height * 0.44),
+                (width * 0.44, height * 0.56),
+                (width * 0.56, height * 0.56),
             ]
         if self.game_mode == 3:
             return [
@@ -2437,6 +2477,21 @@ class Play(Movement):
                 return self.no_enemy_movement(player_data, wall_context)
 
             teammate_target = self._get_teammate_centroid()
+            if self._is_brawl_ball_mode(self.selected_gamemode):
+                if teammate_target and self.get_distance(teammate_target, player_pos) > 185:
+                    team_move = self._get_move_toward(
+                        player_pos,
+                        teammate_target,
+                        wall_context,
+                        allow_detour=True,
+                    )
+                    if team_move:
+                        return self._plan_analog_reason(team_move, "team_regroup")
+                search_move = self._get_search_movement(player_pos, wall_context)
+                if search_move:
+                    return self._plan_analog_reason(search_move, "search")
+                return self.no_enemy_movement(player_data, wall_context)
+
             team_regroup_target = teammate_target
             team_regroup_distance = (
                 self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
@@ -2821,7 +2876,8 @@ class Play(Movement):
                     self.window_controller.keys_up(list("wasd"))
                     self.time_since_last_proceeding = current_time
                     return
-            if current_time - self.time_since_player_last_found > 1.0:
+            recovery_active = runtime_state == "match" and self._recover_missing_player_in_match(current_time)
+            if current_time - self.time_since_player_last_found > 1.0 and not recovery_active:
                 self.window_controller.keys_up(list("wasd"))
             self.time_since_different_movement = time.time()
             if current_time - self.time_since_last_proceeding > self.no_detection_proceed_delay:
@@ -2855,7 +2911,7 @@ class Play(Movement):
                     if debug and (current_time - self._last_no_player_log_time >= 2.0):
                         print("haven't detected the player in a while proceeding")
                         self._last_no_player_log_time = current_time
-                    self.window_controller.press_key("Q")
+                    self._recover_missing_player_in_match(current_time)
                     self.time_since_last_proceeding = time.time()
             return
         self.time_since_last_proceeding = time.time()

@@ -111,6 +111,7 @@ class StageManager:
         self._end_transition_hold_seconds = float(self.bot_config.get("post_match_dismiss_hold_seconds", 10.0))
         self._end_transition_timeout = 12.0
         self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
+        self._last_match_started_at = 0.0
         self._consecutive_lobby_start_fails = 0
         self.push_all_needs_selection = False
         self._last_push_all_refresh_at = 0.0
@@ -134,6 +135,9 @@ class StageManager:
                 # Avoid spiking CPU by waking EasyOCR during a live match or
                 # after we've already moved on from the unresolved lobby state.
                 if self._match_in_progress or not self._awaiting_lobby_result_sync:
+                    self._lobby_ocr_warmup_started = False
+                    return
+                if self._last_match_started_at and (time.time() - self._last_match_started_at) < 20.0:
                     self._lobby_ocr_warmup_started = False
                     return
                 if self._last_start_press_at and (time.time() - self._last_start_press_at) < 1.0:
@@ -697,6 +701,7 @@ class StageManager:
             active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
             print(f"[RESULT] mark_match_started for {active_name}")
         self._match_in_progress = True
+        self._last_match_started_at = now
         self._awaiting_lobby_result_sync = True
         self._result_applied_for_active_match = False
         self._last_result_applied_at = 0.0
@@ -1329,17 +1334,21 @@ class StageManager:
             self.handle_prestige_reward(screenshot)
         elif current_state == "star_drop":
             self.click_star_drop()
-        elif (
-            self.play_again_on_win
-            and self._result_applied_for_active_match
-            and self.Trophy_observer._last_game_result == "victory"
-        ):
-            self.window_controller.press_play_again()
-            print("[PLAY-AGAIN] Pressed Play Again")
         else:
-            self.window_controller.press_continue()
-            if debug:
-                print("Game has ended, pressing continue")
+            play_again_result = (
+                found_game_result
+                or result_to_apply
+                or known_result
+                or getattr(self.Trophy_observer, "_last_game_result", None)
+            )
+            should_play_again = self.play_again_on_win and play_again_result == "victory"
+            if should_play_again:
+                self.window_controller.press_play_again()
+                print("[PLAY-AGAIN] Pressed R for Play Again")
+            else:
+                self.window_controller.press_key("Q")
+                if debug:
+                    print("Game has ended, pressing Q")
         self._end_transition_last_action_at = now
         print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
         if debug:
