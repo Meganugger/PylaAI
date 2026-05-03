@@ -284,8 +284,6 @@ class Movement:
                 "brawlball",
                 "brawl ball",
                 "brawll ball",
-                "brawlball 5v5",
-                "brawl ball 5v5",
             }
         )
 
@@ -296,12 +294,21 @@ class Movement:
             "brawlball",
             "brawl ball",
             "brawll ball",
-            "brawlball 5v5",
-            "brawl ball 5v5",
         }
 
     def _uses_analog_movement(self):
         return self.is_showdown_mode or self._is_brawl_ball_mode(self.selected_gamemode)
+
+    def _should_enable_combat_strafe(self, target_hittable, should_retreat_for_ammo, enemy_distance, effective_safe_range, attack_range):
+        if self.is_showdown_mode or self._is_brawl_ball_mode(self.selected_gamemode):
+            return False
+        return (
+            target_hittable
+            and not should_retreat_for_ammo
+            and enemy_distance > effective_safe_range * 0.75
+            and enemy_distance <= attack_range * 1.05
+            and self.current_ammo > 0
+        )
 
     @staticmethod
     def _opposite_key(key):
@@ -1188,6 +1195,48 @@ class Play(Movement):
                 print(f"[MATCH] missing-player recovery input failed: {exc}")
         return True
 
+    def reset_match_control_state(self, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        try:
+            self.window_controller.keys_up(list("wasd"))
+        except Exception:
+            pass
+        self.keys_hold = []
+        self.last_movement = ''
+        self.last_movement_time = current_time
+        self.time_since_movement = 0.0
+        self.time_since_different_movement = current_time
+        self.time_since_player_last_found = current_time
+        self.time_since_last_proceeding = current_time
+        self.time_since_holding_attack = None
+        self.current_ammo = self.max_ammo
+        self.shot_timestamps = []
+        self._burst_mode = False
+        self._burst_start_time = 0.0
+        self._last_burst_end_time = 0.0
+        self._planned_analog_reason = None
+        self._committed_analog_reason = None
+        self._committed_analog_until = 0.0
+        self._movement_anchor_angle = None
+        self._movement_anchor_angle_pos = None
+        self.fix_angle_state["toggled"] = False
+        self.fix_movement_keys["toggled"] = False
+        self.escape_state["phase"] = None
+        self.wall_stuck_state["last_sample_time"] = 0.0
+        self.wall_stuck_state["last_wall_centers"] = None
+        self.wall_stuck_state["stationary_since"] = None
+        self._search_target_idx = 0
+        self._search_target_switch_time = 0.0
+        self._brawl_ball_patrol_idx = 0
+        self._brawl_ball_patrol_switch_time = 0.0
+        self._last_confirmed_match_time = current_time
+        self._last_match_evidence_time = current_time
+        self._last_valid_player_seen_at = 0.0
+        self._last_missing_player_recovery_at = 0.0
+        self._missing_player_recovery_toggle = False
+        self._pending_end_result = None
+        self._allow_skill_inputs = True
+
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
             brawlers_info = load_brawlers_info()
@@ -1882,12 +1931,12 @@ class Play(Movement):
             ]
         if self._is_brawl_ball_mode(self.selected_gamemode):
             return [
+                (width * 0.50, height * 0.35),
+                (width * 0.40, height * 0.43),
+                (width * 0.60, height * 0.43),
                 (width * 0.50, height * 0.50),
-                (width * 0.50, height * 0.39),
-                (width * 0.43, height * 0.46),
-                (width * 0.57, height * 0.46),
-                (width * 0.46, height * 0.58),
-                (width * 0.54, height * 0.58),
+                (width * 0.44, height * 0.56),
+                (width * 0.56, height * 0.56),
             ]
         if self.game_mode == 3:
             return [
@@ -2543,22 +2592,13 @@ class Play(Movement):
             if self.is_showdown_mode:
                 return self.no_enemy_movement(player_data, wall_context)
 
-            teammate_target = self._get_teammate_centroid()
             if self._is_brawl_ball_mode(self.selected_gamemode):
-                if teammate_target and self.get_distance(teammate_target, player_pos) > 185:
-                    team_move = self._get_move_toward(
-                        player_pos,
-                        teammate_target,
-                        wall_context,
-                        allow_detour=True,
-                    )
-                    if team_move:
-                        return self._plan_analog_reason(team_move, "team_regroup")
                 search_move = self._get_brawl_ball_roam_movement(player_pos, wall_context)
                 if search_move:
                     return self._plan_analog_reason(search_move, "search")
                 return self.no_enemy_movement(player_data, wall_context)
 
+            teammate_target = self._get_teammate_centroid()
             team_regroup_target = teammate_target
             team_regroup_distance = (
                 self.get_distance(team_regroup_target, player_pos) if team_regroup_target else float("inf")
@@ -2691,14 +2731,12 @@ class Play(Movement):
                 ),
                 current_time=current_time,
                 style=style,
-                should_strafe=(
-                    not self.is_showdown_mode
-                    and
-                    target_hittable
-                    and not should_retreat_for_ammo
-                    and enemy_distance > effective_safe_range * 0.75
-                    and enemy_distance <= attack_range * 1.05
-                    and self.current_ammo > 0
+                should_strafe=self._should_enable_combat_strafe(
+                    target_hittable,
+                    should_retreat_for_ammo,
+                    enemy_distance,
+                    effective_safe_range,
+                    attack_range,
                 ),
             )
             movement_reason = "retreat" if showdown_retreat or should_retreat_for_ammo or (
