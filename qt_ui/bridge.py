@@ -3,9 +3,11 @@ import json
 import os
 import re
 import subprocess
+import sys
 import threading
 import traceback
 from datetime import datetime
+from pathlib import Path
 
 import requests
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
@@ -66,7 +68,7 @@ class QtBridge(QObject):
         self._version_str = str(version_str).strip()
         self._pyla_main = pyla_main_fn
         self._login_fn = login_fn
-        self._all_brawlers = list(brawlers or [])
+        self._input_brawlers = list(brawlers or [])
         self._bot_thread = None
         self._bot_stop_event = None
         self._bot_pause_event = None
@@ -82,6 +84,7 @@ class QtBridge(QObject):
         self.time_config = load_config("time")
         self.login_config = load_toml_as_dict("cfg/login.toml")
         self.brawlers_info = load_brawlers_info()
+        self._all_brawlers = self._discover_brawler_names(self._input_brawlers)
         self.brawlers_data = self._normalize_roster(saved_brawler_data or self._load_saved_roster())
         self.capabilities = {
             "visual_overlay": os.path.exists("visual_overlay.py"),
@@ -89,6 +92,9 @@ class QtBridge(QObject):
             "brawler_scan": hasattr(LobbyAutomation, "scan_all_brawlers"),
             "quest_farm": hasattr(StageManager, "_handle_quest_rotation"),
             "quest_scan": hasattr(LobbyAutomation, "scan_quest_brawlers"),
+            "updater": os.path.exists(os.path.join("tools", "updater.py")) or os.path.exists("updater.exe"),
+            "runtime_preflight": os.path.exists(os.path.join("tools", "runtime_preflight.py")),
+            "performance_profiles": os.path.exists("performance_profile.py"),
         }
 
         self._validate_existing_login()
@@ -152,6 +158,26 @@ class QtBridge(QObject):
         config.setdefault("current_emulator", "LDPlayer")
         config.setdefault("map_orientation", "vertical")
         return config
+
+    def _discover_brawler_names(self, names):
+        discovered = set()
+        for name in names or []:
+            value = str(name or "").strip().lower()
+            if value:
+                discovered.add(value)
+        for name in (self.brawlers_info or {}).keys():
+            value = str(name or "").strip().lower()
+            if value:
+                discovered.add(value)
+        icon_dir = os.path.join("api", "assets", "brawler_icons")
+        if os.path.isdir(icon_dir):
+            for filename in os.listdir(icon_dir):
+                stem, ext = os.path.splitext(filename)
+                if ext.lower() == ".png":
+                    value = stem.strip().lower()
+                    if value:
+                        discovered.add(value)
+        return sorted(discovered)
 
     @staticmethod
     def _is_enabled(value):
@@ -362,16 +388,21 @@ class QtBridge(QObject):
 
     def _build_brawler_payload(self):
         scan_data = self._brawler_scan_data()
-        roster_lookup = {entry["brawler"]: entry for entry in self.brawlers_data}
+        roster_lookup = {
+            self._canonical_brawler_name(entry["brawler"], scan_data=scan_data): entry
+            for entry in self.brawlers_data
+            if isinstance(entry, dict) and entry.get("brawler")
+        }
         items = []
         for name in self._all_brawlers:
-            scan_entry = scan_data.get(name, {})
-            selected = roster_lookup.get(name, {})
+            canonical = self._canonical_brawler_name(name, scan_data=scan_data)
+            scan_entry = self._scan_entry_for_brawler(canonical, scan_data)
+            selected = roster_lookup.get(canonical, {})
             trophies = selected.get("trophies", scan_entry.get("trophies", 0))
             items.append({
-                "name": name,
-                "displayName": name.title(),
-                "icon": self._icon_url_for(name),
+                "name": canonical,
+                "displayName": canonical.title(),
+                "icon": self._icon_url_for(canonical),
                 "selected": bool(selected),
                 "trophies": int(trophies or 0),
                 "pushUntil": int(selected.get("push_until", self.general_config.get("auto_push_target_trophies", 1000)) or 0),
@@ -380,7 +411,7 @@ class QtBridge(QObject):
                 "type": str(selected.get("type", "trophies") or "trophies"),
                 "autoPick": bool(selected.get("automatically_pick", True)),
                 "manualTrophies": bool(selected.get("manual_trophies", False)),
-                "holdAttack": float(self.brawlers_info.get(name, {}).get("hold_attack", 0) or 0),
+                "holdAttack": float(self.brawlers_info.get(canonical, {}).get("hold_attack", 0) or 0),
             })
         return items
 
@@ -457,7 +488,13 @@ class QtBridge(QObject):
                 if canonical and isinstance(scan_entry, dict) and scan_entry.get("unlocked") is True:
                     source_brawlers.add(canonical)
         else:
-            source_brawlers = set(roster_lookup)
+            source_brawlers = {
+                self._canonical_brawler_name(brawler, scan_data=scan_data)
+                for brawler in self._all_brawlers
+                if str(brawler or "").strip()
+            }
+            source_brawlers.update(roster_lookup)
+            source_brawlers = {brawler for brawler in source_brawlers if brawler}
 
         for brawler in sorted(source_brawlers):
             if brawler in excluded:
@@ -662,6 +699,139 @@ class QtBridge(QObject):
         self._push_log(level, message)
         self.notificationRaised.emit(level, message)
 
+    @staticmethod
+    def _tool_path(*parts):
+        return Path(os.getcwd(), *parts)
+
+    def _tool_status_payload(self):
+        updater_script = self._tool_path("tools", "updater.py")
+        updater_exe = self._tool_path("updater.exe")
+        preflight_script = self._tool_path("tools", "runtime_preflight.py")
+        profile_module = self._tool_path("performance_profile.py")
+        local_sha = ""
+        update_source = "Meganugger/PylaAI [main]"
+        try:
+            from tools import updater
+
+            local_sha = updater.read_local_update_sha(Path(os.getcwd())) or ""
+            update_source = f"{updater.repo_slug()} [{updater.repo_branch()}]"
+        except Exception:
+            pass
+        return {
+            "updaterAvailable": updater_script.exists() or updater_exe.exists(),
+            "updaterScript": str(updater_script),
+            "updaterExe": str(updater_exe),
+            "runtimePreflightAvailable": preflight_script.exists(),
+            "runtimePreflightScript": str(preflight_script),
+            "performanceProfilesAvailable": profile_module.exists(),
+            "localUpdateSha": local_sha,
+            "updateSource": update_source,
+        }
+
+    @Slot(result="QVariantMap")
+    def getToolStatus(self):
+        return self._tool_status_payload()
+
+    @Slot(result="QVariantMap")
+    def runRuntimePreflight(self):
+        script = self._tool_path("tools", "runtime_preflight.py")
+        if not script.exists():
+            self._notification("error", "Runtime preflight is not available on this branch.")
+            return {"ok": False, "output": "runtime_preflight.py missing"}
+        try:
+            result = subprocess.run(
+                [sys.executable, str(script)],
+                cwd=os.getcwd(),
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            output = (result.stdout or "") + (result.stderr or "")
+            ok = result.returncode == 0
+            self._notification(
+                "success" if ok else "error",
+                "Runtime preflight passed." if ok else "Runtime preflight found a problem. See Logs.",
+            )
+            if output.strip():
+                self._push_log("info" if ok else "error", output.strip()[-900:])
+            return {"ok": ok, "code": result.returncode, "output": output}
+        except Exception as exc:
+            self._notification("error", f"Runtime preflight failed to run: {exc}")
+            return {"ok": False, "output": str(exc)}
+
+    @Slot(str, result="QVariantMap")
+    def applyPerformanceProfile(self, profile):
+        try:
+            from performance_profile import apply_performance_profile
+
+            result = apply_performance_profile(profile or "balanced", save=True)
+            self.general_config = self._load_general_config()
+            self.bot_config = self._load_bot_config()
+            self._emit_state()
+            self._notification(
+                "success",
+                f"Applied {result['profile']} performance profile. Restart the bot before playing.",
+            )
+            return {
+                "ok": True,
+                "profile": result["profile"],
+                "description": result["description"],
+            }
+        except Exception as exc:
+            self._notification("error", f"Could not apply performance profile: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+    @Slot(bool, result="QVariantMap")
+    def launchUpdater(self, force=False):
+        status = self._tool_status_payload()
+        command = None
+        updater_exe = Path(status["updaterExe"])
+        updater_script = Path(status["updaterScript"])
+        if updater_exe.exists():
+            command = [str(updater_exe)]
+        elif updater_script.exists():
+            command = [sys.executable, str(updater_script)]
+        if command is None:
+            self._notification("error", "Updater is not available on this branch.")
+            return {"ok": False, "error": "updater missing"}
+        if force:
+            command.append("--force")
+        try:
+            creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+            subprocess.Popen(command, cwd=os.getcwd(), creationflags=creationflags)
+            self._notification(
+                "info",
+                "Updater launched in a separate console. Close PylaAI before installing over this running copy.",
+            )
+            return {"ok": True, "command": " ".join(command)}
+        except Exception as exc:
+            self._notification("error", f"Could not launch updater: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+    @Slot(result="QVariantMap")
+    def checkForUpdates(self):
+        try:
+            from tools import updater
+
+            latest_sha = updater.latest_branch_sha() or ""
+            local_sha = updater.read_local_update_sha(Path(os.getcwd())) or ""
+            update_available = bool(latest_sha and latest_sha != local_sha)
+            if update_available:
+                self._notification("info", "A newer GitHub branch revision is available. Use Launch Updater when ready.")
+            elif latest_sha:
+                self._notification("success", "This folder is already marked as the latest GitHub branch revision.")
+            else:
+                self._notification("warning", "Could not read the latest GitHub revision right now.")
+            return {
+                "ok": bool(latest_sha),
+                "latestSha": latest_sha,
+                "localSha": local_sha,
+                "updateAvailable": update_available,
+            }
+        except Exception as exc:
+            self._notification("error", f"Update check failed: {exc}")
+            return {"ok": False, "error": str(exc)}
+
     def _prepare_bot_control_events(self):
         self._bot_stop_requested = False
         self._bot_stop_event = threading.Event()
@@ -757,6 +927,7 @@ class QtBridge(QObject):
             "logs": self.getLogs(),
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
+            "toolStatus": self._tool_status_payload(),
             "live": dict(self._live_data),
             "multiInstance": self._multi_instance_state(),
         }

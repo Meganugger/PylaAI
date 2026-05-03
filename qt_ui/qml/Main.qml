@@ -19,6 +19,7 @@ ApplicationWindow {
     property var farmPreview: []
     property var live: ({})
     property var logs: []
+    property var toolStatus: ({})
     property int pageIndex: 0
     property string selectedBrawler: ""
     property string toastText: ""
@@ -315,6 +316,7 @@ ApplicationWindow {
         farmPreview = (state.farmPreview || []).slice ? (state.farmPreview || []).slice() : (state.farmPreview || [])
         live = state.live || {}
         logs = (state.logs || []).slice()
+        toolStatus = state.toolStatus || (backend.getToolStatus ? backend.getToolStatus() : ({}))
         rebuildComboModels()
         if (!selectedBrawler && brawlers.length) selectedBrawler = brawlers[0].name
         hydrateEditors()
@@ -352,6 +354,26 @@ ApplicationWindow {
             "time": {"state_check": stateCheck.text, "no_detections": noDetect.text, "idle": idleField.text, "gadget": gadgetField.text, "hypercharge": hyperField.text, "super": superField.text, "wall_detection": wallField.text, "no_detection_proceed": noProceed.text, "check_if_brawl_stars_crashed": crashCheck.text},
             "login": {"key": pylaKey.text}
         })
+    }
+    function runRuntimePreflight() {
+        const result = backend.runRuntimePreflight()
+        logs = backend.getLogs()
+        return result
+    }
+    function applyProfile(profile) {
+        const result = backend.applyPerformanceProfile(profile)
+        toolStatus = backend.getToolStatus()
+        return result
+    }
+    function launchUpdater(force) {
+        const result = backend.launchUpdater(!!force)
+        toolStatus = backend.getToolStatus()
+        return result
+    }
+    function checkUpdates() {
+        const result = backend.checkForUpdates()
+        logs = backend.getLogs()
+        return result
     }
     function saveMultiInstance() {
         let ports = String(instancePortsField.text || "").trim()
@@ -2273,6 +2295,41 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Crash Check" } AppTextField { id: crashCheck; Layout.fillWidth: true } }
                                         }
                                         AccentButton { text: "Save Settings"; onClicked: saveSettings() }
+                                    }
+                                }
+                                AppCard {
+                                    width: parent.width
+                                    implicitHeight: toolsContent.implicitHeight + 44
+                                    ColumnLayout {
+                                        id: toolsContent
+                                        anchors.fill: parent
+                                        anchors.margins: 22
+                                        spacing: 16
+                                        SectionEyebrow { text: "LOCAL TOOLS" }
+                                        CardTitle { text: "Updater & Runtime" }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            AppComboBox {
+                                                id: performanceProfile
+                                                implicitWidth: 190
+                                                model: ["balanced", "low_end", "quality"]
+                                            }
+                                            AppButton { text: "Apply Profile"; implicitWidth: 150; onClicked: applyProfile(performanceProfile.currentText) }
+                                            AppButton { text: "Runtime Check"; implicitWidth: 150; onClicked: runRuntimePreflight() }
+                                            AppButton { text: "Check Updates"; implicitWidth: 150; onClicked: checkUpdates() }
+                                            AppButton { text: "Launch Updater"; implicitWidth: 160; highlighted: true; onClicked: launchUpdater(false) }
+                                        }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: 2
+                                            columnSpacing: 14
+                                            rowSpacing: 8
+                                            Label { text: "Update source"; color: root.textDim; font.pixelSize: 13 }
+                                            Label { Layout.fillWidth: true; text: String(toolStatus.updateSource || "Meganugger/PylaAI [main]"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                                            Label { text: "Local marker"; color: root.textDim; font.pixelSize: 13 }
+                                            Label { Layout.fillWidth: true; text: String(toolStatus.localUpdateSha || "not recorded"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                                        }
                                     }
                                 }
                             }
