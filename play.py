@@ -1926,6 +1926,12 @@ class Movement:
         if now - self.time_since_super_used < self.SUPER_USE_COOLDOWN:
             return False
         print("Using super")
+        if getattr(self, "time_since_holding_attack", None) is not None:
+            try:
+                self.window_controller.press_key("M", touch_up=True, touch_down=False)
+            except Exception as exc:
+                print(f"Could not release held attack before super: {exc}")
+            self.time_since_holding_attack = None
         # Snapshot walls before super (for wall destruction detection)
         self._pre_super_walls = list(self.last_walls_data) if self.last_walls_data else None
         self._force_wall_refresh = True  # Force fresh tile scan after super
@@ -3334,7 +3340,9 @@ class Play(Movement):
     def check_if_super_ready(self, frame):
         screenshot = frame.crop((int(1460 * self.window_controller.width_ratio), int(830 * self.window_controller.height_ratio), int(1560 * self.window_controller.width_ratio), int(930 * self.window_controller.height_ratio)))
         yellow_pixels = count_hsv_pixels(screenshot, (15, 120, 150), (35, 255, 255))
-        if yellow_pixels > self._scaled_pixel_threshold(self.super_pixels_minimum):
+        orange_pixels = count_hsv_pixels(screenshot, (8, 120, 150), (38, 255, 255))
+        threshold = self._scaled_pixel_threshold(self.super_pixels_minimum)
+        if yellow_pixels > threshold or orange_pixels > threshold * 1.15:
             return True
         return False
 

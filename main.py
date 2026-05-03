@@ -173,6 +173,18 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             # Match duration watchdog: detect stuck-in-match (idle disconnect, etc.)
             self._match_watchdog_start = 0.0   # when we entered 'match' state
             self._match_watchdog_max = 6 * 60  # 6 minutes max per match
+            time_thresholds = load_toml_as_dict("cfg/time_tresholds.toml")
+            self.match_ready_at = 0.0
+            self.low_ips_threshold = float(time_thresholds.get("low_ips_recovery_threshold", 4.0))
+            self.low_ips_startup_grace_seconds = float(time_thresholds.get("low_ips_startup_grace_seconds", 60))
+            self.low_ips_match_grace_seconds = float(time_thresholds.get("low_ips_match_grace_seconds", 12))
+            self.low_ips_recovery_seconds = float(time_thresholds.get("low_ips_recovery_seconds", 45))
+            self.low_ips_recovery_cooldown = float(time_thresholds.get("low_ips_recovery_cooldown", 35))
+            self.low_ips_app_restart_after = int(time_thresholds.get("low_ips_app_restart_after", 3))
+            self.low_ips_emulator_restart_after = int(time_thresholds.get("low_ips_emulator_restart_after", 6))
+            self.low_ips_since = None
+            self.last_low_ips_recovery = 0.0
+            self.low_ips_recovery_attempts = 0
             # Periodic garbage collection
             self._last_gc_time = time.time()
 
@@ -334,6 +346,54 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             except Exception as e:
                 print(f"[OVERLAY] Toggle failed: {e}")
 
+        def reset_low_ips_watchdog(self, recovered=True):
+            self.low_ips_since = None
+            if recovered:
+                self.low_ips_recovery_attempts = 0
+
+        def recover_low_ips(self, current_ips):
+            if current_ips <= 0:
+                return False
+            if self.max_ips and self.max_ips <= self.low_ips_threshold:
+                return False
+            now = time.time()
+            if now - self.start_time < self.low_ips_startup_grace_seconds:
+                return False
+            if self.state == "match" and self.match_ready_at and now - self.match_ready_at < self.low_ips_match_grace_seconds:
+                return False
+            if current_ips >= self.low_ips_threshold:
+                if self.low_ips_since is not None:
+                    print(f"IPS recovered to {current_ips:.2f}; clearing low-IPS watchdog.")
+                self.reset_low_ips_watchdog(recovered=True)
+                return False
+            if self.low_ips_since is None:
+                self.low_ips_since = now
+                return False
+            low_for = now - self.low_ips_since
+            if low_for < self.low_ips_recovery_seconds or now - self.last_low_ips_recovery < self.low_ips_recovery_cooldown:
+                return False
+            self.last_low_ips_recovery = now
+            self.low_ips_recovery_attempts += 1
+            self.window_controller.keys_up(list("wasd"))
+            print(f"IPS stayed low ({current_ips:.2f}) for {low_for:.1f}s; recovery attempt {self.low_ips_recovery_attempts}.")
+            if self.low_ips_recovery_attempts >= self.low_ips_app_restart_after:
+                print("Low IPS persisted; restarting Brawl Stars and scrcpy.")
+                self.restart_brawl_stars()
+                try:
+                    self.window_controller.restart_scrcpy_client()
+                except Exception:
+                    pass
+            else:
+                print("Low IPS detected; restarting scrcpy feed.")
+                try:
+                    self.window_controller.restart_scrcpy_client()
+                except Exception:
+                    self.restart_brawl_stars()
+            self.last_processed_frame_time = 0.0
+            self.low_ips_since = now
+            gc.collect()
+            return True
+
         @staticmethod
         def load_models():
             folder_path = "./models/"
@@ -479,13 +539,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         state = get_state(frame)
                     except Exception:
                         state = "lobby"
+                previous_state = self.state
                 self.state = state
                 self.Play._runtime_state = state
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
                     self._match_watchdog_start = 0.0  # reset watchdog
                 else:
-                    self.Stage_manager.mark_match_started()
+                    if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
+                        if self.Stage_manager.mark_match_started():
+                            self.match_ready_at = time.time()
                     # Track how long we've been continuously in 'match'
                     if self._match_watchdog_start <= 0:
                         self._match_watchdog_start = time.time()
@@ -570,6 +633,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self.current_ips = c / elapsed
                         if debug:
                             print(f"{self.current_ips:.2f} IPS")
+                        if self.recover_low_ips(self.current_ips):
+                            s_time = time.time()
+                            c = 0
+                            continue
                     s_time = time.time()
                     c = 0
 
@@ -708,8 +775,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self._out_of_match_latched = False
 
                     self.Play.main(frame, brawler)
-                    if getattr(self.Play, "_runtime_state", "") == "match":
-                        self.Stage_manager.mark_match_started()
                     pending_result = getattr(self.Play, "_pending_end_result", None)
                     if pending_result:
                         print(f"[RESULT] play.py queued pending result {pending_result}")

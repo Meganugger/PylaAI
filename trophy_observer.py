@@ -6,7 +6,7 @@ from difflib import SequenceMatcher
 import numpy as np
 import requests
 
-from utils import load_toml_as_dict, save_dict_as_toml, api_base_url, reader
+from utils import load_brawl_stars_api_config, load_toml_as_dict, save_dict_as_toml, api_base_url, reader
 
 
 class TrophyObserver:
@@ -183,10 +183,10 @@ class TrophyObserver:
             self._last_api_lookup_error_time = now
 
     @staticmethod
-    def _load_brawlstars_api_settings():
-        general_config = load_toml_as_dict("./cfg/general_config.toml")
-        api_key = str(general_config.get("brawlstars_api_key", "") or "").strip()
-        player_tag = str(general_config.get("brawlstars_player_tag", "") or "").strip().upper().replace("#", "")
+    def _load_brawlstars_api_settings(force_refresh=False):
+        api_config = load_brawl_stars_api_config(force_refresh=force_refresh)
+        api_key = str(api_config.get("api_token") or api_config.get("api_key") or api_config.get("brawlstars_api_key") or "").strip()
+        player_tag = str(api_config.get("player_tag") or api_config.get("brawlstars_player_tag") or "").strip().upper().replace("#", "")
         return api_key, player_tag
 
     def has_brawlstars_api_settings(self):
@@ -194,7 +194,7 @@ class TrophyObserver:
         return bool(api_key and player_tag)
 
     def _fetch_player_brawlers_from_brawlstars_api(self, force=False, timeout=3.0):
-        api_key, player_tag = self._load_brawlstars_api_settings()
+        api_key, player_tag = self._load_brawlstars_api_settings(force_refresh=force)
         if not api_key or not player_tag:
             return None
 
@@ -206,20 +206,33 @@ class TrophyObserver:
         ):
             return self._api_player_brawlers_cache
 
-        try:
-            response = requests.get(
-                f"https://api.brawlstars.com/v1/players/%23{player_tag}",
-                headers={"Authorization": f"Bearer {api_key}"},
-                timeout=timeout,
-            )
-            if response.status_code == 403:
-                raise ValueError("the Brawl Stars API key was rejected")
-            if response.status_code == 404:
-                raise ValueError("the player tag was not found")
-            response.raise_for_status()
-            payload = response.json()
-        except (requests.exceptions.RequestException, ValueError) as exc:
-            self._log_api_lookup_issue(f"[RESULT] API fallback unavailable: {exc}")
+        for attempt in range(2):
+            request_timeout = timeout if attempt == 0 else min(6.0, max(timeout * 2.0, timeout + 1.5))
+            try:
+                response = requests.get(f"https://api.brawlstars.com/v1/players/%23{player_tag}", headers={"Authorization": f"Bearer {api_key}"}, timeout=request_timeout)
+                if response.status_code == 403 and not force and attempt == 0:
+                    refreshed_key, refreshed_tag = self._load_brawlstars_api_settings(force_refresh=True)
+                    if refreshed_key and refreshed_tag:
+                        api_key, player_tag = refreshed_key, refreshed_tag
+                        continue
+                    raise ValueError("the Brawl Stars API key was rejected")
+                if response.status_code == 403:
+                    raise ValueError("the Brawl Stars API key was rejected")
+                if response.status_code == 404:
+                    raise ValueError("the player tag was not found")
+                response.raise_for_status()
+                payload = response.json()
+                break
+            except requests.exceptions.Timeout as exc:
+                if attempt == 0:
+                    self._log_api_lookup_issue(f"[RESULT] API fallback timed out after {request_timeout:.1f}s; retrying once")
+                    continue
+                self._log_api_lookup_issue(f"[RESULT] API fallback unavailable: {exc}")
+                return None
+            except (requests.exceptions.RequestException, ValueError) as exc:
+                self._log_api_lookup_issue(f"[RESULT] API fallback unavailable: {exc}")
+                return None
+        else:
             return None
 
         brawlers = payload.get("brawlers", [])

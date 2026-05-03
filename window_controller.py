@@ -196,7 +196,7 @@ class WindowController:
             self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
             self._last_frame_hash = None
             self._consecutive_identical_frames = 0
-            self._frozen_frame_threshold = 5  # trigger restart after this many identical frames
+            self._frozen_frame_threshold = 300
             self._last_healthy_frame_time = 0.0
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
@@ -464,8 +464,6 @@ class WindowController:
         frame_age = time.time() - self.last_frame_time if self.last_frame_time > 0 else float("inf")
         if frame_age > self.FRAME_STALE_TIMEOUT:
             return False
-        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
-            return False
         return True
 
     def screenshot(self, array=False):
@@ -479,20 +477,6 @@ class WindowController:
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
-
-        # Frozen-frame auto-recovery
-        if self._consecutive_identical_frames >= self._frozen_frame_threshold:
-            print(
-                f"WARNING: {self._consecutive_identical_frames} consecutive identical frames "
-                f"detected -- restarting scrcpy to recover"
-            )
-            try:
-                self.restart_scrcpy_client()
-                frame, frame_time = self.wait_for_next_frame(copy_frame=True, timeout=10.0)
-                if frame is None:
-                    raise ConnectionError("No frame after frozen-frame scrcpy restart")
-            except Exception as exc:
-                print(f"Could not recover from frozen frames: {exc}")
 
         self._ensure_frame_geometry(frame)
 
