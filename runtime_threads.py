@@ -45,12 +45,22 @@ _THREAD_PRESETS = {
 }
 
 
+def _load_toml_file(file_path):
+    with open(file_path, "r", encoding="utf-8-sig") as file:
+        text = file.read()
+    toml_decode_error = getattr(toml, "TomlDecodeError", ValueError)
+    try:
+        return toml.loads(text.lstrip("\ufeffï»¿"))
+    except toml_decode_error:
+        sanitized = text.encode("utf-8", errors="ignore").decode("utf-8-sig", errors="ignore")
+        return toml.loads(sanitized.lstrip("\ufeffï»¿\x00\r\n\t "))
+
+
 def _load_general_config():
     global _config_cache
     if _config_cache is None:
         if os.path.exists(_GENERAL_CONFIG_PATH):
-            with open(_GENERAL_CONFIG_PATH, "r") as file:
-                _config_cache = toml.load(file)
+            _config_cache = _load_toml_file(_GENERAL_CONFIG_PATH)
         else:
             _config_cache = {}
     return _config_cache

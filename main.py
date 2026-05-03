@@ -730,6 +730,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 ox * self.Play.window_controller.width_ratio,
                                 oy * self.Play.window_controller.height_ratio
                             )
+                        else:
+                            self.Play.objective_pos = None
 
                     brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
                     # Update Play's current brawler if it changed (e.g. trophy farm mode)

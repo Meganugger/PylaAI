@@ -32,8 +32,8 @@ GAMEMODE_MAP = {
     "hotzone":     {"type": 3, "walls": True,  "showdown": False, "objective": (960, 540)},
     "hot zone":    {"type": 3, "walls": True,  "showdown": False, "objective": (960, 540)},
     # Horizontal-priority modes (gamemode_type=5): focus on pushing right
-    "brawlball":   {"type": 5, "walls": True,  "showdown": False, "objective": (1700, 540)},
-    "brawl ball":  {"type": 5, "walls": True,  "showdown": False, "objective": (1700, 540)},
+    "brawlball":   {"type": 5, "walls": True,  "showdown": False, "objective": (960, 540)},
+    "brawl ball":  {"type": 5, "walls": True,  "showdown": False, "objective": (960, 540)},
     "heist":       {"type": 5, "walls": True,  "showdown": False, "objective": (1700, 540)},
     # Showdown modes - survival, stay near teammate
     "showdown":      {"type": 3, "walls": True, "showdown": True,  "objective": (960, 540)},
@@ -1105,6 +1105,8 @@ class StageManager:
         )
 
     def mark_match_started(self):
+        if self._match_in_progress:
+            return False
         now = time.time()
         recent_start_press = bool(self._last_start_press_at and (now - self._last_start_press_at) <= 12.0)
         sync_started_at = max(
@@ -1128,8 +1130,6 @@ class StageManager:
                     return False
                 print("[RESULT] clearing unresolved lobby sync because a new match started")
                 self._reset_lobby_result_sync_state()
-        if self._match_in_progress:
-            return False
         if debug:
             active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
             print(f"[RESULT] mark_match_started for {active_name}")
@@ -1909,10 +1909,10 @@ class StageManager:
                 current_state = get_state(screenshot)
                 continue
 
-            # --- Play Again on Win: press F instead of Q ---
+            # --- Play Again on Win: press the real Play Again button instead of Proceed ---
             if self.play_again_on_win and found_game_result and self.Trophy_observer._last_game_result == "victory":
-                self.window_controller.press_key("F")
-                if debug: print("Victory - pressing F (Play Again)")
+                self.window_controller.press_play_again()
+                print("[PLAY-AGAIN] Pressed Play Again")
             else:
                 self.window_controller.press_continue()
                 if debug: print("Game has ended, pressing Q")
@@ -2124,9 +2124,8 @@ class StageManager:
                 and self._result_applied_for_active_match
                 and self.Trophy_observer._last_game_result == "victory"
             ):
-                self.window_controller.press_key("F")
-                if debug:
-                    print("Victory - pressing F (Play Again)")
+                self.window_controller.press_play_again()
+                print("[PLAY-AGAIN] Pressed Play Again")
             else:
                 self.window_controller.press_key("Q")
                 if debug:

@@ -261,8 +261,26 @@ def _config_defaults_for_path(file_path):
 def load_toml_as_dict(file_path):
     loaded = {}
     if os.path.exists(file_path):
-        with open(file_path, 'r') as f:
-            loaded = toml.load(f)
+        with open(file_path, 'r', encoding='utf-8-sig') as f:
+            text = f.read()
+        toml_decode_error = getattr(toml, "TomlDecodeError", ValueError)
+        try:
+            loaded = toml.loads(text.lstrip("\ufeffï»¿"))
+        except toml_decode_error as exc:
+            sanitized = text.encode("utf-8", errors="ignore").decode("utf-8-sig", errors="ignore")
+            sanitized = sanitized.lstrip("\ufeffï»¿\x00\r\n\t ")
+            try:
+                loaded = toml.loads(sanitized)
+            except toml_decode_error:
+                if hasattr(toml, "TomlDecodeError"):
+                    raise toml.TomlDecodeError(
+                        f"Could not parse {file_path}. The file may contain invalid leading bytes or malformed TOML: {exc}",
+                        getattr(exc, "doc", text),
+                        getattr(exc, "pos", 0),
+                    )
+                raise ValueError(
+                    f"Could not parse {file_path}. The file may contain invalid leading bytes or malformed TOML: {exc}"
+                )
 
     defaults = _config_defaults_for_path(file_path)
     if not defaults:

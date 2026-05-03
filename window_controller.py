@@ -22,7 +22,7 @@ key_coords_dict = {
     "M": (1725, 800),
     "Q": (1660, 980),
     "E": (1510, 880),
-    "F": (1360, 920),
+    "F": (1390, 930),
 }
 
 continue_fallback_targets = (
@@ -31,6 +31,13 @@ continue_fallback_targets = (
     (1180, 950),
     (960, 950),
     (960, 540),
+)
+
+play_again_targets = (
+    (1390, 930),
+    (1470, 930),
+    (1300, 930),
+    (1390, 980),
 )
 
 directions_xy_deltas_dict = {
@@ -196,7 +203,10 @@ class WindowController:
             self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
             self._last_frame_hash = None
             self._consecutive_identical_frames = 0
-            self._frozen_frame_threshold = 300
+            self._frozen_frame_threshold = int(time_config.get("frozen_frame_min_identical_frames", 30))
+            self._frozen_frame_seconds = float(time_config.get("frozen_frame_seconds", 15.0))
+            self._frozen_frame_restart_cooldown = float(time_config.get("frozen_frame_restart_cooldown", 20.0))
+            self._last_scrcpy_restart_at = 0.0
             self._last_healthy_frame_time = 0.0
             self.APP_STATE_CHECK_INTERVAL = float(time_config.get("check_if_brawl_stars_crashed", 10.0))
             self.APP_RELAUNCH_WAIT = 3.0
@@ -292,6 +302,9 @@ class WindowController:
         with self.frame_condition:
             self.last_frame = None
             self.last_frame_time = 0.0
+            self._last_frame_hash = None
+            self._consecutive_identical_frames = 0
+            self._last_healthy_frame_time = time.time()
             self.frame_condition.notify_all()
         self.last_joystick_pos = (None, None)
         self.are_we_moving = False
@@ -389,6 +402,7 @@ class WindowController:
                 print(f"Could not stop old scrcpy client cleanly: {exc}")
         time.sleep(0.25)
         self.start_scrcpy_client()
+        self._last_scrcpy_restart_at = time.time()
         print("Scrcpy client restarted successfully.")
 
     def _ensure_frame_geometry(self, frame):
@@ -492,6 +506,12 @@ class WindowController:
         frame_age = time.time() - self.last_frame_time if self.last_frame_time > 0 else float("inf")
         if frame_age > self.FRAME_STALE_TIMEOUT:
             return False
+        frozen_age = time.time() - self._last_healthy_frame_time if self._last_healthy_frame_time > 0 else 0.0
+        if (
+            self._consecutive_identical_frames >= self._frozen_frame_threshold
+            and frozen_age >= self._frozen_frame_seconds
+        ):
+            return False
         return True
 
     def screenshot(self, array=False):
@@ -505,6 +525,26 @@ class WindowController:
         age = time.time() - frame_time
         if frame_time > 0 and age > self.FRAME_STALE_TIMEOUT:
             print(f"WARNING: scrcpy frame is {age:.1f}s stale -- feed may be frozen")
+
+        # Frozen-frame auto-recovery
+        frozen_age = time.time() - self._last_healthy_frame_time if self._last_healthy_frame_time > 0 else 0.0
+        restart_cooldown_ok = (time.time() - self._last_scrcpy_restart_at) >= self._frozen_frame_restart_cooldown
+        if (
+            self._consecutive_identical_frames >= self._frozen_frame_threshold
+            and frozen_age >= self._frozen_frame_seconds
+            and restart_cooldown_ok
+        ):
+            print(
+                f"WARNING: {self._consecutive_identical_frames} consecutive identical frames "
+                f"over {frozen_age:.1f}s detected -- restarting scrcpy to recover"
+            )
+            try:
+                self.restart_scrcpy_client()
+                frame, frame_time = self.wait_for_next_frame(copy_frame=True, timeout=10.0)
+                if frame is None:
+                    raise ConnectionError("No frame after frozen-frame scrcpy restart")
+            except Exception as exc:
+                print(f"Could not recover from frozen frames: {exc}")
 
         self._ensure_frame_geometry(frame)
 
@@ -578,6 +618,11 @@ class WindowController:
         for x, y in continue_fallback_targets:
             self.click(x, y, 0.02, already_include_ratio=False)
             time.sleep(0.5)
+
+    def press_play_again(self):
+        for x, y in play_again_targets:
+            self.click(x, y, 0.02, already_include_ratio=False)
+            time.sleep(0.12)
 
     def swipe(self, start_x, start_y, end_x, end_y, duration=0.2):
         dist_x = end_x - start_x
