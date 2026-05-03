@@ -2839,7 +2839,7 @@ class Play(Movement):
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
-                and player_missing_for >= 0.6
+                and player_missing_for >= max(3.0, self.no_detection_proceed_delay)
                 and raw_supporting_entities <= 0
                 and (current_time - self._last_end_result_probe_time) >= 1.0
             ):

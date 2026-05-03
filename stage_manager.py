@@ -71,6 +71,7 @@ class StageManager:
         self.Lobby_automation = lobby_automator
         self.lobby_config = load_toml_as_dict("./cfg/lobby_config.toml")
         self.bot_config = load_toml_as_dict("./cfg/bot_config.toml")
+        self.play_again_on_win = self.bot_config.get("play_again_on_win", "no") == "yes"
         self.brawl_stars_icon = None
         self.close_popup_icon = None
         self.brawlers_pick_data = brawlers_data
@@ -666,6 +667,8 @@ class StageManager:
         return int(numbers)
 
     def mark_match_started(self):
+        if self._match_in_progress:
+            return False
         now = time.time()
         recent_start_press = bool(self._last_start_press_at and (now - self._last_start_press_at) <= 12.0)
         sync_started_at = max(
@@ -690,8 +693,6 @@ class StageManager:
                     return False
                 print("[RESULT] clearing unresolved lobby sync because a new match started")
                 self._reset_lobby_result_sync_state()
-        if self._match_in_progress:
-            return False
         if debug:
             active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
             print(f"[RESULT] mark_match_started for {active_name}")
@@ -1328,6 +1329,13 @@ class StageManager:
             self.handle_prestige_reward(screenshot)
         elif current_state == "star_drop":
             self.click_star_drop()
+        elif (
+            self.play_again_on_win
+            and self._result_applied_for_active_match
+            and self.Trophy_observer._last_game_result == "victory"
+        ):
+            self.window_controller.press_play_again()
+            print("[PLAY-AGAIN] Pressed Play Again")
         else:
             self.window_controller.press_continue()
             if debug:
