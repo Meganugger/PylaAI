@@ -2,6 +2,7 @@ import unittest
 
 from dashboard import Dashboard
 from play import Movement, Play
+from qt_ui.bridge import QtBridge
 
 
 class DummyWindow:
@@ -11,9 +12,10 @@ class DummyWindow:
 
 
 class BrawlBallAndFarmTests(unittest.TestCase):
-    def test_brawlball_5v5_uses_brawlball_movement_rules(self):
-        self.assertTrue(Movement._is_brawl_ball_mode("brawlball_5v5"))
-        self.assertTrue(Movement._should_detect_walls_for_mode("brawlball_5v5"))
+    def test_brawlball_is_not_treated_as_5v5(self):
+        self.assertTrue(Movement._is_brawl_ball_mode("brawlball"))
+        self.assertTrue(Movement._should_detect_walls_for_mode("brawlball"))
+        self.assertFalse(Movement._is_brawl_ball_mode("brawlball_5v5"))
 
     def test_brawlball_solo_roam_moves_back_toward_midfield_from_corner(self):
         movement = object.__new__(Play)
@@ -56,6 +58,42 @@ class BrawlBallAndFarmTests(unittest.TestCase):
         }
 
         self.assertEqual(dashboard._farm_candidate_brawlers(), ["darryl", "shelly"])
+
+    def test_qt_trophy_farm_uses_all_local_brawlers_without_scan_or_roster(self):
+        bridge = QtBridge.__new__(QtBridge)
+        bridge._all_brawlers = ["shelly", "colt"]
+        bridge.brawlers_data = []
+        bridge.bot_config = {
+            "trophy_farm_target": 500,
+            "trophy_farm_strategy": "lowest_first",
+            "trophy_farm_excluded": [],
+        }
+        bridge.general_config = {"auto_push_target_trophies": 1000}
+        bridge.brawlers_info = {}
+        bridge._brawler_scan_data = lambda: {}
+        bridge._match_history_map = lambda: {}
+
+        roster, queue, target, _strategy = bridge._build_trophy_farm_roster()
+
+        self.assertEqual(target, 500)
+        self.assertEqual([item["brawler"] for item in queue], ["colt", "shelly"])
+        self.assertEqual([item["brawler"] for item in roster], ["colt", "shelly"])
+
+    def test_brawlball_combat_strafe_is_disabled(self):
+        movement = object.__new__(Play)
+        movement.selected_gamemode = "brawlball"
+        movement.is_showdown_mode = False
+        movement.current_ammo = 3
+
+        self.assertFalse(
+            movement._should_enable_combat_strafe(
+                target_hittable=True,
+                should_retreat_for_ammo=False,
+                enemy_distance=220,
+                effective_safe_range=180,
+                attack_range=300,
+            )
+        )
 
 
 if __name__ == "__main__":
