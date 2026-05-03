@@ -193,6 +193,7 @@ class StageManager:
         self._pending_webhook_milestone_summary = None
         self._lobby_visible_since = 0.0
         self._last_start_press_at = 0.0
+        self._last_result_applied_at = 0.0
         self._start_press_attempts = 0
         self._start_wait_logged_at = 0.0
         self._lobby_start_settle_delay = 0.45
@@ -1106,15 +1107,22 @@ class StageManager:
     def mark_match_started(self):
         now = time.time()
         recent_start_press = bool(self._last_start_press_at and (now - self._last_start_press_at) <= 12.0)
+        sync_started_at = max(
+            self._lobby_sync_started_at,
+            self._last_result_applied_at,
+        )
+        new_start_press = recent_start_press and (
+            sync_started_at <= 0.0 or self._last_start_press_at >= sync_started_at
+        )
         if self._awaiting_lobby_result_sync:
             if self._result_applied_for_active_match or self._pending_verified_result:
-                if not recent_start_press:
+                if not new_start_press:
                     if debug:
                         print("[RESULT] ignoring match-start probe while post-match sync is still pending")
                     return False
                 self._finish_pending_result_sync("new match started before lobby verification")
             else:
-                if not recent_start_press:
+                if not new_start_press:
                     if debug:
                         print("[RESULT] ignoring match-start probe with unresolved lobby sync")
                     return False
@@ -1128,6 +1136,7 @@ class StageManager:
         self._match_in_progress = True
         self._awaiting_lobby_result_sync = True
         self._result_applied_for_active_match = False
+        self._last_result_applied_at = 0.0
         self._lobby_sync_started_at = 0.0
         self._pending_verified_result = None
         self._api_lobby_sync_attempts = 0
@@ -1268,6 +1277,7 @@ class StageManager:
 
         type_to_push, value, _ = self._resolve_push_progress()
         self._result_applied_for_active_match = True
+        self._last_result_applied_at = time.time()
         self._match_in_progress = False
         print(f"[RESULT] applied={applied} predicted_value={value} type={type_to_push}")
         return applied

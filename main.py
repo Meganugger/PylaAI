@@ -376,6 +376,11 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.low_ips_recovery_attempts += 1
             self.window_controller.keys_up(list("wasd"))
             print(f"IPS stayed low ({current_ips:.2f}) for {low_for:.1f}s; recovery attempt {self.low_ips_recovery_attempts}.")
+            if self.low_ips_recovery_attempts >= 2 and hasattr(self.window_controller, "reduce_capture_load_for_slow_feed"):
+                try:
+                    self.window_controller.reduce_capture_load_for_slow_feed()
+                except Exception as exc:
+                    print(f"Could not reduce scrcpy capture load: {exc}")
             if self.low_ips_recovery_attempts >= self.low_ips_app_restart_after:
                 print("Low IPS persisted; restarting Brawl Stars and scrcpy.")
                 self.restart_brawl_stars()
