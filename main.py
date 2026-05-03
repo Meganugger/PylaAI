@@ -568,7 +568,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 else:
                     if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
                         if self.Stage_manager.mark_match_started():
-                            self.match_ready_at = time.time()
+                            reset_fn = getattr(self.Play, "reset_match_control_state", None)
+                            if callable(reset_fn):
+                                reset_fn(now)
+                            elif hasattr(self.Play, "reset_match_state"):
+                                self.Play.reset_match_state()
+                            self.match_ready_at = now
                     # Track how long we've been continuously in 'match'
                     if self._match_watchdog_start <= 0:
                         self._match_watchdog_start = time.time()

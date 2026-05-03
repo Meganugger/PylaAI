@@ -2,6 +2,7 @@ import unittest
 
 from dashboard import Dashboard
 from play import Play
+from qt_ui.bridge import QtBridge
 
 
 class DummyWindow:
@@ -14,7 +15,7 @@ class BrawlBallAndFarmTests(unittest.TestCase):
         play = object.__new__(Play)
         play.game_mode_name = "brawlball_5v5"
 
-        self.assertTrue(play._is_brawl_ball_mode())
+        self.assertFalse(play._is_brawl_ball_mode())
 
     def test_brawlball_solo_search_moves_back_toward_midfield_from_corner(self):
         play = object.__new__(Play)
@@ -40,6 +41,30 @@ class BrawlBallAndFarmTests(unittest.TestCase):
         dashboard._brawler_scan_data = {}
 
         self.assertEqual(dashboard._farm_candidate_brawlers(), ["colt", "darryl", "shelly"])
+
+    def test_qt_farm_preview_uses_discovered_brawlers_without_scan_data(self):
+        bridge = QtBridge.__new__(QtBridge)
+        bridge.bot_config = {
+            "trophy_farm_target": 500,
+            "trophy_farm_strategy": "lowest_first",
+            "trophy_farm_excluded": [],
+        }
+        bridge.general_config = {"auto_push_target_trophies": 1000}
+        bridge.brawlers_info = {"shelly": {}, "colt": {}, "darryl": {}}
+        bridge._all_brawlers = ["shelly", "colt", "darryl"]
+        bridge.brawlers_data = []
+        bridge._brawler_scan_data = lambda: {}
+        bridge._match_history_map = lambda: {}
+        bridge._as_int = QtBridge._as_int
+        bridge._normalize_farm_strategy = QtBridge._normalize_farm_strategy
+        bridge._normalize_brawler_set = QtBridge._normalize_brawler_set.__get__(bridge, QtBridge)
+        bridge._canonical_brawler_name = QtBridge._canonical_brawler_name.__get__(bridge, QtBridge)
+        bridge._scan_entry_for_brawler = QtBridge._scan_entry_for_brawler.__get__(bridge, QtBridge)
+
+        roster, queue, _target, _strategy = bridge._build_trophy_farm_roster()
+
+        self.assertEqual([item["brawler"] for item in queue], ["colt", "darryl", "shelly"])
+        self.assertEqual([item["brawler"] for item in roster], ["colt", "darryl", "shelly"])
 
     def test_farm_candidates_keep_selected_brawler_with_scan_data(self):
         dashboard = object.__new__(Dashboard)

@@ -14,8 +14,10 @@ import os
 import json
 import re
 import subprocess
+import sys
 import webbrowser
 import inspect
+from pathlib import Path
 
 from PIL import Image
 from customtkinter import CTkImage
@@ -103,6 +105,27 @@ class Dashboard(ctk.CTk):
             return f"PylaAI {raw}"
         return f"PylaAI v{raw}"
 
+    @staticmethod
+    def _discover_brawler_names(names, brawlers_info=None):
+        discovered = set()
+        for name in names or []:
+            value = str(name or "").strip().lower()
+            if value:
+                discovered.add(value)
+        for name in (brawlers_info or {}).keys():
+            value = str(name or "").strip().lower()
+            if value:
+                discovered.add(value)
+        icon_dir = os.path.join("api", "assets", "brawler_icons")
+        if os.path.isdir(icon_dir):
+            for filename in os.listdir(icon_dir):
+                stem, ext = os.path.splitext(filename)
+                if ext.lower() == ".png":
+                    value = stem.strip().lower()
+                    if value:
+                        discovered.add(value)
+        return sorted(discovered)
+
     # --- iNIT ---
 
     def __init__(self, version_str, brawlers, pyla_main_fn,
@@ -111,7 +134,7 @@ class Dashboard(ctk.CTk):
 
         self.version_str = str(version_str).strip()
         self.version_tag = self._format_version_tag(self.version_str)
-        self.all_brawlers = brawlers
+        self.all_brawlers = list(brawlers or [])
         self._pyla_main = pyla_main_fn
         self._login_fn = login_fn
         self._logged_in = False
@@ -123,6 +146,9 @@ class Dashboard(ctk.CTk):
             "brawler_scan": hasattr(LobbyAutomation, "scan_all_brawlers"),
             "quest_farm": hasattr(StageManager, "_handle_quest_rotation"),
             "quest_scan": hasattr(LobbyAutomation, "scan_quest_brawlers"),
+            "updater": os.path.exists(os.path.join("tools", "updater.py")) or os.path.exists("updater.exe"),
+            "runtime_preflight": os.path.exists(os.path.join("tools", "runtime_preflight.py")),
+            "performance_profiles": os.path.exists("performance_profile.py"),
         }
         self._page_nav_owner = {
             "home": "home",
@@ -175,6 +201,7 @@ class Dashboard(ctk.CTk):
         self.time_tresholds = load_toml_as_dict("cfg/time_tresholds.toml")
         self.match_history = load_toml_as_dict("cfg/match_history.toml")
         self.brawlers_info = load_brawlers_info()
+        self.all_brawlers = self._discover_brawler_names(self.all_brawlers, self.brawlers_info)
         self._apply_defaults()
         self._load_scan_data()
         self._load_excluded_brawlers()
@@ -1446,6 +1473,63 @@ class Dashboard(ctk.CTk):
             value=float(self.time_tresholds.get("idle", 10)))
         self._slider_row(tim_f, "Idle Check", self._t_idle, 1, 30, "s")
 
+        self._section_header(page, "Tools")
+        tools_f = ctk.CTkFrame(page, fg_color=PANEL, corner_radius=S(10))
+        tools_f.pack(fill="x", padx=S(20), pady=S(4))
+        tool_row = ctk.CTkFrame(tools_f, fg_color="transparent")
+        tool_row.pack(fill="x", padx=S(14), pady=S(10))
+        ctk.CTkLabel(tool_row, text="Updater & Runtime",
+                     font=("Segoe UI", S(13)), text_color=TXT).pack(side="left", padx=(0, S(8)))
+        self._profile_var = ctk.StringVar(value="balanced")
+        ctk.CTkOptionMenu(
+            tool_row,
+            variable=self._profile_var,
+            values=["balanced", "low_end", "quality"],
+            font=("Segoe UI", S(13)),
+            fg_color=SECTION,
+            button_color=ACCENT,
+            button_hover_color=ACCENT_H,
+            dropdown_fg_color=PANEL,
+            dropdown_hover_color=SEP,
+            width=S(145),
+        ).pack(side="left", padx=(0, S(8)))
+        ctk.CTkButton(
+            tool_row,
+            text="Apply Profile",
+            fg_color=BLUE,
+            hover_color=CYAN,
+            text_color=BG,
+            width=S(130),
+            command=self._apply_performance_profile_from_ui,
+        ).pack(side="left", padx=S(4))
+        ctk.CTkButton(
+            tool_row,
+            text="Runtime Check",
+            fg_color=SECTION,
+            hover_color=CARD,
+            text_color=TXT,
+            width=S(130),
+            command=self._run_runtime_preflight_from_ui,
+        ).pack(side="left", padx=S(4))
+        ctk.CTkButton(
+            tool_row,
+            text="Check Updates",
+            fg_color=SECTION,
+            hover_color=CARD,
+            text_color=TXT,
+            width=S(130),
+            command=self._check_updates_from_ui,
+        ).pack(side="left", padx=S(4))
+        ctk.CTkButton(
+            tool_row,
+            text="Launch Updater",
+            fg_color=GOLD,
+            hover_color=ACCENT_H,
+            text_color=BG,
+            width=S(140),
+            command=lambda: self._launch_updater_from_ui(force=False),
+        ).pack(side="left", padx=S(4))
+
         # oVERLAY SECTION
         self._ovl_toggles = {}
         self._ovl_var = ctk.StringVar(
@@ -1652,6 +1736,83 @@ class Dashboard(ctk.CTk):
 
     def _on_control_center_orientation_change(self, value):
         self._on_orient_change(value)
+
+    def _set_tool_status(self, message, color=TXT):
+        if hasattr(self, "_status_label"):
+            self._status_label.configure(text=message, text_color=color)
+
+    def _run_runtime_preflight_from_ui(self):
+        script = os.path.join("tools", "runtime_preflight.py")
+        if not os.path.exists(script):
+            self._set_tool_status("Runtime preflight is not available", RED)
+            return
+        try:
+            result = subprocess.run(
+                [sys.executable, script],
+                cwd=os.getcwd(),
+                text=True,
+                capture_output=True,
+                timeout=90,
+            )
+            output = ((result.stdout or "") + (result.stderr or "")).strip()
+            if output:
+                print(output)
+            if result.returncode == 0:
+                self._set_tool_status("Runtime preflight passed", GREEN)
+            else:
+                self._set_tool_status("Runtime preflight found a problem; see console", RED)
+        except Exception as exc:
+            print(f"Runtime preflight failed: {exc}")
+            self._set_tool_status("Runtime preflight failed to run", RED)
+
+    def _apply_performance_profile_from_ui(self):
+        profile = self._profile_var.get() if hasattr(self, "_profile_var") else "balanced"
+        try:
+            from performance_profile import apply_performance_profile
+
+            result = apply_performance_profile(profile, save=True)
+            self.general_config = load_toml_as_dict("cfg/general_config.toml")
+            self.bot_config = load_toml_as_dict("cfg/bot_config.toml")
+            self._set_tool_status(f"Applied {result['profile']} profile; restart before playing", GREEN)
+        except Exception as exc:
+            print(f"Could not apply performance profile: {exc}")
+            self._set_tool_status("Could not apply performance profile", RED)
+
+    def _check_updates_from_ui(self):
+        try:
+            from tools import updater
+
+            latest_sha = updater.latest_branch_sha()
+            local_sha = updater.read_local_update_sha(Path(os.getcwd()))
+            if not latest_sha:
+                self._set_tool_status("Could not check GitHub updates right now", GOLD)
+            elif latest_sha == local_sha:
+                self._set_tool_status("Already on latest marked GitHub revision", GREEN)
+            else:
+                self._set_tool_status("Update available from GitHub", GOLD)
+        except Exception as exc:
+            print(f"Update check failed: {exc}")
+            self._set_tool_status("Update check failed", RED)
+
+    def _launch_updater_from_ui(self, force=False):
+        updater_exe = os.path.abspath("updater.exe")
+        updater_script = os.path.abspath(os.path.join("tools", "updater.py"))
+        if os.path.exists(updater_exe):
+            command = [updater_exe]
+        elif os.path.exists(updater_script):
+            command = [sys.executable, updater_script]
+        else:
+            self._set_tool_status("Updater is not available on this branch", RED)
+            return
+        if force:
+            command.append("--force")
+        try:
+            creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
+            subprocess.Popen(command, cwd=os.getcwd(), creationflags=creationflags)
+            self._set_tool_status("Updater launched; close PylaAI before installing", GOLD)
+        except Exception as exc:
+            print(f"Could not launch updater: {exc}")
+            self._set_tool_status("Could not launch updater", RED)
 
     def _save_all_settings(self):
         """Persist all settings to config files."""

@@ -480,6 +480,15 @@ class Movement:
         Called when a new match is detected (spawn detection).
 
         """
+        try:
+            self.window_controller.keys_up(list("wasd"))
+        except Exception:
+            pass
+        self.keys_hold = []
+        now = time.time()
+        self.time_since_different_movement = now
+        self.time_since_player_last_found = now
+        self.time_since_last_proceeding = now
         self._spawn_detected = False
         self._spawn_detect_frames = 0
         self._spawn_side = None
@@ -559,6 +568,17 @@ class Movement:
         self._stuck_trigger_times = []
         self._last_move_dir = ''
         self._move_dir_start = 0.0
+        self.last_movement = ''
+        self.keys_hold = []
+        self._strafe_direction = None
+        self._strafe_start_time = 0.0
+        self._juke_current_pattern = None
+        self._juke_step = 0
+        self._juke_step_start = 0.0
+        self._juke_engaged = False
+        self._last_missing_player_recovery_at = 0.0
+        self._last_no_player_log_time = 0.0
+        self._player_was_visible = False
         self.time_since_holding_attack = None  # Reset hold-attack state
         # Reset brawler auto-detection for new match
         self._brawler_detected = False
@@ -2514,9 +2534,6 @@ class Play(Movement):
             "brawl_ball",
             "brawl ball",
             "brawll ball",
-            "brawlball_5v5",
-            "brawlball 5v5",
-            "brawl ball 5v5",
         )
 
     def _recover_missing_player_in_match(self, current_time):
@@ -2568,7 +2585,7 @@ class Play(Movement):
             and (now - self._last_burst_end_time) < self._burst_defensive_duration
             and not self._burst_mode
         )
-        if _post_burst_no_enemy and teammates:
+        if _post_burst_no_enemy and not self._is_brawl_ball_mode() and teammates:
             # Stay close to teammates - don't hunt or advance aggressively
             nearest_tm_pos = None
             nearest_tm_dist = float('inf')
@@ -2605,7 +2622,7 @@ class Play(Movement):
                 return 'W'
 
         # --- TEAMMATE FOLLOWING (PRIORITY #2 - stay grouped before hunting!) ---
-        if teammates:
+        if teammates and not self._is_brawl_ball_mode():
             nearest_tm_pos = None
             nearest_tm_dist = float('inf')
             tm_centroid_x, tm_centroid_y = 0.0, 0.0
@@ -2656,19 +2673,19 @@ class Play(Movement):
 
         if self._is_brawl_ball_mode():
             center_x = brawl_stars_width * self.window_controller.width_ratio * 0.50
-            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.50
+            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.35
             dx = center_x - player_position[0]
             dy = center_y - player_position[1]
-            if math.hypot(dx, dy) > 120:
+            if math.hypot(dx, dy) > 100:
                 h_key = 'D' if dx > 30 else ('A' if dx < -30 else '')
                 v_key = 'S' if dy > 30 else ('W' if dy < -30 else '')
                 for move in [v_key + h_key, v_key, h_key]:
                     if move and not self.is_path_blocked(player_position, move, walls):
-                        self.last_decision_reason = "BRAWL BALL: hold center lane"
+                        self.last_decision_reason = "BRAWL BALL: pressure midfield lane"
                         return move
                 pf_move = self._get_pathfinder_movement(player_position, (center_x, center_y))
                 if pf_move:
-                    self.last_decision_reason = "A* BRAWL BALL: center lane"
+                    self.last_decision_reason = "A* BRAWL BALL: midfield lane"
                     return pf_move
 
         # --- HUNT LAST KNOWN ENEMY (only after confirming we're near teammates) ---
@@ -2686,7 +2703,7 @@ class Play(Movement):
                 h_key = 'D' if dx > 0 else 'A'
                 v_key = 'S' if dy > 0 else 'W'
                 # Add slight strafe to avoid running in predictable straight line
-                if random.random() < 0.2:
+                if not self._is_brawl_ball_mode() and random.random() < 0.2:
                     h_key = random.choice(['A', 'D'])
                 for move in [v_key + h_key, v_key, h_key]:
                     if move and not self.is_path_blocked(player_position, move, walls):
@@ -2724,7 +2741,7 @@ class Play(Movement):
         # When no enemies visible for >2s, actively search the map
         # instead of standing still or wandering aimlessly.
         # =====================================================
-        if self._no_enemy_duration > 1.0 and (not teammates or len(teammates) == 0):
+        if self._no_enemy_duration > 1.0 and (self._is_brawl_ball_mode() or not teammates or len(teammates) == 0):
             solo_move = self._get_solo_search_movement(player_position, walls)
             if solo_move:
                 return solo_move
@@ -2773,12 +2790,12 @@ class Play(Movement):
                 self._solo_search_target_idx = 0
             else:
                 ratios = [
+                    (0.50, 0.35),
+                    (0.40, 0.43),
+                    (0.60, 0.43),
                     (0.50, 0.50),
-                    (0.50, 0.39),
-                    (0.43, 0.46),
-                    (0.57, 0.46),
-                    (0.46, 0.58),
-                    (0.54, 0.58),
+                    (0.44, 0.56),
+                    (0.56, 0.56),
                 ]
         elif self._spawn_side == 'left':
             ratios = [(0.58, 0.50), (0.70, 0.30), (0.70, 0.70), (0.85, 0.50), (0.55, 0.20), (0.55, 0.80)]
@@ -2846,15 +2863,15 @@ class Play(Movement):
 
         if self._is_brawl_ball_mode():
             center_x = brawl_stars_width * self.window_controller.width_ratio * 0.50
-            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.50
+            center_y = brawl_stars_height * self.window_controller.height_ratio * 0.35
             dx = center_x - player_pos[0]
             dy = center_y - player_pos[1]
-            if math.hypot(dx, dy) > 115:
+            if math.hypot(dx, dy) > 100:
                 h_key = 'D' if dx > 30 else ('A' if dx < -30 else '')
                 v_key = 'S' if dy > 30 else ('W' if dy < -30 else '')
                 for move in [v_key + h_key, v_key, h_key]:
                     if move and not self.is_path_blocked(player_pos, move, walls):
-                        self.last_decision_reason = "BRAWL BALL SEARCH: center"
+                        self.last_decision_reason = "BRAWL BALL SEARCH: midfield lane"
                         return move
             return 'W' if not self.is_path_blocked(player_pos, 'W', walls) else None
 
@@ -4157,7 +4174,8 @@ class Play(Movement):
                     direction_y += repel_y * repel_strength
 
         # --- MOVEMENT DECISION (varies by playstyle) ---
-        should_group = True  # ALL modes: stay near teammates for coordinated play
+        brawl_ball_mode = self._is_brawl_ball_mode()
+        should_group = not brawl_ball_mode
 
         # Default movement (toward enemy) - overridden by branches below
         move_horizontal = self.get_horizontal_move_key(direction_x)
@@ -4517,6 +4535,29 @@ class Play(Movement):
                 move_horizontal = self.get_horizontal_move_key(direction_x)
                 move_vertical = self.get_vertical_move_key(direction_y)
 
+        if brawl_ball_mode:
+            if low_hp and enemy_distance <= safe_range:
+                move_horizontal = self.get_horizontal_move_key(direction_x, opposite=True)
+                move_vertical = self.get_vertical_move_key(direction_y, opposite=True)
+                self.last_decision_reason = f"BRAWL BALL: direct retreat ({int(enemy_distance)}px)"
+            elif enemy_distance > attack_range * 0.85 or (0 < self.enemy_hp_percent < 45):
+                move_horizontal = self.get_horizontal_move_key(direction_x)
+                move_vertical = self.get_vertical_move_key(direction_y)
+                self.last_decision_reason = f"BRAWL BALL: direct pressure ({int(enemy_distance)}px)"
+            else:
+                lane_x = brawl_stars_width * self.window_controller.width_ratio * 0.50
+                lane_y = brawl_stars_height * self.window_controller.height_ratio * 0.35
+                lane_dx = lane_x - player_pos[0]
+                lane_dy = lane_y - player_pos[1]
+                if math.hypot(lane_dx, lane_dy) > 110:
+                    move_horizontal = 'D' if lane_dx > 30 else ('A' if lane_dx < -30 else '')
+                    move_vertical = 'S' if lane_dy > 30 else ('W' if lane_dy < -30 else '')
+                    self.last_decision_reason = "BRAWL BALL: hold objective lane"
+                else:
+                    move_horizontal = self.get_horizontal_move_key(direction_x)
+                    move_vertical = self.get_vertical_move_key(direction_y)
+                    self.last_decision_reason = f"BRAWL BALL: straight fight ({int(enemy_distance)}px)"
+
         movement_options = [move_horizontal + move_vertical]
         if self.game_mode == 3:
             movement_options += [move_vertical, move_horizontal]
@@ -4743,7 +4784,7 @@ class Play(Movement):
                             self.last_decision_reason = f"ATTACK: {int(enemy_distance)}px, ammo={self._ammo}{burst_tag}"
                         # POST-ATTACK DODGE: force a fresh strafe direction right after shooting
                         dodge_chance = style.get("dodge_chance", 0.35)
-                        if random.random() < dodge_chance:
+                        if not brawl_ball_mode and random.random() < dodge_chance:
                             self._strafe_direction = random.choice(['A', 'D'])
                             self._strafe_start_time = now
                             self._strafe_duration = random.uniform(0.30, 0.60)  # Longer dodge arcs
@@ -6068,5 +6109,3 @@ class Play(Movement):
             cv2.waitKey(1)
         except Exception:
             pass
-
-

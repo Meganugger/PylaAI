@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import time
 import random
+import re
 from typing import Optional, Tuple, Dict, Any
 
 from behavior_tree import (
@@ -195,6 +196,11 @@ def populate_blackboard(bb: Blackboard, play_instance, data: dict,
     bushes = getattr(p, 'last_bush_data', [])
     bb.set("map.walls", walls)
     bb.set("map.bushes", bushes)
+    bb.set("map.width", getattr(getattr(p, "window_controller", None), "width", 1920) or 1920)
+    bb.set("map.height", getattr(getattr(p, "window_controller", None), "height", 1080) or 1080)
+    bb.set("map.mode", getattr(p, "game_mode_name", "") or "")
+    bb.set("map.is_brawl_ball", bool(p and hasattr(p, "_is_brawl_ball_mode") and p._is_brawl_ball_mode()))
+    bb.set("map.is_showdown", bool(getattr(p, "is_showdown", False)))
     water_bboxes = getattr(p, '_water_bboxes', []) if p else []
     bb.set("map.water_tiles", len(water_bboxes))
 
@@ -664,6 +670,40 @@ def _compute_movement_away(player_pos, threat_pos, strafe_amount=0.3,
         adjusted = _wall_adjust_movement(player_pos, keys, walls)
         return adjusted
     return keys
+
+
+def _is_brawl_ball_bb(bb: Blackboard) -> bool:
+    if bool(bb.get("map.is_brawl_ball", False)):
+        return True
+    mode = re.sub(r"[^a-z0-9]+", "", str(bb.get("map.mode", "") or "").lower())
+    return mode in {"brawlball", "brawllball"}
+
+
+def _brawl_ball_lane_target(bb: Blackboard, player_pos):
+    width = float(bb.get("map.width", 1920) or 1920)
+    height = float(bb.get("map.height", 1080) or 1080)
+    targets = [
+        (width * 0.50, height * 0.35),
+        (width * 0.40, height * 0.43),
+        (width * 0.60, height * 0.43),
+        (width * 0.50, height * 0.50),
+        (width * 0.44, height * 0.56),
+        (width * 0.56, height * 0.56),
+    ]
+    idx = int(bb.get("_brawl_ball_lane_idx", 0) or 0) % len(targets)
+    target = targets[idx]
+    now = float(bb.get("match.time", 0.0) or time.time())
+    last_switch = float(bb.get("_brawl_ball_lane_switch", 0.0) or 0.0)
+    reached = math.hypot(target[0] - player_pos[0], target[1] - player_pos[1]) < 95
+    stale = last_switch > 0 and (now - last_switch) > 3.0
+    if reached or stale:
+        idx = (idx + 1) % len(targets)
+        target = targets[idx]
+        bb.set("_brawl_ball_lane_idx", idx)
+        bb.set("_brawl_ball_lane_switch", now)
+    elif last_switch <= 0:
+        bb.set("_brawl_ball_lane_switch", now)
+    return target
 
 
 # --- cONDITION NODES ---
@@ -1188,6 +1228,13 @@ def act_patrol(bb: Blackboard) -> Status:
     player_pos = bb.get("player.pos", (0, 0))
     teammates = bb.get("teammates", [])
     walls = bb.get("map.walls", [])
+
+    if _is_brawl_ball_bb(bb):
+        target = _brawl_ball_lane_target(bb, player_pos)
+        movement = _compute_movement_toward(player_pos, target, strafe_amount=0.0, walls=walls)
+        bb.set("decision.movement", movement)
+        bb.set("decision.reason", "BT: BRAWL BALL LANES")
+        return Status.SUCCESS
     
     # --- PRIORITY 1: Chase last-known enemy position ---
     # Only chase if we saw enemies recently (within 5s). Stale positions mean
@@ -1339,7 +1386,8 @@ def act_retreat(bb: Blackboard) -> Status:
     """
     player_pos = bb.get("player.pos", (0, 0))
     closest = bb.get("enemies_closest")
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     teammates = bb.get("teammates", [])
     
     walls = bb.get("map.walls", [])
@@ -1364,7 +1412,7 @@ def act_retreat(bb: Blackboard) -> Status:
         distance = closest.get("distance", 999)
         
         # Higher strafe when very low HP (50% strafe for survival)
-        strafe_amt = 0.50 if hp < 30 else 0.40
+        strafe_amt = 0.0 if brawl_ball_mode else (0.50 if hp < 30 else 0.40)
         
         if retreat_target:
             # Retreat TOWARD teammate (not just away from enemy)
@@ -1420,7 +1468,8 @@ def act_finish_kill(bb: Blackboard) -> Status:
         return Status.FAILURE
     
     distance = target["distance"]
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     
     walls = bb.get("map.walls", [])
     enemy_pos = target["pos"]
@@ -1437,7 +1486,7 @@ def act_finish_kill(bb: Blackboard) -> Status:
         enemy_pos = predicted_pos
     
     # Rush directly at them with aggressive strafe (higher when close)
-    strafe_amt = 0.25 if distance > 200 else 0.1  # Less strafe when close = more direct
+    strafe_amt = 0.0 if brawl_ball_mode else (0.25 if distance > 200 else 0.1)  # Less strafe when close = more direct
     movement = _compute_movement_toward(player_pos, enemy_pos, 
                                          strafe_amount=strafe_amt, strafe_dir=strafe_dir, walls=walls)
     
@@ -1477,9 +1526,10 @@ def act_kite_back(bb: Blackboard) -> Status:
         return Status.FAILURE
     
     walls = bb.get("map.walls", [])
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     movement = _compute_movement_away(player_pos, closest["pos"],
-                                       strafe_amount=0.25, strafe_dir=strafe_dir,
+                                       strafe_amount=0.0 if brawl_ball_mode else 0.25, strafe_dir=strafe_dir,
                                        walls=walls)
     
     # Fire while kiting back - but only if enemy is hittable (not behind wall)
@@ -1506,7 +1556,8 @@ def act_ranged_attack(bb: Blackboard) -> Status:
     optimal_range = _get_optimal_range(bb)
     attack_range = bb.get("brawler.attack_range_scaled", 300)
     distance = target["distance"]
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     
     walls = bb.get("map.walls", [])
     # Range management
@@ -1515,22 +1566,25 @@ def act_ranged_attack(bb: Blackboard) -> Status:
     if range_diff < -optimal_range * 0.2:
         # Too close - kite back with heavy strafe
         movement = _compute_movement_away(player_pos, target["pos"],
-                                           strafe_amount=0.4, strafe_dir=strafe_dir,
+                                           strafe_amount=0.0 if brawl_ball_mode else 0.4, strafe_dir=strafe_dir,
                                            walls=walls)
     elif range_diff > optimal_range * 0.3:
         # Too far - approach with strafe
         movement = _compute_movement_toward(player_pos, target["pos"],
-                                             strafe_amount=0.3, strafe_dir=strafe_dir,
+                                             strafe_amount=0.0 if brawl_ball_mode else 0.3, strafe_dir=strafe_dir,
                                              walls=walls)
     else:
         # At good range - pure strafe (perpendicular)
-        raw_dx = target["pos"][0] - player_pos[0]
-        raw_dy = target["pos"][1] - player_pos[1]
-        dx = -raw_dy * strafe_dir
-        dy = raw_dx * strafe_dir
-        h = 'D' if dx > 0.2 else ('A' if dx < -0.2 else '')
-        v = 'S' if dy > 0.2 else ('W' if dy < -0.2 else '')
-        movement = (v + h).upper() or "WD"
+        if brawl_ball_mode:
+            movement = _compute_movement_toward(player_pos, target["pos"], strafe_amount=0.0, walls=walls)
+        else:
+            raw_dx = target["pos"][0] - player_pos[0]
+            raw_dy = target["pos"][1] - player_pos[1]
+            dx = -raw_dy * strafe_dir
+            dy = raw_dx * strafe_dir
+            h = 'D' if dx > 0.2 else ('A' if dx < -0.2 else '')
+            v = 'S' if dy > 0.2 else ('W' if dy < -0.2 else '')
+            movement = (v + h).upper() or "WD"
     
     # Attack if in range and hittable (generous range for reliability)
     # Throwers get extra range (arc trajectory)
@@ -1560,13 +1614,16 @@ def act_rush_enemy(bb: Blackboard) -> Status:
 
     distance = target["distance"]
     attack_range = bb.get("brawler.attack_range_scaled", 300)
-    strafe_dir = _update_strafe(bb)
-    flank_dir = _update_flank_dir(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
+    flank_dir = 1 if brawl_ball_mode else _update_flank_dir(bb)
     
     walls = bb.get("map.walls", [])
     # More strafe when closer (to dodge), less when far (to close gap fast)
-    strafe_frac = min(0.35, max(0.05, 1.0 - distance / max(1, attack_range * 1.5)))
+    strafe_frac = 0.0 if brawl_ball_mode else min(0.35, max(0.05, 1.0 - distance / max(1, attack_range * 1.5)))
     use_flank = (
+        not brawl_ball_mode
+        and
         target.get("hittable", True)
         and distance > attack_range * 1.15
         and distance < attack_range * 2.6
@@ -1601,15 +1658,16 @@ def act_approach_enemy(bb: Blackboard) -> Status:
 
     distance = target["distance"]
     attack_range = bb.get("brawler.attack_range_scaled", 300)
-    strafe_dir = _update_strafe(bb)
-    flank_dir = _update_flank_dir(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
+    flank_dir = 1 if brawl_ball_mode else _update_flank_dir(bb)
     
     walls = bb.get("map.walls", [])
     # Light strafe while approaching (15%), use flank route for longer, less predictable pathing.
-    use_flank = distance > attack_range * 1.2 and distance < attack_range * 3.0
+    use_flank = (not brawl_ball_mode) and distance > attack_range * 1.2 and distance < attack_range * 3.0
     move_target = _compute_flank_target(player_pos, target["pos"], attack_range, flank_dir) if use_flank else target["pos"]
     movement = _compute_movement_toward(player_pos, move_target,
-                                         strafe_amount=0.15, strafe_dir=strafe_dir, walls=walls)
+                                         strafe_amount=0.0 if brawl_ball_mode else 0.15, strafe_dir=strafe_dir, walls=walls)
     
     # Attack if we've entered range while approaching!
     # Use generous threshold - better to fire slightly early than never
@@ -1653,8 +1711,9 @@ def act_optimal_range_combat(bb: Blackboard) -> Status:
     optimal_range = _get_optimal_range(bb)
     attack_range = bb.get("brawler.attack_range_scaled", 300)
     playstyle = bb.get("brawler.playstyle", "fighter")
-    strafe_dir = _update_strafe(bb)
-    flank_dir = _update_flank_dir(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
+    flank_dir = 1 if brawl_ball_mode else _update_flank_dir(bb)
     
     # Smart ammo management: conserve last ammo for ranged brawlers
     ammo = bb.get("player.ammo", 0)
@@ -1693,33 +1752,36 @@ def act_optimal_range_combat(bb: Blackboard) -> Status:
     
     if ammo_empty_kite:
         # Hard retreat - almost no strafe, pure backward movement
-        strafe_amt = 0.10  # very low strafe so we actually move AWAY
+        strafe_amt = 0.0 if brawl_ball_mode else 0.10  # very low strafe so we actually move AWAY
         movement = _compute_movement_away(player_pos, target["pos"],
                                            strafe_amount=strafe_amt, strafe_dir=strafe_dir,
                                            walls=walls)
     elif current_zone == "close":
         # Too close - back off while strafing (orbit-like, compact amplitude)
-        strafe_amt = 0.45 if playstyle in ("sniper", "thrower") else 0.28
+        strafe_amt = 0.0 if brawl_ball_mode else (0.45 if playstyle in ("sniper", "thrower") else 0.28)
         movement = _compute_movement_away(player_pos, target["pos"],
                                            strafe_amount=strafe_amt, strafe_dir=strafe_dir,
                                            walls=walls)
     elif current_zone == "far":
         # Too far - approach oblique and occasionally flank at longer ranges.
-        strafe_amt = 0.24
-        use_flank = distance > attack_range * 1.35 and distance < attack_range * 3.1
+        strafe_amt = 0.0 if brawl_ball_mode else 0.24
+        use_flank = (not brawl_ball_mode) and distance > attack_range * 1.35 and distance < attack_range * 3.1
         move_target = _compute_flank_target(player_pos, target["pos"], attack_range, flank_dir) if use_flank else target["pos"]
         movement = _compute_movement_toward(player_pos, move_target,
                                              strafe_amount=strafe_amt, strafe_dir=strafe_dir,
                                              walls=walls)
     else:
         # Mid range duel - stable perpendicular strafe.
-        raw_dx = target["pos"][0] - player_pos[0]
-        raw_dy = target["pos"][1] - player_pos[1]
-        dx = -raw_dy * strafe_dir
-        dy = raw_dx * strafe_dir
-        h = 'D' if dx > 0.2 else ('A' if dx < -0.2 else '')
-        v = 'S' if dy > 0.2 else ('W' if dy < -0.2 else '')
-        movement = (v + h).upper() or random.choice(["WA", "WD"])
+        if brawl_ball_mode:
+            movement = _compute_movement_toward(player_pos, target["pos"], strafe_amount=0.0, walls=walls)
+        else:
+            raw_dx = target["pos"][0] - player_pos[0]
+            raw_dy = target["pos"][1] - player_pos[1]
+            dx = -raw_dy * strafe_dir
+            dy = raw_dx * strafe_dir
+            h = 'D' if dx > 0.2 else ('A' if dx < -0.2 else '')
+            v = 'S' if dy > 0.2 else ('W' if dy < -0.2 else '')
+            movement = (v + h).upper() or random.choice(["WA", "WD"])
     
     # === ATTACK DECISION ===
     # Use generous range - better to fire slightly early than never
@@ -1806,10 +1868,11 @@ def act_shoot_bush(bb: Blackboard) -> Status:
                           (target_pos[1] - player_pos[1]) * 1.25)
     
     # Move toward the bush (approach only, don't shoot from far)
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     walls = bb.get("map.walls", [])
     movement = _compute_movement_toward(player_pos, target_pos,
-                                         strafe_amount=0.1, strafe_dir=strafe_dir,
+                                         strafe_amount=0.0 if brawl_ball_mode else 0.1, strafe_dir=strafe_dir,
                                          walls=walls)
     
     # Only shoot if close AND have full ammo (1 shot max, keep 2 for combat)
@@ -1839,7 +1902,8 @@ def act_disengage_heal(bb: Blackboard) -> Status:
     closest = bb.get("enemies_closest")
     walls = bb.get("map.walls", [])
     now = bb.get("match.time", 0)
-    strafe_dir = _update_strafe(bb)
+    brawl_ball_mode = _is_brawl_ball_bb(bb)
+    strafe_dir = 1 if brawl_ball_mode else _update_strafe(bb)
     
     # Set disengage end time if not set yet
     disengage_end = bb.get("_disengage_end_time", 0)
@@ -1850,10 +1914,10 @@ def act_disengage_heal(bb: Blackboard) -> Status:
     
     if closest:
         movement = _compute_movement_away(player_pos, closest["pos"],
-                                           strafe_amount=0.4, strafe_dir=strafe_dir,
+                                           strafe_amount=0.0 if brawl_ball_mode else 0.4, strafe_dir=strafe_dir,
                                            walls=walls)
     else:
-        movement = random.choice(["SA", "SD", "S"])
+        movement = "S" if brawl_ball_mode else random.choice(["SA", "SD", "S"])
     
     bb.set("decision.movement", movement)
     bb.set("decision.should_attack", False)  # DON'T FIRE - regen resets!
@@ -1913,6 +1977,12 @@ def act_idle_strafe(bb: Blackboard) -> Status:
     player_pos = bb.get("player.pos", (0, 0))
     last_known = bb.get("enemy.last_known_pos")
     walls = bb.get("map.walls", [])
+    if _is_brawl_ball_bb(bb):
+        target = _brawl_ball_lane_target(bb, player_pos)
+        movement = _compute_movement_toward(player_pos, target, strafe_amount=0.0, walls=walls)
+        bb.set("decision.movement", movement)
+        bb.set("decision.reason", "BT: BRAWL BALL PUSH")
+        return Status.SUCCESS
     if last_known:
         dist = math.hypot(last_known[0] - player_pos[0], last_known[1] - player_pos[1])
         if dist > 60:
