@@ -495,6 +495,10 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 if state == "match":
                     if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
                         if self.Stage_manager.mark_match_started():
+                            if hasattr(self.Play, "reset_match_control_state"):
+                                self.Play.reset_match_control_state(now)
+                            if hasattr(self.Play, "note_confirmed_match_state"):
+                                self.Play.note_confirmed_match_state(now)
                             self.match_ready_at = now
                 if state != "match":
                     self.Play.time_since_last_proceeding = time.time()
