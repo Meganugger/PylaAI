@@ -128,7 +128,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Stage_manager.Trophy_observer.start_session_brawler(
                 data[0]['brawler'], data[0].get('trophies', 0))
             self._easyocr_warmup_started = False
-            self._ensure_easyocr_warmup()
             if self._pending_initial_brawler_select:
                 self.Stage_manager._delay_lobby_start(2.0, "waiting for initial brawler auto-select")
             self.state = None
@@ -222,13 +221,29 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 and not getattr(self.Stage_manager, "_match_in_progress", False)
             )
 
+        def _should_warm_post_match_ocr(self, now=None):
+            checker = getattr(self.Stage_manager, "should_warm_post_match_ocr", None)
+            if callable(checker):
+                return bool(checker(now))
+            return bool(
+                getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(self.Stage_manager, "_result_applied_for_active_match", False)
+            )
+
         def _normalize_post_match_state(self, state, runtime_state, now):
             if (
                 state == "match"
                 and getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
                 and not getattr(self.Stage_manager, "_match_in_progress", False)
             ):
-                return runtime_state if str(runtime_state).startswith("end") else "end"
+                should_hold = getattr(self.Stage_manager, "should_hold_match_probe", None)
+                if callable(should_hold) and not should_hold(now):
+                    return state
+                held_state = ""
+                getter = getattr(self.Stage_manager, "get_end_transition_state", None)
+                if callable(getter):
+                    held_state = getter()
+                return held_state or (runtime_state if str(runtime_state).startswith("end") else "end")
             return state
 
         def _run_initial_brawler_select(self):
@@ -460,7 +475,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._skip_play_cycle = False
             runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
             post_match_context = self._post_match_context_active(now, runtime_state)
-            if post_match_context and not reader.is_ready():
+            if post_match_context and self._should_warm_post_match_ocr(now) and not reader.is_ready():
                 self._ensure_easyocr_warmup()
             if post_match_context and now - self._last_fast_result_probe >= 0.35:
                 self._last_fast_result_probe = now

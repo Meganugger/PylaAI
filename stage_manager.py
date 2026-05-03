@@ -210,7 +210,11 @@ class StageManager:
         self._end_transition_hold_match_until = 0.0
         self._end_transition_action_interval = 0.75
         self._end_transition_hold_seconds = float(self.bot_config.get("post_match_dismiss_hold_seconds", 10.0))
+        self._post_play_again_match_hold_seconds = float(self.bot_config.get("post_play_again_match_hold_seconds", 2.0))
         self._end_transition_timeout = 12.0
+        self._end_transition_continue_sent = False
+        self._end_transition_continue_sent_at = 0.0
+        self._end_transition_continue_result = None
         self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
         self._consecutive_lobby_start_fails = 0
         self.push_all_needs_selection = False
@@ -293,6 +297,9 @@ class StageManager:
         result = str(result or "").strip() or None
         if result != self._end_transition_last_result:
             self._end_transition_last_action_at = 0.0
+            self._end_transition_continue_sent = False
+            self._end_transition_continue_sent_at = 0.0
+            self._end_transition_continue_result = None
         if not self._end_transition_started_at or result != self._end_transition_last_result:
             self._end_transition_started_at = now
         self._end_transition_last_result = result
@@ -309,6 +316,9 @@ class StageManager:
         self._end_transition_last_action_at = 0.0
         self._end_transition_last_result = None
         self._end_transition_hold_match_until = 0.0
+        self._end_transition_continue_sent = False
+        self._end_transition_continue_sent_at = 0.0
+        self._end_transition_continue_result = None
 
     def has_recent_end_transition(self, now=None):
         if now is None:
@@ -398,6 +408,30 @@ class StageManager:
             return False
 
         return True
+
+    def should_warm_post_match_ocr(self, now=None):
+        if now is None:
+            now = time.time()
+        if not self.is_post_match_resolution_pending(now):
+            return False
+        if self._result_applied_for_active_match and not self._pending_verified_result:
+            return False
+        observer = getattr(self, "Trophy_observer", None)
+        if observer is not None and observer.has_brawlstars_api_settings():
+            return False
+        return bool(self._awaiting_lobby_result_sync and not self._match_in_progress)
+
+    def _finish_play_again_prediction_sync(self):
+        if self._pending_verified_result and not self._result_applied_for_active_match:
+            self._apply_match_result(self._pending_verified_result)
+        if self._result_applied_for_active_match:
+            self._commit_active_brawler_progress(queue_milestone=True)
+        self._awaiting_lobby_result_sync = False
+        self._match_in_progress = False
+        self._lobby_sync_started_at = 0.0
+        self._pending_verified_result = None
+        self._api_lobby_sync_attempts = 0
+        self._last_api_lobby_sync_attempt_at = 0.0
 
     def _recover_from_brawler_selection(self):
         now = time.time()
@@ -1112,13 +1146,15 @@ class StageManager:
         if self._match_in_progress:
             return False
         now = time.time()
-        recent_start_press = bool(self._last_start_press_at and (now - self._last_start_press_at) <= 12.0)
+        last_start_press = float(getattr(self, "_last_start_press_at", 0.0) or 0.0)
+        recent_start_press = bool(last_start_press and (now - last_start_press) <= 12.0)
         sync_started_at = max(
-            self._lobby_sync_started_at,
-            self._last_result_applied_at,
+            float(getattr(self, "_lobby_sync_started_at", 0.0) or 0.0),
+            float(getattr(self, "_last_result_applied_at", 0.0) or 0.0),
+            float(getattr(self, "_end_transition_started_at", 0.0) or 0.0),
         )
         new_start_press = recent_start_press and (
-            sync_started_at <= 0.0 or self._last_start_press_at >= sync_started_at
+            sync_started_at <= 0.0 or last_start_press >= sync_started_at
         )
         if self._awaiting_lobby_result_sync:
             if self._result_applied_for_active_match or self._pending_verified_result:
@@ -1974,17 +2010,26 @@ class StageManager:
 
     def end_game(self, frame=None, known_result=None):
         screenshot = frame if frame is not None else self.window_controller.screenshot()
+        now = time.time()
+        known_result_is_valid = known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}
 
         found_game_result = False
         observed_result_processed = False
         result_post_processed = False
         read_match_stats = False
-        current_state = get_state(screenshot, allow_reward_ocr=True)
+        probed_state = get_state(
+            screenshot,
+            allow_reward_ocr=(
+                not known_result_is_valid
+                and self.should_hold_match_probe(now)
+                and self._is_easyocr_ready()
+            ),
+        )
+        current_state = f"end_{known_result}" if known_result_is_valid else probed_state
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
-        if known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}:
-            self._begin_end_transition(known_result, time.time())
+        if known_result_is_valid:
+            self._begin_end_transition(known_result, now)
             found_game_result = known_result if self._apply_or_defer_detected_result(known_result, source="known-result") else False
-            current_state = f"end_{known_result}"
 
         max_end_attempts = 30
         end_attempts = 0
@@ -2006,7 +2051,7 @@ class StageManager:
                 self.click_star_drop()
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
                 end_attempts += 1
                 continue
             state_result = None
@@ -2121,24 +2166,50 @@ class StageManager:
                     print("[END] Feed still stale after 15s, breaking out of end_game")
                     break
                 screenshot = self.window_controller.screenshot()
-                current_state = get_state(screenshot, allow_reward_ocr=True)
+                current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
                 continue
 
-            if (
-                self.play_again_on_win
-                and (
-                    found_game_result == "victory"
-                    or state_result == "victory"
-                    or known_result == "victory"
-                    or self.Trophy_observer._last_game_result == "victory"
-                )
-            ):
+            play_again_result = (
+                found_game_result
+                or state_result
+                or known_result
+                or getattr(self.Trophy_observer, "_last_game_result", None)
+            )
+            should_play_again = self.play_again_on_win and play_again_result == "victory"
+            now = time.time()
+            forced_only_after_continue = (
+                known_result_is_valid
+                and not self._is_endish_state(probed_state)
+                and self._end_transition_continue_sent
+            )
+            retry_delay = max(2.0, self._end_transition_action_interval)
+            retry_too_soon = (
+                self._end_transition_continue_sent
+                and (now - self._end_transition_continue_sent_at) < retry_delay
+            )
+            if forced_only_after_continue or retry_too_soon:
+                if debug and forced_only_after_continue:
+                    print(f"[RESULT] post-match action already sent; waiting on state '{probed_state}'")
+                return
+            if self._end_transition_continue_sent and not self._is_endish_state(probed_state):
+                return
+
+            if should_play_again:
                 self.window_controller.press_play_again()
+                self._last_start_press_at = now
+                self._finish_play_again_prediction_sync()
+                self._end_transition_hold_match_until = min(
+                    self._end_transition_hold_match_until or (now + self._post_play_again_match_hold_seconds),
+                    now + self._post_play_again_match_hold_seconds,
+                )
                 print("[PLAY-AGAIN] Pressed R for Play Again")
             else:
                 self.window_controller.press_key("Q")
                 if debug:
                     print("Game has ended, pressing Q")
+            self._end_transition_continue_sent = True
+            self._end_transition_continue_sent_at = now
+            self._end_transition_continue_result = play_again_result
             time.sleep(0.45)
             screenshot = self.window_controller.screenshot()
             current_state = get_state(screenshot, allow_reward_ocr=self._is_easyocr_ready())
@@ -2259,4 +2330,3 @@ class StageManager:
             self.states[state](data)
             return
         self.states[state]()
-

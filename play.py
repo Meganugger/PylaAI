@@ -2509,7 +2509,15 @@ class Play(Movement):
         return None
 
     def _is_brawl_ball_mode(self):
-        return self.game_mode_name in ("brawlball", "brawl_ball", "brawl ball", "brawll ball")
+        return self.game_mode_name in (
+            "brawlball",
+            "brawl_ball",
+            "brawl ball",
+            "brawll ball",
+            "brawlball_5v5",
+            "brawlball 5v5",
+            "brawl ball 5v5",
+        )
 
     def _recover_missing_player_in_match(self, current_time):
         if current_time - self._last_missing_player_recovery_at < 0.65:
@@ -2750,7 +2758,28 @@ class Play(Movement):
         height = brawl_stars_height * self.window_controller.height_ratio
 
         if self._is_brawl_ball_mode():
-            ratios = [(0.50, 0.50), (0.50, 0.38), (0.44, 0.44), (0.56, 0.44), (0.44, 0.56), (0.56, 0.56)]
+            safe_left = width * 0.30
+            safe_right = width * 0.70
+            safe_top = height * 0.30
+            safe_bottom = height * 0.66
+            if (
+                player_pos[0] < safe_left
+                or player_pos[0] > safe_right
+                or player_pos[1] < safe_top
+                or player_pos[1] > safe_bottom
+            ):
+                ratios = [(0.50, 0.50)]
+                self._solo_search_last_switch = now
+                self._solo_search_target_idx = 0
+            else:
+                ratios = [
+                    (0.50, 0.50),
+                    (0.50, 0.39),
+                    (0.43, 0.46),
+                    (0.57, 0.46),
+                    (0.46, 0.58),
+                    (0.54, 0.58),
+                ]
         elif self._spawn_side == 'left':
             ratios = [(0.58, 0.50), (0.70, 0.30), (0.70, 0.70), (0.85, 0.50), (0.55, 0.20), (0.55, 0.80)]
         elif self._spawn_side == 'right':

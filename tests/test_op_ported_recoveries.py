@@ -13,6 +13,7 @@ class DummyWindow:
     width_ratio = 1.0
     height_ratio = 1.0
     scale_factor = 1.0
+    FRAME_STALE_TIMEOUT = 10.0
 
     def __init__(self):
         self.pressed = []
@@ -22,11 +23,17 @@ class DummyWindow:
     def screenshot(self):
         return np.zeros((1080, 1920, 3), dtype=np.uint8)
 
+    def get_latest_frame(self):
+        return None, time.time()
+
     def keys_up(self, keys):
         self.released.extend(keys)
 
     def press_key(self, key):
         self.pressed.append(key)
+
+    def press_play_again(self):
+        self.pressed.append("R")
 
     def click(self, x, y, *args, **kwargs):
         self.clicked.append((x, y, kwargs))
@@ -38,12 +45,16 @@ class DummyTrophyObserver:
         self.current_wins = 0
         self.win_streak = 0
         self.begin_count = 0
+        self._last_game_result = None
 
     def change_trophies(self, value):
         self.current_trophies = value
 
     def begin_match(self, _brawler):
         self.begin_count += 1
+
+    def has_brawlstars_api_settings(self):
+        return False
 
 
 class OPPortedRecoveryTests(unittest.TestCase):
@@ -96,6 +107,56 @@ class OPPortedRecoveryTests(unittest.TestCase):
         self.assertTrue(manager.should_hold_match_probe(now=111.5))
         self.assertFalse(manager.should_hold_match_probe(now=112.5))
 
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_play_again_is_sent_once_when_forced_end_state_repeats(self, _mock_state, _mock_save):
+        manager = object.__new__(StageManager)
+        manager.window_controller = DummyWindow()
+        manager.brawlers_pick_data = [{"brawler": "darryl", "trophies": 463, "wins": 0, "win_streak": 2}]
+        manager.Trophy_observer = DummyTrophyObserver(475)
+        manager.play_again_on_win = True
+        manager._awaiting_lobby_result_sync = True
+        manager._result_applied_for_active_match = True
+        manager._match_in_progress = False
+        manager._pending_verified_result = None
+        manager._api_lobby_sync_attempts = 0
+        manager._last_api_lobby_sync_attempt_at = 0.0
+        manager._lobby_sync_started_at = 0.0
+        manager._end_transition_started_at = 0.0
+        manager._end_transition_last_action_at = 0.0
+        manager._end_transition_last_result = None
+        manager._end_transition_hold_match_until = 0.0
+        manager._end_transition_action_interval = 0.75
+        manager._end_transition_hold_seconds = 10.0
+        manager._post_play_again_match_hold_seconds = 2.0
+        manager._end_transition_timeout = 12.0
+        manager._end_transition_continue_sent = False
+        manager._end_transition_continue_sent_at = 0.0
+        manager._end_transition_continue_result = None
+        manager._last_start_press_at = 0.0
+        manager._commit_active_brawler_progress = lambda queue_milestone=True: True
+        manager.smart_trophy_farm = False
+        manager.dynamic_rotation_enabled = False
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        manager.end_game(frame=frame, known_result="victory")
+        manager.end_game(frame=frame, known_result="victory")
+
+        self.assertEqual(manager.window_controller.pressed, ["R"])
+        self.assertFalse(manager._awaiting_lobby_result_sync)
+
+    def test_committed_result_does_not_need_post_match_ocr_warmup(self):
+        manager = object.__new__(StageManager)
+        manager._awaiting_lobby_result_sync = True
+        manager._match_in_progress = False
+        manager._result_applied_for_active_match = True
+        manager._pending_verified_result = None
+        manager._end_transition_started_at = time.time()
+        manager._end_transition_timeout = 12.0
+        manager.Trophy_observer = DummyTrophyObserver()
+
+        self.assertFalse(manager.should_warm_post_match_ocr())
+
     def test_mark_match_started_does_not_reset_active_match_every_frame(self):
         manager = object.__new__(StageManager)
         manager._match_in_progress = True
@@ -119,6 +180,9 @@ class OPPortedRecoveryTests(unittest.TestCase):
         manager._lobby_sync_started_at = 0.0
         manager._api_lobby_sync_attempts = 0
         manager._last_api_lobby_sync_attempt_at = 0.0
+        manager._last_start_press_at = time.time()
+        manager._last_result_applied_at = 0.0
+        manager._end_transition_started_at = 0.0
         manager._reset_lobby_start_tracking = lambda *args, **kwargs: None
         manager.Trophy_observer = DummyTrophyObserver()
         manager.brawlers_pick_data = [{"brawler": "darryl"}]
