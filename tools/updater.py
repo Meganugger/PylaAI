@@ -171,7 +171,7 @@ def request_json(url: str) -> dict:
         return json.loads(response.read().decode("utf-8"))
 
 
-def choose_release_download(release: dict) -> tuple[str, str]:
+def choose_release_download(release: dict, project_dir: Path | None = None) -> tuple[str, str]:
     assets = release.get("assets") or []
     zip_assets = [
         asset for asset in assets
@@ -182,13 +182,13 @@ def choose_release_download(release: dict) -> tuple[str, str]:
         return asset["browser_download_url"], asset.get("name") or "release asset"
     if release.get("zipball_url"):
         return release["zipball_url"], "GitHub source zip"
-    return branch_zip_url(), f"{repo_branch()} branch zip"
+    return branch_zip_url(project_dir), f"{repo_branch(project_dir)} branch zip"
 
 
 def latest_download_url() -> tuple[str, str]:
     try:
         release = request_json(latest_release_api())
-        return choose_release_download(release)
+        return choose_release_download(release, app_dir())
     except Exception as exc:
         if "404" in str(exc):
             print("No GitHub release update was found yet.")
@@ -240,16 +240,38 @@ def read_project_version(project_dir: Path) -> str:
     return ""
 
 
+def is_git_ancestor(project_dir: Path, ancestor_sha: str, descendant_sha: str) -> bool:
+    ancestor_sha = str(ancestor_sha or "").strip()
+    descendant_sha = str(descendant_sha or "").strip()
+    if not ancestor_sha or not descendant_sha or ancestor_sha == descendant_sha:
+        return False
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", ancestor_sha, descendant_sha],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def build_update_status(project_dir: Path) -> dict:
+    marker_sha = read_local_update_sha(project_dir) or ""
+    git_sha = read_current_git_sha(project_dir) or ""
+    local_sha = marker_sha or git_sha
     status = {
         "ok": False,
         "state": "checking",
         "currentVersion": read_project_version(project_dir),
-        "localSha": read_local_update_sha(project_dir) or "",
+        "localSha": local_sha,
         "latestSha": "",
         "availableVersion": "",
         "updateAvailable": False,
-        "source": f"{repo_slug()} [{repo_branch()}]",
+        "source": f"{repo_slug()} [{repo_branch(project_dir)}]",
         "summary": "",
         "changelog": "",
         "url": "",
@@ -258,8 +280,10 @@ def build_update_status(project_dir: Path) -> dict:
     try:
         info = latest_branch_info(project_dir)
         latest_sha = info.get("sha", "")
-        local_sha = status["localSha"]
-        update_available = bool(latest_sha and latest_sha != local_sha)
+        installed_shas = {sha for sha in (local_sha, marker_sha, git_sha) if sha}
+        update_available = bool(latest_sha and latest_sha not in installed_shas)
+        if update_available and git_sha and is_git_ancestor(project_dir, latest_sha, git_sha):
+            update_available = False
         status.update({
             "ok": bool(latest_sha),
             "state": "update available" if update_available else "up to date",
@@ -292,6 +316,40 @@ def read_local_update_sha(project_dir: Path) -> str | None:
         return None
 
 
+def read_current_git_sha(project_dir: Path) -> str | None:
+    try:
+        top_level = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if top_level.returncode != 0:
+            return None
+        if Path(top_level.stdout.strip()).resolve() != project_dir.resolve():
+            return None
+        result = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        sha = str(result.stdout or "").strip()
+        return sha or None
+    except Exception:
+        return None
+
+
+def read_installed_update_sha(project_dir: Path) -> str | None:
+    return read_local_update_sha(project_dir) or read_current_git_sha(project_dir)
+
+
 def write_local_update_info(project_dir: Path, sha: str | None) -> None:
     if not sha:
         return
@@ -302,7 +360,7 @@ def write_local_update_info(project_dir: Path, sha: str | None) -> None:
             "branch_sha": sha,
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "repo": repo_slug(),
-            "branch": repo_branch(),
+            "branch": repo_branch(project_dir),
         }, indent=4),
         encoding="utf-8",
     )
@@ -479,8 +537,8 @@ def main() -> int:
         print("Smoke test passed. Updater can see the PylaAI project folder.")
         return 0
 
-    latest_sha = latest_branch_sha()
-    local_sha = read_local_update_sha(project_dir)
+    latest_sha = latest_branch_sha(project_dir)
+    local_sha = read_installed_update_sha(project_dir)
     if latest_sha and local_sha == latest_sha and "--force" not in sys.argv:
         print_green("You're on the latest version.")
         wait_for_enter()

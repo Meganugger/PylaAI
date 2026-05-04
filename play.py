@@ -500,7 +500,10 @@ class Movement:
             if current_time - self.last_attack_time < self.attack_cooldown:
                 return False
             self.last_attack_time = current_time
-        self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
+        dispatched = self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
+        if dispatched is False:
+            print("[INPUT][ERROR] attack dispatch was not attempted")
+            return False
         self._record_battle_input("attack", "primary attack")
         return True
 
@@ -1121,6 +1124,7 @@ class Play(Movement):
             "fallback_active": False,
             "last_movement": "",
             "last_attack_decision": "",
+            "player_detection_status": "",
         }
 
     def _select_battle_logic_name(self, brawler):
@@ -1204,6 +1208,39 @@ class Play(Movement):
             print(f"[BATTLE] input dispatched: {message}")
             self._last_battle_input_log_at = current_time
 
+    def _record_movement_result(self, result, detail, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        if isinstance(result, dict):
+            if not result.get("ok", False):
+                self._battle_runtime["failure_count"] = int(self._battle_runtime.get("failure_count", 0) or 0) + 1
+                self._set_battle_skip_reason(
+                    f"movement dispatch failed: {result.get('error') or result.get('detail')}",
+                    current_time=current_time,
+                    fallback=True,
+                )
+                return False
+            if not result.get("attempted", True):
+                return True
+        self._record_battle_input("movement", detail, current_time)
+        return True
+
+    def _dispatch_movement_angle(self, angle, detail=None, current_time=None, radius=None):
+        current_time = current_time if current_time is not None else time.time()
+        radius = self._analog_movement_radius if radius is None else radius
+        result = self.window_controller.move_joystick_angle(float(angle), radius=radius)
+        label = detail or f"angle {float(angle):.0f}"
+        return self._record_movement_result(result, label, current_time)
+
+    def _dispatch_movement_keys(self, keys_to_key_down, keys_to_key_up=None, detail=None, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        result = True
+        if keys_to_key_down:
+            result = self.window_controller.keys_down(keys_to_key_down)
+        if keys_to_key_up:
+            self.window_controller.keys_up(keys_to_key_up)
+        label = detail or "".join(keys_to_key_down or [])
+        return self._record_movement_result(result, label, current_time)
+
     def force_generic_fallback(self, reason, current_time=None):
         current_time = current_time if current_time is not None else time.time()
         self._battle_runtime["fallback_active"] = True
@@ -1230,6 +1267,85 @@ class Play(Movement):
             width >= (55.0 * scale)
             and height >= (78.0 * scale)
             and area >= (6500.0 * scale)
+        )
+
+    def _player_box_metrics(self, data):
+        players = (data or {}).get("player") or []
+        if not players:
+            return {}
+        try:
+            x1, y1, x2, y2 = [float(value) for value in players[0][:4]]
+        except Exception:
+            return {"count": len(players), "error": "invalid player box coordinates"}
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        return {
+            "count": len(players),
+            "width": round(width, 1),
+            "height": round(height, 1),
+            "area": round(width * height, 1),
+        }
+
+    def _estimate_player_detection(self, frame, data, current_time):
+        if frame is None or not hasattr(frame, "shape"):
+            return data
+        if data.get("player"):
+            return data
+        if not self._can_issue_live_input(current_time):
+            return data
+        supporting = self._entity_count(data, "enemy") + self._entity_count(data, "teammate")
+        missing_for = current_time - float(getattr(self, "time_since_player_last_found", 0.0) or 0.0)
+        if supporting <= 0 and missing_for < 1.2:
+            return data
+        height, width = frame.shape[:2]
+        scale = max(float(self.window_controller.scale_factor or min(width / 1920.0, height / 1080.0) or 1.0), 0.5)
+        box_w = 95.0 * scale
+        box_h = 120.0 * scale
+        cx = width * 0.5
+        cy = height * 0.58
+        estimated = dict(data)
+        estimated["player"] = [[cx - box_w / 2, cy - box_h / 2, cx + box_w / 2, cy + box_h / 2]]
+        estimated["_player_source"] = "estimated"
+        estimated["_player_detection_reason"] = (
+            "using estimated self position from screen center "
+            f"(enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')}, "
+            f"missing_for={missing_for:.2f}s)"
+        )
+        return estimated
+
+    def _describe_player_detection_failure(self, frame, data, current_time, raw_supporting_entities=0):
+        if frame is None:
+            return "player detection failed: no frame"
+        if not hasattr(frame, "shape"):
+            return f"player detection failed: unsupported frame type {type(frame).__name__}"
+        if isinstance(data, dict) and data.get("_detection_error"):
+            return f"player detection failed: detector error {data.get('_detection_error')}"
+        if isinstance(data, dict) and data.get("player"):
+            metrics = self._player_box_metrics(data)
+            return (
+                "player detection failed: implausible player box "
+                f"{metrics}, threshold scale={max(float(self.window_controller.scale_factor or 1.0), 0.5):.2f}"
+            )
+        if not isinstance(data, dict):
+            data = {}
+        retry_text = "retry not attempted"
+        if data.get("_retry_attempted"):
+            retry_text = (
+                f"retry conf={float(data.get('_retry_confidence', self.entity_detection_retry_confidence)):.2f} "
+                f"player={data.get('_retry_player_count', 0)}"
+            )
+        else:
+            retry_in = max(
+                0.0,
+                self.entity_detection_retry_interval - (current_time - self._last_retry_detection_time),
+            )
+            retry_text = f"retry in {retry_in:.2f}s"
+        return (
+            "player detection missing "
+            f"(frame={frame.shape[1]}x{frame.shape[0]}, "
+            f"base_conf={float(data.get('_detector_confidence', self.entity_detection_confidence)):.2f}, "
+            f"enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')}, "
+            f"support={raw_supporting_entities}, {retry_text})"
         )
 
     def _should_promote_detected_match(self, data, runtime_state, checked_state, current_time):
@@ -1286,6 +1402,8 @@ class Play(Movement):
         return False
 
     def _remember_player_detection(self, data, current_time):
+        if str((data or {}).get("_player_source", "")).lower() == "estimated":
+            return
         players = (data or {}).get("player") or []
         if not players or not self._is_plausible_player_detection(data):
             return
@@ -1351,13 +1469,20 @@ class Play(Movement):
                     angle = 270.0
                 else:
                     angle = 270.0 if self.game_mode == 3 else 0.0
-                self.window_controller.move_joystick_angle(angle, radius=self._analog_movement_radius * 0.72)
-                self._record_battle_input("movement", f"fallback angle {angle:.0f}", current_time)
+                self._dispatch_movement_angle(
+                    angle,
+                    detail=f"fallback angle {angle:.0f}",
+                    current_time=current_time,
+                    radius=self._analog_movement_radius * 0.72,
+                )
             else:
                 primary = "w" if self.game_mode == 3 else "d"
-                self.window_controller.keys_down([primary])
-                self.window_controller.keys_up([key for key in ["w", "a", "s", "d"] if key != primary])
-                self._record_battle_input("movement", f"fallback key {primary}", current_time)
+                self._dispatch_movement_keys(
+                    [primary],
+                    [key for key in ["w", "a", "s", "d"] if key != primary],
+                    detail=f"fallback key {primary}",
+                    current_time=current_time,
+                )
             if current_time - self.time_since_last_attack >= max(0.8, self.attack_cooldown):
                 if self.attack():
                     self._battle_runtime["last_attack_decision"] = "missing-player recovery poke"
@@ -2259,7 +2384,16 @@ class Play(Movement):
     def get_main_data(self, frame, runtime_state="", current_time=None):
         if current_time is None:
             current_time = time.time()
-        data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
+        try:
+            data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
+        except Exception as exc:
+            if current_time - self._last_retry_player_log_time >= 2.0:
+                print(f"[BATTLE][ERROR] player/entity detection failed: {exc}")
+                self._last_retry_player_log_time = current_time
+            return {"_detection_error": str(exc)}
+        if not isinstance(data, dict):
+            data = {}
+        data["_detector_confidence"] = self.entity_detection_confidence
         if data.get("player"):
             data["_player_source"] = "base"
             return self.stabilize_entity_roles(frame, data)
@@ -2289,10 +2423,17 @@ class Play(Movement):
         if not data.get("player") and allow_retry:
             if (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
                 self._last_retry_detection_time = current_time
-                retry_data = self.Detect_main_info.detect_objects(
-                    frame,
-                    conf_tresh=self.entity_detection_retry_confidence,
-                )
+                data["_retry_attempted"] = True
+                data["_retry_confidence"] = self.entity_detection_retry_confidence
+                try:
+                    retry_data = self.Detect_main_info.detect_objects(
+                        frame,
+                        conf_tresh=self.entity_detection_retry_confidence,
+                    )
+                except Exception as exc:
+                    data["_retry_error"] = str(exc)
+                    retry_data = {}
+                data["_retry_player_count"] = self._entity_count(retry_data, "player")
                 if retry_data.get("player"):
                     if debug and (current_time - self._last_retry_player_log_time) >= 5.0:
                         print(
@@ -2301,8 +2442,13 @@ class Play(Movement):
                         )
                         self._last_retry_player_log_time = current_time
                     retry_data["_player_source"] = "retry"
+                    retry_data["_detector_confidence"] = self.entity_detection_retry_confidence
+                    retry_data["_retry_attempted"] = True
                     data = retry_data
-        return self.stabilize_entity_roles(frame, data)
+        data = self.stabilize_entity_roles(frame, data)
+        if runtime_state == "match" and not data.get("player"):
+            data = self._estimate_player_detection(frame, data, current_time)
+        return data
 
     def is_path_blocked(self, player_pos, move_direction, wall_context, distance=None):  # Increased distance
         if distance is None:
@@ -2352,9 +2498,8 @@ class Play(Movement):
 
     def do_movement(self, movement):
         if isinstance(movement, (float, int)):
-            self.window_controller.move_joystick_angle(float(movement), radius=self._analog_movement_radius)
             self.keys_hold = []
-            self._record_battle_input("movement", f"angle {float(movement):.0f}")
+            self._dispatch_movement_angle(float(movement), detail=f"angle {float(movement):.0f}")
             return
 
         movement = movement.lower()
@@ -2366,14 +2511,9 @@ class Play(Movement):
             else:
                 keys_to_keyUp.append(key)
 
-        if keys_to_keyDown:
-            self.window_controller.keys_down(keys_to_keyDown)
-
-        self.window_controller.keys_up(keys_to_keyUp)
+        self._dispatch_movement_keys(keys_to_keyDown, keys_to_keyUp, detail=movement)
 
         self.keys_hold = keys_to_keyDown
-        if movement:
-            self._record_battle_input("movement", movement)
 
     def _debounce_angle(self, angle):
         if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
@@ -3136,7 +3276,14 @@ class Play(Movement):
             self._allow_skill_inputs = (
                 player_source == "base"
                 or (player_source == "retry" and raw_supporting_entities > 0)
+                or (player_source == "estimated" and raw_supporting_entities > 0)
             )
+            if player_source == "estimated":
+                self._set_battle_skip_reason(
+                    data.get("_player_detection_reason", "player detection estimated; using recovery position"),
+                    current_time=current_time,
+                    fallback=True,
+                )
             self._remember_player_detection(data, current_time)
             if (
                 self._is_plausible_player_detection(data)
@@ -3190,8 +3337,14 @@ class Play(Movement):
             self._reset_wall_stuck_state(current_time)
             self.escape_state["phase"] = None
             if runtime_state == "match":
+                reason = self._describe_player_detection_failure(
+                    frame,
+                    data,
+                    current_time,
+                    raw_supporting_entities=raw_supporting_entities,
+                )
                 self._set_battle_skip_reason(
-                    "player detection missing; battle loop using recovery path",
+                    f"{reason}; battle loop using recovery path",
                     current_time=current_time,
                     fallback=True,
                 )

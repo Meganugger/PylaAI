@@ -17,6 +17,8 @@ ApplicationWindow {
     property var brawlers: []
     property var history: []
     property var farmPreview: []
+    property var farmRoster: []
+    property var farmStatus: ({})
     property var live: ({})
     property var logs: []
     property var toolStatus: ({})
@@ -246,6 +248,11 @@ ApplicationWindow {
             return "lowest_first"
         return String(farmStrategyModel.get(farmStrategy.currentIndex).value || "lowest_first")
     }
+    function currentFarmModeValue() {
+        if (!farmModeModel || farmMode.currentIndex < 0 || farmMode.currentIndex >= farmModeModel.count)
+            return "manual"
+        return String(farmModeModel.get(farmMode.currentIndex).value || "manual")
+    }
     function currentFarmPayload() {
         let excluded = []
         for (let i = 0; i < excludeModel.count; ++i)
@@ -257,6 +264,7 @@ ApplicationWindow {
                 questExcluded.push(questExcludeModel.get(j).name)
         return {
             "smart_trophy_farm": farmEnabled.checked,
+            "trophy_farm_mode": currentFarmModeValue(),
             "trophy_farm_target": farmTarget.text,
             "trophy_farm_strategy": currentFarmStrategyValue(),
             "trophy_farm_excluded": excluded,
@@ -269,6 +277,8 @@ ApplicationWindow {
         if (!backend)
             return
         farmPreview = backend.previewFarmSettings(currentFarmPayload()) || []
+        farmRoster = backend.getFarmRoster ? (backend.getFarmRoster() || []) : farmRoster
+        farmStatus = backend.getFarmStatus ? (backend.getFarmStatus() || farmStatus) : farmStatus
     }
     function positiveInt(value, fallback) {
         const parsed = parseInt(String(value === undefined ? "" : value).trim())
@@ -362,6 +372,8 @@ ApplicationWindow {
         brawlers = (state.brawlers || []).slice()
         history = (state.history || []).slice()
         farmPreview = (state.farmPreview || []).slice ? (state.farmPreview || []).slice() : (state.farmPreview || [])
+        farmRoster = (state.farmRoster || []).slice ? (state.farmRoster || []).slice() : (state.farmRoster || [])
+        farmStatus = state.farmStatus || farmStatus
         live = state.live || {}
         logs = (state.logs || []).slice()
         toolStatus = state.toolStatus || (backend.getToolStatus ? backend.getToolStatus() : ({}))
@@ -401,7 +413,7 @@ ApplicationWindow {
     }
     function saveSettings() {
         backend.saveSettings({
-            "general": {"max_ips": maxIps.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase(), "instance_count": instanceCountField.text, "scrcpy_max_fps": scrcpyMaxFpsField.text},
+            "general": {"max_ips": maxIps.text, "target_ips": targetIpsField.text, "scrcpy_max_fps": scrcpyFpsField.text, "scrcpy_max_width": scrcpyWidthField.text, "scrcpy_bitrate": scrcpyBitrateField.text, "joystick_refresh_seconds": joystickRefreshField.text, "joystick_repress_seconds": joystickRepressField.text, "joystick_down_move_delay": joystickDelayField.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "input_debug": yesNo(inputDebugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase(), "instance_count": instanceCountField.text},
             "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked)},
             "time": {"state_check": stateCheck.text, "no_detections": noDetect.text, "idle": idleField.text, "gadget": gadgetField.text, "hypercharge": hyperField.text, "super": superField.text, "wall_detection": wallField.text, "no_detection_proceed": noProceed.text, "check_if_brawl_stars_crashed": crashCheck.text},
             "login": {"key": pylaKey.text}
@@ -491,13 +503,23 @@ ApplicationWindow {
         discordField.text = String(general.discord_id || "")
         bsApiField.text = String(general.brawlstars_api_key || "")
         playerTagField.text = String(general.brawlstars_player_tag || "")
+        farmApiKey.text = String(general.brawlstars_api_key || "")
+        farmPlayerTag.text = String(general.brawlstars_player_tag || "")
         apiBaseField.text = String(general.api_base_url || "localhost")
         packageField.text = String(general.brawlstars_package || "com.supercell.brawlstars")
         portField.text = String(general.emulator_port || 5037)
         autoPushField.text = String(general.auto_push_target_trophies || 1000)
         instanceCountField.text = String(multi.instanceCount || general.instance_count || 1)
-        scrcpyMaxFpsField.text = String(multi.scrcpyMaxFps || general.scrcpy_max_fps || "auto")
         instancePortsField.text = String(multi.portsCsv || portField.text)
+        targetIpsField.text = String(general.target_ips || general.max_ips || 60)
+        scrcpyFpsField.text = String(general.scrcpy_max_fps || general.target_ips || 60)
+        scrcpyMaxFpsField.text = String(multi.scrcpyMaxFps || general.scrcpy_max_fps || scrcpyFpsField.text)
+        scrcpyWidthField.text = String(general.scrcpy_max_width || 960)
+        scrcpyBitrateField.text = String(general.scrcpy_bitrate || 3000000)
+        joystickRefreshField.text = String(general.joystick_refresh_seconds || 0.35)
+        joystickRepressField.text = String(general.joystick_repress_seconds || 1.8)
+        joystickDelayField.text = String(general.joystick_down_move_delay || 0.012)
+        inputDebugBox.checked = boolFrom(general.input_debug)
         pylaKey.text = String(loginState.key || "")
         minMove.text = String(bot.minimum_movement_delay || 0.08)
         unstuckDelay.text = String(bot.unstuck_movement_delay || 1.5)
@@ -529,6 +551,15 @@ ApplicationWindow {
             }
         }
         farmStrategy.currentIndex = Math.max(0, farmStrategyIndex)
+        let farmModeIndex = 0
+        const desiredFarmMode = String(bot.trophy_farm_mode || "manual")
+        for (let modeIdx = 0; modeIdx < farmModeModel.count; ++modeIdx) {
+            if (String(farmModeModel.get(modeIdx).value) === desiredFarmMode) {
+                farmModeIndex = modeIdx
+                break
+            }
+        }
+        farmMode.currentIndex = Math.max(0, farmModeIndex)
         questEnabled.checked = boolFrom(bot.quest_farm_enabled)
         questMode.currentIndex = Math.max(0, ["games","wins"].indexOf(String(bot.quest_farm_mode || "games")))
     }
@@ -541,8 +572,15 @@ ApplicationWindow {
     ListModel {
         id: farmStrategyModel
         ListElement { label: "Lowest trophies first"; value: "lowest_first" }
+        ListElement { label: "Highest trophies first"; value: "highest_first" }
         ListElement { label: "Highest win rate first"; value: "highest_winrate" }
-        ListElement { label: "Alphabetical"; value: "sequential" }
+        ListElement { label: "Alphabetical"; value: "alphabetical" }
+        ListElement { label: "Manual priority"; value: "manual_priority" }
+    }
+    ListModel {
+        id: farmModeModel
+        ListElement { label: "Manual mode"; value: "manual" }
+        ListElement { label: "API / Tag mode"; value: "api" }
     }
 
     function rebuildExcludeModels() {
@@ -613,9 +651,13 @@ ApplicationWindow {
             Label {
                 text: parent.parent.value
                 color: parent.parent.valueColor
-                font.pixelSize: 24
+                font.pixelSize: text.length > 24 ? 15 : text.length > 14 ? 18 : 24
                 font.bold: true
+                wrapMode: Text.WordWrap
+                maximumLineCount: 2
                 elide: Text.ElideRight
+                lineHeight: 0.92
+                Layout.fillWidth: true
             }
         }
     }
@@ -1375,12 +1417,74 @@ ApplicationWindow {
                                             font.pixelSize: 14
                                             wrapMode: Text.WordWrap
                                         }
-                                        RowLayout {
-                                            spacing: 12
-                                            AppCheckBox { id: farmEnabled; text: "Enable"; onCheckedChanged: refreshFarmPreview() }
-                                            AppTextField { id: farmTarget; implicitWidth: 140; placeholderText: "500"; onTextChanged: refreshFarmPreview() }
-                                            AppComboBox { id: farmStrategy; implicitWidth: 220; model: farmStrategyModel; textRole: "label"; onCurrentIndexChanged: refreshFarmPreview() }
-                                            AppButton { text: "Save Farm"; onClicked: saveFarm() }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: width >= 980 ? 4 : 2
+                                            columnSpacing: 12
+                                            rowSpacing: 10
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Farm Mode" } AppComboBox { id: farmMode; Layout.fillWidth: true; model: farmModeModel; textRole: "label"; onCurrentIndexChanged: refreshFarmPreview() } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Target Trophies" } AppTextField { id: farmTarget; Layout.fillWidth: true; placeholderText: "500"; onTextChanged: refreshFarmPreview() } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Order Strategy" } AppComboBox { id: farmStrategy; Layout.fillWidth: true; model: farmStrategyModel; textRole: "label"; onCurrentIndexChanged: refreshFarmPreview() } }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 6
+                                                AppLabel { text: "State" }
+                                                RowLayout {
+                                                    Layout.fillWidth: true
+                                                    spacing: 10
+                                                    AppCheckBox { id: farmEnabled; text: "Enable"; onCheckedChanged: refreshFarmPreview() }
+                                                    AppButton { text: "Save Farm"; Layout.fillWidth: true; onClicked: saveFarm() }
+                                                }
+                                            }
+                                        }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 1
+                                            color: root.border
+                                        }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: width >= 980 ? 4 : 2
+                                            columnSpacing: 12
+                                            rowSpacing: 10
+                                            visible: currentFarmModeValue() === "api"
+                                            ColumnLayout { Layout.fillWidth: true; Layout.columnSpan: 2; spacing: 6; AppLabel { text: "Brawl Stars API Key" } AppTextField { id: farmApiKey; Layout.fillWidth: true; echoMode: TextInput.PasswordEchoOnEdit; placeholderText: "Saved in Settings; never shown in logs" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Player Tag" } AppTextField { id: farmPlayerTag; Layout.fillWidth: true; placeholderText: "#ABC123" } }
+                                            RowLayout {
+                                                Layout.fillWidth: true
+                                                Layout.alignment: Qt.AlignBottom
+                                                spacing: 10
+                                                AppButton {
+                                                    text: "Fetch Roster"
+                                                    Layout.fillWidth: true
+                                                    onClicked: {
+                                                        const result = backend.fetchFarmRosterFromApi(farmApiKey.text, farmPlayerTag.text)
+                                                        if (result && result.ok) {
+                                                            hydrate(backend.initialState())
+                                                            applyStateToForms()
+                                                            rebuildExcludeModels()
+                                                        }
+                                                    }
+                                                }
+                                                DestructiveButton {
+                                                    text: "Clear"
+                                                    implicitWidth: 92
+                                                    onClicked: {
+                                                        backend.clearFarmApiCredentials()
+                                                        hydrate(backend.initialState())
+                                                        applyStateToForms()
+                                                        rebuildExcludeModels()
+                                                    }
+                                                }
+                                            }
+                                            Label {
+                                                Layout.columnSpan: 4
+                                                Layout.fillWidth: true
+                                                text: farmStatus.apiLoadedCount ? ("Loaded " + farmStatus.apiLoadedCount + " unlocked brawler(s) for " + (farmStatus.apiPlayerTag || "saved tag") + ". Last refresh: " + (farmStatus.apiLastRefresh || "-")) : "API mode farms only unlocked brawlers returned by the official Brawl Stars API. Use Fetch Roster before starting."
+                                                color: farmStatus.apiLoadedCount ? root.success : root.textDim
+                                                font.pixelSize: 13
+                                                wrapMode: Text.WordWrap
+                                            }
                                         }
                                         Label {
                                             Layout.fillWidth: true
@@ -1420,9 +1524,12 @@ ApplicationWindow {
                                             }
                                             Item { Layout.fillWidth: true }
                                             Label {
-                                                text: farmPreview.length ? "Preview updates from the current controls." : "Raise the target or remove exclusions to populate the build order."
-                                                color: root.textDim
+                                                Layout.fillWidth: true
+                                                text: farmPreview.length ? ("Mode: " + currentFarmModeValue().toUpperCase() + " | Preview updates from the current controls.") : (farmStatus.emptyReason || "Raise the target or remove exclusions to populate the build order.")
+                                                color: farmPreview.length ? root.textDim : root.warning
                                                 font.pixelSize: 13
+                                                horizontalAlignment: Text.AlignRight
+                                                wrapMode: Text.WordWrap
                                             }
                                         }
                                         ListView {
@@ -1491,9 +1598,99 @@ ApplicationWindow {
                                             border.width: 1
                                             Label {
                                                 anchors.centerIn: parent
-                                                text: brawlerLoadState.state === "error" ? "Brawler loading failed. Use Refresh Brawlers and check Logs." : brawlerLoadState.state === "empty" ? "No brawlers are loaded yet." : "No brawlers are currently below the target with these settings."
+                                                width: parent.width - 28
+                                                text: brawlerLoadState.state === "error" ? "Brawler loading failed. Use Refresh Brawlers and check Logs." : brawlerLoadState.state === "empty" ? "No brawlers are loaded yet." : (farmStatus.emptyReason || "No brawlers are currently below the target with these settings.")
                                                 color: root.textDim
                                                 font.pixelSize: 13
+                                                wrapMode: Text.WordWrap
+                                                horizontalAlignment: Text.AlignHCenter
+                                            }
+                                        }
+                                        SectionEyebrow { text: currentFarmModeValue() === "api" ? "API UNLOCKED ROSTER" : "MANUAL OWNED ROSTER" }
+                                        ListView {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 300
+                                            visible: farmRoster.length > 0
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            boundsMovement: Flickable.StopAtBounds
+                                            ScrollBar.vertical: ScrollBar { }
+                                            model: farmRoster
+                                            delegate: Rectangle {
+                                                width: ListView.view.width
+                                                height: 70
+                                                radius: 14
+                                                color: modelData.qualifies ? "#122219" : root.panelAlt
+                                                border.color: modelData.qualifies ? root.success : root.border
+                                                border.width: 1
+                                                RowLayout {
+                                                    anchors.fill: parent
+                                                    anchors.margins: 12
+                                                    spacing: 12
+                                                    Rectangle {
+                                                        Layout.preferredWidth: 42
+                                                        Layout.preferredHeight: 42
+                                                        radius: 11
+                                                        color: "#0C0F14"
+                                                        border.color: root.border
+                                                        border.width: 1
+                                                        clip: true
+                                                        Image { anchors.fill: parent; source: modelData.icon || ""; fillMode: Image.PreserveAspectCrop; smooth: true; mipmap: true }
+                                                    }
+                                                    ColumnLayout {
+                                                        Layout.fillWidth: true
+                                                        spacing: 2
+                                                        Label { text: modelData.displayName; color: root.textMain; font.pixelSize: 14; font.bold: true; elide: Text.ElideRight }
+                                                        Label { text: modelData.reason + " | source: " + modelData.source; color: modelData.qualifies ? root.success : root.textDim; font.pixelSize: 12; elide: Text.ElideRight }
+                                                    }
+                                                    AppCheckBox {
+                                                        visible: currentFarmModeValue() === "manual"
+                                                        text: "Owned"
+                                                        checked: modelData.owned
+                                                        onToggled: {
+                                                            backend.updateManualFarmBrawler({"brawler": modelData.brawler, "owned": checked, "included": modelData.included, "trophies": modelData.trophies})
+                                                            refreshFarmPreview()
+                                                        }
+                                                    }
+                                                    AppCheckBox {
+                                                        visible: currentFarmModeValue() === "manual"
+                                                        text: "Include"
+                                                        checked: modelData.included
+                                                        onToggled: {
+                                                            backend.updateManualFarmBrawler({"brawler": modelData.brawler, "owned": modelData.owned, "included": checked, "trophies": modelData.trophies})
+                                                            refreshFarmPreview()
+                                                        }
+                                                    }
+                                                    AppTextField {
+                                                        visible: currentFarmModeValue() === "manual"
+                                                        implicitWidth: 92
+                                                        text: String(modelData.trophies)
+                                                        inputMethodHints: Qt.ImhDigitsOnly
+                                                        onEditingFinished: {
+                                                            backend.updateManualFarmBrawler({"brawler": modelData.brawler, "owned": modelData.owned, "included": modelData.included, "trophies": text})
+                                                            refreshFarmPreview()
+                                                        }
+                                                    }
+                                                    Label {
+                                                        visible: currentFarmModeValue() === "api"
+                                                        Layout.preferredWidth: 140
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: modelData.trophies + " trophies | P" + modelData.power
+                                                        color: root.gold
+                                                        font.pixelSize: 13
+                                                        font.bold: true
+                                                        elide: Text.ElideRight
+                                                    }
+                                                    Label {
+                                                        Layout.preferredWidth: 78
+                                                        horizontalAlignment: Text.AlignRight
+                                                        text: modelData.qualifies ? ("#" + modelData.order) : "-"
+                                                        color: modelData.qualifies ? root.success : root.textDim
+                                                        font.pixelSize: 13
+                                                        font.bold: modelData.qualifies
+                                                    }
+                                                }
                                             }
                                         }
                                         RowLayout {
@@ -1810,7 +2007,7 @@ ApplicationWindow {
                                             spacing: 8
                                             CardTitle { text: "Tempo" }
                                             Label { text: Number(liveMetricNumber(live.ips, 0)).toFixed(1) + " IPS"; color: root.success; font.pixelSize: 30; font.bold: true; elide: Text.ElideRight }
-                                            Label { text: "Wins / h: " + (secondsSinceStart() > 0 ? ((liveSessionVictories() * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13 }
+                                            Label { text: "Target: " + liveMetricNumber(live.target_ips, 60) + " IPS | Wins / h: " + (secondsSinceStart() > 0 ? ((liveSessionVictories() * 3600) / Math.max(1, secondsSinceStart())).toFixed(1) : "0.0"); color: root.textDim; font.pixelSize: 13; elide: Text.ElideRight }
                                         }
                                     }
                                 }
@@ -2137,13 +2334,20 @@ ApplicationWindow {
                                             columnSpacing: 14
                                             rowSpacing: 12
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Max IPS" } AppTextField { id: maxIps; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Target IPS" } AppTextField { id: targetIpsField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Scrcpy FPS" } AppTextField { id: scrcpyFpsField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Capture Width" } AppTextField { id: scrcpyWidthField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Bitrate" } AppTextField { id: scrcpyBitrateField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Backend" } AppComboBox { id: backendBox; Layout.fillWidth: true; model: ["auto","cpu","gpu"] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Package" } AppTextField { id: packageField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: settingsTimer; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } } } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } AppCheckBox { id: inputDebugBox; text: "Input logs" } } } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Joystick Refresh" } AppTextField { id: joystickRefreshField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Joystick Repress" } AppTextField { id: joystickRepressField; Layout.fillWidth: true } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Down-Move Delay" } AppTextField { id: joystickDelayField; Layout.fillWidth: true } }
                                         }
                                     }
                                 }
