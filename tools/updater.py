@@ -5,6 +5,7 @@ import json
 import os
 import re
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -17,6 +18,23 @@ DEFAULT_REPO_OWNER = "Meganugger"
 DEFAULT_REPO_NAME = "PylaAI"
 DEFAULT_BRANCH = "main"
 UPDATE_INFO_PATH = Path("cfg") / "update_info.json"
+KNOWN_BRANCHES = {
+    "main",
+    "performance",
+    "strongest-bot",
+    "strongest-bot-full",
+    "strongest-bot-rl",
+}
+VERSION_BRANCH_HINTS = {
+    "main": "main",
+    "performance": "performance",
+    "strongestbot": "strongest-bot",
+    "strongestbotfull": "strongest-bot-full",
+    "strongestbotrl": "strongest-bot-rl",
+    "strongest-bot": "strongest-bot",
+    "strongest-bot-full": "strongest-bot-full",
+    "strongest-bot-rl": "strongest-bot-rl",
+}
 
 SKIPPED_DIRS = {
     ".git",
@@ -66,8 +84,60 @@ def repo_name() -> str:
     return os.environ.get("PYLA_UPDATE_REPO", DEFAULT_REPO_NAME).strip() or DEFAULT_REPO_NAME
 
 
-def repo_branch() -> str:
-    return os.environ.get("PYLA_UPDATE_BRANCH", DEFAULT_BRANCH).strip() or DEFAULT_BRANCH
+def _normalize_branch_hint(value: str) -> str:
+    return str(value or "").strip().lower().replace("_", "-")
+
+
+def _branch_from_version(version: str) -> str:
+    if "+" not in str(version or ""):
+        return ""
+    suffix = str(version).rsplit("+", 1)[-1]
+    normalized = _normalize_branch_hint(suffix)
+    compact = normalized.replace("-", "")
+    return VERSION_BRANCH_HINTS.get(normalized) or VERSION_BRANCH_HINTS.get(compact, "")
+
+
+def _branch_from_git(project_dir: Path) -> str:
+    try:
+        top_level = subprocess.run(
+            ["git", "rev-parse", "--show-toplevel"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if top_level.returncode != 0:
+            return ""
+        git_root = Path(top_level.stdout.strip()).resolve()
+        if git_root != project_dir.resolve():
+            return ""
+        result = subprocess.run(
+            ["git", "branch", "--show-current"],
+            cwd=str(project_dir),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return ""
+    branch = _normalize_branch_hint(result.stdout)
+    return branch if branch in KNOWN_BRANCHES else ""
+
+
+def repo_branch(project_dir: Path | None = None) -> str:
+    env_branch = os.environ.get("PYLA_UPDATE_BRANCH", "").strip()
+    if env_branch:
+        return env_branch
+    project_root = Path(project_dir or os.getcwd())
+    git_branch = _branch_from_git(project_root)
+    if git_branch:
+        return git_branch
+    version_branch = _branch_from_version(read_project_version(project_root))
+    if version_branch:
+        return version_branch
+    return DEFAULT_BRANCH
 
 
 def repo_slug() -> str:
@@ -78,12 +148,12 @@ def latest_release_api() -> str:
     return f"https://api.github.com/repos/{repo_slug()}/releases/latest"
 
 
-def branch_api() -> str:
-    return f"https://api.github.com/repos/{repo_slug()}/commits/{repo_branch()}"
+def branch_api(project_dir: Path | None = None) -> str:
+    return f"https://api.github.com/repos/{repo_slug()}/commits/{repo_branch(project_dir)}"
 
 
-def branch_zip_url() -> str:
-    return f"https://github.com/{repo_slug()}/archive/refs/heads/{repo_branch()}.zip"
+def branch_zip_url(project_dir: Path | None = None) -> str:
+    return f"https://github.com/{repo_slug()}/archive/refs/heads/{repo_branch(project_dir)}.zip"
 
 
 def app_dir() -> Path:
@@ -124,17 +194,90 @@ def latest_download_url() -> tuple[str, str]:
             print("No GitHub release update was found yet.")
         else:
             print("Could not check GitHub releases right now.")
-        print(f"Checking the latest {repo_branch()} version instead.")
-        return branch_zip_url(), f"{repo_branch()} branch zip"
+        branch = repo_branch(app_dir())
+        print(f"Checking the latest {branch} version instead.")
+        return branch_zip_url(app_dir()), f"{branch} branch zip"
 
 
-def latest_branch_sha() -> str | None:
+def latest_branch_sha(project_dir: Path | None = None) -> str | None:
     try:
-        data = request_json(branch_api())
+        data = request_json(branch_api(project_dir))
         sha = str(data.get("sha") or "").strip()
         return sha or None
     except Exception:
         return None
+
+
+def latest_branch_info(project_dir: Path | None = None) -> dict:
+    data = request_json(branch_api(project_dir))
+    commit = data.get("commit") or {}
+    author = commit.get("author") or {}
+    message = str(commit.get("message") or "").strip()
+    summary = message.splitlines()[0] if message else ""
+    sha = str(data.get("sha") or "").strip()
+    branch = repo_branch(project_dir)
+    return {
+        "sha": sha,
+        "short_sha": sha[:12],
+        "html_url": str(data.get("html_url") or ""),
+        "message": message,
+        "summary": summary,
+        "date": str(author.get("date") or ""),
+        "repo": repo_slug(),
+        "branch": branch,
+    }
+
+
+def read_project_version(project_dir: Path) -> str:
+    config_path = project_dir / "cfg" / "general_config.toml"
+    if not config_path.exists():
+        return ""
+    for line in config_path.read_text(encoding="utf-8-sig").splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("pyla_version") or "=" not in stripped:
+            continue
+        return stripped.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
+def build_update_status(project_dir: Path) -> dict:
+    status = {
+        "ok": False,
+        "state": "checking",
+        "currentVersion": read_project_version(project_dir),
+        "localSha": read_local_update_sha(project_dir) or "",
+        "latestSha": "",
+        "availableVersion": "",
+        "updateAvailable": False,
+        "source": f"{repo_slug()} [{repo_branch()}]",
+        "summary": "",
+        "changelog": "",
+        "url": "",
+        "error": "",
+    }
+    try:
+        info = latest_branch_info(project_dir)
+        latest_sha = info.get("sha", "")
+        local_sha = status["localSha"]
+        update_available = bool(latest_sha and latest_sha != local_sha)
+        status.update({
+            "ok": bool(latest_sha),
+            "state": "update available" if update_available else "up to date",
+            "latestSha": latest_sha,
+            "availableVersion": info.get("short_sha", "") or latest_sha[:12],
+            "updateAvailable": update_available,
+            "source": f"{info.get('repo', repo_slug())} [{info.get('branch', repo_branch())}]",
+            "summary": info.get("summary", ""),
+            "changelog": info.get("message", ""),
+            "url": info.get("html_url", ""),
+        })
+    except Exception as exc:
+        status.update({
+            "ok": False,
+            "state": "failed",
+            "error": str(exc),
+        })
+    return status
 
 
 def read_local_update_sha(project_dir: Path) -> str | None:

@@ -95,6 +95,23 @@ class BrawlBallAndFarmTests(unittest.TestCase):
             )
         )
 
+    def test_brawler_name_resolution_is_case_and_punctuation_safe(self):
+        movement = object.__new__(Play)
+        movement.brawlers_info = {"darryl": {}, "8bit": {}}
+
+        self.assertEqual(movement.resolve_brawler_name("DARRYL"), "darryl")
+        self.assertEqual(movement.resolve_brawler_name("8-Bit"), "8bit")
+
+    def test_unknown_brawler_range_uses_generic_fallback(self):
+        movement = object.__new__(Play)
+        movement.brawlers_info = {"darryl": {}}
+        movement.brawler_ranges = None
+        movement.window_controller = DummyWindow()
+        movement._battle_runtime = movement._new_battle_runtime_state()
+
+        self.assertEqual(movement.get_brawler_range("Not A Brawler"), [260, 440, 520])
+        self.assertTrue(movement._battle_runtime["fallback_active"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -732,9 +732,8 @@ class StageManager:
                     return False
                 print("[RESULT] clearing unresolved lobby sync because a new match started")
                 self._reset_lobby_result_sync_state()
-        if debug:
-            active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
-            print(f"[RESULT] mark_match_started for {active_name}")
+        active_name = self.brawlers_pick_data[0]['brawler'] if self.brawlers_pick_data else "unknown"
+        print(f"[MATCH] mark_match_started for {active_name}")
         self._match_in_progress = True
         self._last_match_started_at = now
         self._awaiting_lobby_result_sync = True
@@ -748,6 +747,7 @@ class StageManager:
         self._reset_lobby_start_tracking()
         if self.brawlers_pick_data:
             self.Trophy_observer.begin_match(self.brawlers_pick_data[0]['brawler'])
+        print("[MATCH] mark_match_started completed")
         return True
 
     def _apply_or_defer_detected_result(self, game_result, source="detector"):
