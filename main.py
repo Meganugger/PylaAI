@@ -5,6 +5,12 @@ import threading
 import time
 import traceback
 
+import cv2
+
+from runtime_threads import apply_process_thread_limits
+
+apply_process_thread_limits()
+
 from gui.hub import Hub
 from gui.login import login
 from gui.main import App
@@ -186,6 +192,19 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.low_ips_recovery_attempts = 0
             # Periodic garbage collection
             self._last_gc_time = time.time()
+            self._last_dashboard_match_counter = int(getattr(self.Stage_manager.Trophy_observer, "match_counter", 0) or 0)
+            self._last_dashboard_history_revision = int(
+                getattr(self.Stage_manager.Trophy_observer, "history_revision", 0) or 0
+            )
+            self._last_live_push = 0.0
+            self._last_live_stats_push = 0.0
+            self._last_roster_signature = None
+            self._last_roster_push_time = 0.0
+            self._last_live_exception_time = 0.0
+            self._live_push_interval = 0.25
+            self._live_stats_push_interval = 0.25
+            self._roster_push_interval = 2.0
+            self._last_battle_watchdog_log_at = 0.0
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
@@ -569,10 +588,16 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
                         if self.Stage_manager.mark_match_started():
                             reset_fn = getattr(self.Play, "reset_match_control_state", None)
+                            active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
                             if callable(reset_fn):
-                                reset_fn(now)
+                                try:
+                                    reset_fn(now, active_entry.get("brawler"))
+                                except TypeError:
+                                    reset_fn(now)
                             elif hasattr(self.Play, "reset_match_state"):
                                 self.Play.reset_match_state()
+                            if hasattr(self.Play, "note_confirmed_match_state"):
+                                self.Play.note_confirmed_match_state(now)
                             self.match_ready_at = now
                     # Track how long we've been continuously in 'match'
                     if self._match_watchdog_start <= 0:
@@ -614,6 +639,203 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             if (time.time() - self._last_gc_time) > 300:
                 self._last_gc_time = time.time()
                 gc.collect()
+
+        def enter_cooldown_mode(self):
+            cprint(
+                f"timer is done, {self.run_for_minutes} is over. continuing for 3 minutes if in game",
+                "#AAE5A4",
+            )
+            self.in_cooldown = True
+            self.cooldown_start_time = time.time()
+            self.Stage_manager.set_lobby_start_enabled(False)
+
+        def _push_runtime_dashboard(self, force=False):
+            active_dashboard = _get_active_dashboard_instance()
+            if active_dashboard is None:
+                return
+
+            tobs = self.Stage_manager.Trophy_observer
+            active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+            session_stats = getattr(tobs, "session_stats", {}) or {}
+            coerce_int = getattr(self.Stage_manager, "_coerce_int", None)
+            if not callable(coerce_int):
+                def coerce_int(value, default=0):
+                    try:
+                        return int(value)
+                    except (TypeError, ValueError):
+                        return default
+
+            brawler = str(active_entry.get("brawler", "") or "")
+            battle_state = {}
+            if hasattr(self.Play, "get_battle_runtime_state"):
+                try:
+                    battle_state = self.Play.get_battle_runtime_state()
+                except Exception:
+                    battle_state = {}
+            current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
+            current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
+            current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
+            current_deaths = int(getattr(self.Play, "_death_count", 0) or 0)
+            current_damage = int(
+                getattr(self.Play, "_current_damage", 0)
+                or getattr(self.Play, "_damage_dealt", 0)
+                or 0
+            )
+            awaiting_verified_sync = bool(
+                getattr(self.Stage_manager, "_awaiting_lobby_result_sync", False)
+                and not getattr(tobs, "_lobby_trophy_verified", False)
+            )
+            if awaiting_verified_sync:
+                live_trophies = coerce_int(active_entry.get("trophies", 0), 0)
+                live_wins = coerce_int(active_entry.get("wins", 0), 0)
+                live_streak = coerce_int(active_entry.get("win_streak", 0), 0)
+            else:
+                live_trophies = coerce_int(
+                    tobs.current_trophies if getattr(tobs, "current_trophies", None) is not None else active_entry.get("trophies", 0),
+                    0,
+                )
+                live_wins = coerce_int(
+                    getattr(tobs, "current_wins", None) if getattr(tobs, "current_wins", None) is not None else active_entry.get("wins", 0),
+                    0,
+                )
+                live_streak = coerce_int(
+                    tobs.win_streak if getattr(tobs, "win_streak", None) is not None else active_entry.get("win_streak", 0),
+                    0,
+                )
+            if active_entry and not awaiting_verified_sync:
+                if coerce_int(active_entry.get("trophies", 0), 0) != live_trophies:
+                    active_entry["trophies"] = live_trophies
+                if coerce_int(active_entry.get("wins", 0), 0) != live_wins:
+                    active_entry["wins"] = live_wins
+                if coerce_int(active_entry.get("win_streak", 0), 0) != live_streak:
+                    active_entry["win_streak"] = live_streak
+            now = time.time()
+            match_active = self.state == "match" or str(getattr(self.Play, "_runtime_state", "") or "") == "match"
+            if (
+                hasattr(tobs, "update_live_match_stats")
+                and brawler
+                and match_active
+                and (force or (now - self._last_live_stats_push) >= self._live_stats_push_interval)
+            ):
+                try:
+                    tobs.update_live_match_stats(
+                        brawler,
+                        kills=current_kills,
+                        assists=0,
+                        damage=current_damage,
+                        deaths=current_deaths,
+                    )
+                    self._last_live_stats_push = now
+                except Exception as live_stats_exc:
+                    if time.time() - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Match stat sync error: {live_stats_exc}")
+                        self._last_live_exception_time = time.time()
+
+            roster_signature = tuple(
+                (
+                    str(entry.get("brawler", "")),
+                    int(entry.get("trophies", 0) or 0),
+                    int(entry.get("wins", 0) or 0),
+                    int(entry.get("win_streak", 0) or 0),
+                    int(entry.get("push_until", 0) or 0),
+                    str(entry.get("type", "trophies") or "trophies"),
+                    bool(entry.get("automatically_pick", True)),
+                    bool(entry.get("manual_trophies", False)),
+                )
+                for entry in (self.Stage_manager.brawlers_pick_data or [])
+                if isinstance(entry, dict)
+            )
+            should_sync_roster = (
+                force
+                or roster_signature != self._last_roster_signature
+                or current_match_counter != self._last_dashboard_match_counter
+                or current_history_revision != self._last_dashboard_history_revision
+                or (now - self._last_roster_push_time) >= self._roster_push_interval
+            )
+            if should_sync_roster:
+                try:
+                    active_dashboard.sync_runtime_roster(
+                        self.Stage_manager.brawlers_pick_data,
+                        emit_history=(
+                            force
+                            or current_match_counter != self._last_dashboard_match_counter
+                            or current_history_revision != self._last_dashboard_history_revision
+                        ),
+                    )
+                    self._last_roster_signature = roster_signature
+                    self._last_roster_push_time = now
+                    self._last_dashboard_match_counter = current_match_counter
+                    self._last_dashboard_history_revision = current_history_revision
+                except Exception as roster_exc:
+                    if now - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Roster sync error: {roster_exc}")
+                        self._last_live_exception_time = now
+
+            if force or (now - self._last_live_push) >= self._live_push_interval:
+                self._last_live_push = now
+                try:
+                    session_victories = int(session_stats.get("victories", 0) or 0)
+                    session_defeats = int(session_stats.get("defeats", 0) or 0)
+                    session_draws = int(session_stats.get("draws", 0) or 0)
+                    session_matches = int(session_stats.get("total_matches", 0) or 0)
+                    if session_matches <= 0:
+                        session_matches = current_match_counter
+                    active_dashboard.update_live(
+                        start_time=self.start_time,
+                        ips=self.current_ips,
+                        state=self.state,
+                        brawler=brawler,
+                        trophies=live_trophies,
+                        target=active_entry.get("push_until", 0),
+                        victories=session_victories,
+                        defeats=session_defeats,
+                        draws=session_draws,
+                        streak=live_streak,
+                        game_mode=getattr(self.Play, "game_mode_name", ""),
+                        gadget_ready=getattr(self.Play, "is_gadget_ready", False),
+                        super_ready=getattr(self.Play, "is_super_ready", False),
+                        hypercharge_ready=getattr(self.Play, "is_hypercharge_ready", False),
+                        movement=getattr(self.Play, "last_movement", ""),
+                        ammo=getattr(self.Play, "current_ammo", getattr(self.Play, "_ammo", 0)),
+                        current_kills=current_kills,
+                        current_deaths=current_deaths,
+                        current_assists=0,
+                        current_damage=current_damage,
+                        kills=current_kills,
+                        assists=0,
+                        damage=current_damage,
+                        total_kills=session_stats.get("total_kills", 0),
+                        total_assists=session_stats.get("total_assists", 0),
+                        total_damage=session_stats.get("total_damage", 0),
+                        total_matches=session_matches,
+                        session_matches=session_matches,
+                        session_victories=session_victories,
+                        session_defeats=session_defeats,
+                        session_draws=session_draws,
+                        last_kills=session_stats.get("last_match_kills", 0),
+                        last_assists=session_stats.get("last_match_assists", 0),
+                        last_damage=session_stats.get("last_match_damage", 0),
+                        last_result=getattr(tobs, "last_match_result", None),
+                        last_trophy_delta=getattr(tobs, "last_match_trophy_delta", 0),
+                        last_trophy_delta_verified=getattr(tobs, "last_match_trophies_verified", False),
+                        last_streak_bonus=getattr(tobs, "last_match_streak_bonus", 0),
+                        last_underdog_bonus=getattr(tobs, "last_match_underdog_bonus", 0),
+                        last_trophy_adjustment=getattr(tobs, "last_match_trophy_adjustment", 0),
+                        match_active=self.state == "match",
+                        farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
+                        farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                        battle_logic=battle_state.get("active_logic_name", ""),
+                        battle_fallback=bool(battle_state.get("fallback_active", False)),
+                        battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
+                        battle_last_action=battle_state.get("last_action_at", 0.0),
+                        battle_last_input=battle_state.get("last_input_at", 0.0),
+                        battle_last_skip=battle_state.get("last_skip_reason", ""),
+                        battle_failures=battle_state.get("failure_count", 0),
+                    )
+                except Exception as live_exc:
+                    if now - self._last_live_exception_time >= 5.0:
+                        print(f"[LIVE] Dashboard update error: {live_exc}")
+                        self._last_live_exception_time = now
 
         def main(self): #this is for timer to stop after time
             s_time = time.time()
@@ -753,18 +975,31 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         else:
                             self.Play.objective_pos = None
 
-                    brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
-                    # Update Play's current brawler if it changed (e.g. trophy farm mode)
+                    loop_now = time.time()
+                    active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+                    raw_brawler = str(active_entry.get("brawler", "") or "").strip()
+                    if hasattr(self.Play, "resolve_brawler_name"):
+                        brawler = self.Play.resolve_brawler_name(raw_brawler)
+                    else:
+                        brawler = raw_brawler.lower()
+                    if not brawler:
+                        if loop_now - self._last_battle_watchdog_log_at >= 2.0:
+                            print("[BATTLE][ERROR] match state is active but no current brawler is configured")
+                            self._last_battle_watchdog_log_at = loop_now
+                        if hasattr(self.Play, "force_generic_fallback"):
+                            self.Play.force_generic_fallback("missing active brawler; generic fallback active", loop_now)
+                        c += 1
+                        continue
+
                     if self.Play.current_brawler != brawler:
                         print(f"[MAIN] Brawler changed: {self.Play.current_brawler} -> {brawler}")
                         self.Play.current_brawler = brawler
-                        # Register new brawler for session summary
-                        tobs = self.Stage_manager.Trophy_observer
-                        tobs.start_session_brawler(
-                            brawler, self.Stage_manager.brawlers_pick_data[0].get('trophies', 0))
+                        self.Stage_manager.Trophy_observer.start_session_brawler(
+                            brawler,
+                            active_entry.get('trophies', 0),
+                        )
 
-                    # Pass stats info to Play so debug overlay shows everything
-                    target_val = self.Stage_manager.brawlers_pick_data[0].get('push_until', '?')
+                    target_val = active_entry.get('push_until', '?')
                     self.Play._stats_info = {
                         'ips': self.current_ips,
                         'start_time': self.start_time,
@@ -773,10 +1008,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         'target': target_val,
                     }
 
-                    # RL match boundary guard:
-                    # Reset exactly once on stable out-of-match transitions.
-                    # Includes stable "end" (new round / end screen), but uses
-                    # latching + cooldown to prevent duplicate resets from flicker.
                     stable_out_states = {"lobby", "brawler_selection", "shop", "trophy_reward", "popup", "end"}
                     is_end_state = str(self.state).startswith("end")
                     if self.state == "match":
@@ -801,7 +1032,35 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self._out_of_match_since = 0.0
                         self._out_of_match_latched = False
 
-                    self.Play.main(frame, brawler)
+                    play_started_at = time.perf_counter()
+                    try:
+                        self.Play.main(frame, brawler)
+                    except Exception as play_exc:
+                        print(f"[BATTLE][ERROR] Play.main failed for {brawler}: {play_exc}")
+                        print(traceback.format_exc().rstrip())
+                        if hasattr(self.Play, "force_generic_fallback"):
+                            self.Play.force_generic_fallback("Play.main exception; generic fallback active", loop_now)
+                    play_elapsed = time.perf_counter() - play_started_at
+                    if debug and play_elapsed > 0.25:
+                        print(f"[TIMING] play_main {play_elapsed:.3f}s")
+
+                    if self.state == "match" and hasattr(self.Play, "get_battle_runtime_state"):
+                        battle_state = self.Play.get_battle_runtime_state()
+                        match_started_at = float(battle_state.get("match_started_at", 0.0) or 0.0)
+                        last_tick_at = float(battle_state.get("last_battle_tick_at", 0.0) or 0.0)
+                        last_action_at = float(battle_state.get("last_action_at", 0.0) or 0.0)
+                        no_tick = match_started_at > 0.0 and loop_now - match_started_at > 1.5 and last_tick_at < match_started_at
+                        no_action = match_started_at > 0.0 and loop_now - match_started_at > 2.5 and last_action_at < match_started_at
+                        if no_tick or no_action:
+                            if loop_now - self._last_battle_watchdog_log_at >= 2.0:
+                                print(
+                                    "[BATTLE][ERROR] match is active but combat has not produced "
+                                    f"{'a tick' if no_tick else 'an action'}; activating fallback"
+                                )
+                                self._last_battle_watchdog_log_at = loop_now
+                            if hasattr(self.Play, "force_generic_fallback"):
+                                self.Play.force_generic_fallback("battle watchdog activated generic fallback", loop_now)
+
                     pending_result = getattr(self.Play, "_pending_end_result", None)
                     if pending_result:
                         print(f"[RESULT] play.py queued pending result {pending_result}")
@@ -812,7 +1071,6 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self.Stage_manager.do_state(end_state, frame)
                         c += 1
                         continue
-                    c += 1
 
                     tobs = self.Stage_manager.Trophy_observer
                     bname = brawler
@@ -968,6 +1226,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                 session_matches = int(session_stats.get('total_matches', 0) or 0)
                                 if session_matches <= 0:
                                     session_matches = current_match_counter
+                                battle_state = {}
+                                if hasattr(self.Play, "get_battle_runtime_state"):
+                                    try:
+                                        battle_state = self.Play.get_battle_runtime_state()
+                                    except Exception:
+                                        battle_state = {}
                                 _active_dashboard.update_live(
                                     start_time=self.start_time,
                                     ips=self.current_ips,
@@ -1043,6 +1307,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     rl_damage_dealt=int(rl_summary.get('damage_dealt', 0) or 0),
                                     rl_damage_taken=int(rl_summary.get('damage_taken', 0) or 0),
                                     rl_hit_rate=float(rl_summary.get('hit_rate', -1) or -1),
+                                    battle_logic=battle_state.get("active_logic_name", ""),
+                                    battle_fallback=bool(battle_state.get("fallback_active", False)),
+                                    battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
+                                    battle_last_action=battle_state.get("last_action_at", 0.0),
+                                    battle_last_input=battle_state.get("last_input_at", 0.0),
+                                    battle_last_skip=battle_state.get("last_skip_reason", ""),
+                                    battle_failures=battle_state.get("failure_count", 0),
                                 )
                             except Exception as _live_exc:
                                 if _now - self._last_live_exception_time >= 5.0:
