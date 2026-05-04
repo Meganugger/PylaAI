@@ -20,11 +20,12 @@ except Exception:  # pragma: no cover - depends on local environment
 PERFORMANCE_PROFILES = {
     "balanced": {
         "label": "Balanced",
-        "description": "Recommended mode. Keeps 30 FPS capture at 960px width with moderate CPU/thread limits, balancing speed, accuracy, and resource usage for most PCs.",
+        "description": "Recommended mode. Targets 60 IPS/FPS at 960px capture width with moderate CPU/thread limits, balancing speed, accuracy, and resource usage for most PCs.",
         "general_config": {
             "cpu_or_gpu": "auto",
-            "max_ips": 24,
-            "scrcpy_max_fps": 30,
+            "max_ips": 60,
+            "target_ips": 60,
+            "scrcpy_max_fps": 60,
             "scrcpy_max_width": 960,
             "scrcpy_bitrate": 3000000,
             "onnx_cpu_threads": 4,
@@ -37,11 +38,12 @@ PERFORMANCE_PROFILES = {
     },
     "low_end": {
         "label": "Low Quality",
-        "description": "Fastest and lightest mode. Lowers capture FPS, capture width, bitrate, and worker threads for weaker PCs or thermal throttling, with less visual detail for detection.",
+        "description": "Fastest and lightest mode. Uses a lower 30 IPS target, reduced capture width, bitrate, and worker threads for weaker PCs or thermal throttling, with less visual detail for detection.",
         "general_config": {
             "cpu_or_gpu": "auto",
-            "max_ips": 20,
-            "scrcpy_max_fps": 24,
+            "max_ips": 30,
+            "target_ips": 30,
+            "scrcpy_max_fps": 30,
             "scrcpy_max_width": 854,
             "scrcpy_bitrate": 2000000,
             "onnx_cpu_threads": 2,
@@ -54,11 +56,12 @@ PERFORMANCE_PROFILES = {
     },
     "quality": {
         "label": "High Quality",
-        "description": "Most detailed mode. Raises capture width and bitrate while keeping 30 FPS for stronger PCs, improving visual detail and reliability when IPS stays stable.",
+        "description": "Most accurate mode. Targets 60 IPS/FPS with higher capture width and bitrate for stronger PCs, improving visual detail and reliability when runtime speed remains stable.",
         "general_config": {
             "cpu_or_gpu": "auto",
-            "max_ips": 24,
-            "scrcpy_max_fps": 30,
+            "max_ips": 60,
+            "target_ips": 60,
+            "scrcpy_max_fps": 60,
             "scrcpy_max_width": 1280,
             "scrcpy_bitrate": 5000000,
             "onnx_cpu_threads": 4,
