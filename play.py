@@ -1,6 +1,7 @@
 import math
 import random
 import time
+import traceback
 
 import cv2
 import numpy as np
@@ -500,13 +501,20 @@ class Movement:
                 return False
             self.last_attack_time = current_time
         self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
+        self._record_battle_input("attack", "primary attack")
         return True
 
-    @staticmethod
-    def must_brawler_hold_attack(brawler, brawlers_info=None):
+    @classmethod
+    def must_brawler_hold_attack(cls, brawler, brawlers_info=None):
         if not brawlers_info:
             brawlers_info = load_brawlers_info()
-        return brawlers_info[brawler].get('hold_attack', 0) > 0
+        brawler_key = cls._normalize_brawler_key(brawler)
+        brawler_info = None
+        for known, info in (brawlers_info or {}).items():
+            if cls._normalize_brawler_key(known) == brawler_key:
+                brawler_info = info
+                break
+        return bool((brawler_info or {}).get('hold_attack', 0) > 0)
 
     def use_hypercharge(self):
         if not self._can_issue_live_input() or not self._allow_skill_inputs:
@@ -514,6 +522,7 @@ class Movement:
         if debug:
             print("Using hypercharge")
         self.window_controller.press_key("H")
+        self._record_battle_input("hypercharge", "ready ability")
         return True
 
     def use_gadget(self):
@@ -527,6 +536,7 @@ class Movement:
         if debug:
             print("Using gadget")
         self.window_controller.press_key("G")
+        self._record_battle_input("gadget", "ready ability")
         return True
 
     def use_super(self):
@@ -540,6 +550,7 @@ class Movement:
         if debug:
             print("Using super")
         self.window_controller.press_key("E")
+        self._record_battle_input("super", "ready ability")
         return True
 
     def clear_ability_ready(self, ability_name):
@@ -1041,6 +1052,11 @@ class Play(Movement):
         self._missing_player_recovery_toggle = False
         self._last_live_player_source = "base"
         self._allow_skill_inputs = True
+        self._battle_runtime = self._new_battle_runtime_state()
+        self._last_battle_tick_log_at = 0.0
+        self._last_battle_input_log_at = 0.0
+        self._last_battle_skip_log_at = 0.0
+        self._last_battle_error_log_at = 0.0
 
     @staticmethod
     def _entity_count(data, key):
@@ -1079,6 +1095,153 @@ class Play(Movement):
         if runtime_state == "match":
             return True
         return self.has_recent_match_context(current_time)
+
+    @staticmethod
+    def _normalize_brawler_key(value):
+        return "".join(ch for ch in str(value or "").strip().lower() if ch.isalnum())
+
+    @staticmethod
+    def _display_brawler_name(value):
+        normalized = str(value or "").strip()
+        if not normalized:
+            return "Unknown"
+        return normalized.replace("_", " ").replace("-", " ").title().replace(" ", "")
+
+    @staticmethod
+    def _generic_brawler_info():
+        return {
+            "safe_range": 260.0,
+            "attack_range": 440.0,
+            "super_type": "damage",
+            "super_range": 520.0,
+            "ignore_walls_for_attacks": False,
+            "ignore_walls_for_supers": False,
+            "playstyle": "fighter",
+            "reload_speed": 1.5,
+            "health": 3600,
+            "attack_damage": 1800,
+            "projectile_count": 1,
+            "movement_speed": 720,
+            "projectile_speed": 900,
+            "super_damage": 2400,
+            "hold_attack": 0,
+        }
+
+    def resolve_brawler_name(self, brawler):
+        raw = str(brawler or "").strip().lower()
+        if not raw:
+            return ""
+        if raw in self.brawlers_info:
+            return raw
+        target = self._normalize_brawler_key(raw)
+        for known in self.brawlers_info.keys():
+            if self._normalize_brawler_key(known) == target:
+                return str(known).strip().lower()
+        return raw
+
+    def _new_battle_runtime_state(self):
+        return {
+            "match_started_at": 0.0,
+            "last_battle_tick_at": 0.0,
+            "last_action_at": 0.0,
+            "last_input_at": 0.0,
+            "active_brawler": "",
+            "active_logic_name": "Idle",
+            "last_skip_reason": "",
+            "failure_count": 0,
+            "fallback_active": False,
+            "last_movement": "",
+            "last_attack_decision": "",
+        }
+
+    def _select_battle_logic_name(self, brawler):
+        brawler_key = self.resolve_brawler_name(brawler)
+        if not brawler_key or brawler_key not in self.brawlers_info:
+            return "GenericFallbackLogic"
+        if getattr(self, "_bt_combat", None) is not None:
+            return f"{self._display_brawler_name(brawler_key)}BehaviorTreeLogic"
+        return f"{self._display_brawler_name(brawler_key)}RuleBasedLogic"
+
+    def start_match_runtime(self, brawler, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        brawler_key = self.resolve_brawler_name(brawler)
+        logic_name = self._select_battle_logic_name(brawler_key)
+        self._battle_runtime.update({
+            "match_started_at": current_time,
+            "last_battle_tick_at": 0.0,
+            "last_action_at": 0.0,
+            "last_input_at": 0.0,
+            "active_brawler": brawler_key,
+            "active_logic_name": logic_name,
+            "last_skip_reason": "",
+            "failure_count": 0,
+            "fallback_active": logic_name == "GenericFallbackLogic",
+            "last_movement": "",
+            "last_attack_decision": "",
+        })
+        print("[MATCH] Entered match")
+        print(f"[MATCH] current brawler resolved: {brawler_key or 'unknown'}")
+        print(f"[BATTLE] selected logic: {logic_name}")
+        print("[BATTLE] loop started")
+
+    def get_battle_runtime_state(self):
+        return dict(getattr(self, "_battle_runtime", {}) or self._new_battle_runtime_state())
+
+    def _battle_runtime_started(self):
+        return float((self._battle_runtime or {}).get("match_started_at", 0.0) or 0.0) > 0.0
+
+    def _note_battle_tick(self, current_time, brawler):
+        if not self._battle_runtime_started():
+            self.start_match_runtime(brawler, current_time)
+        brawler_key = self.resolve_brawler_name(brawler)
+        logic_name = self._select_battle_logic_name(brawler_key)
+        if self._battle_runtime.get("active_brawler") != brawler_key:
+            print(f"[MATCH] current brawler resolved: {brawler_key or 'unknown'}")
+        if self._battle_runtime.get("active_logic_name") != logic_name:
+            print(f"[BATTLE] selected logic: {logic_name}")
+        self._battle_runtime.update({
+            "last_battle_tick_at": current_time,
+            "active_brawler": brawler_key,
+            "active_logic_name": logic_name,
+            "fallback_active": logic_name == "GenericFallbackLogic" or bool(self._battle_runtime.get("fallback_active")),
+        })
+        if debug and current_time - self._last_battle_tick_log_at >= 2.0:
+            print(f"[BATTLE] tick brawler={brawler_key or 'unknown'} logic={logic_name}")
+            self._last_battle_tick_log_at = current_time
+
+    def _set_battle_skip_reason(self, reason, current_time=None, fallback=False):
+        current_time = current_time if current_time is not None else time.time()
+        reason = str(reason or "").strip()
+        if not reason:
+            return
+        self._battle_runtime["last_skip_reason"] = reason
+        if fallback:
+            self._battle_runtime["fallback_active"] = True
+        if current_time - self._last_battle_skip_log_at >= 1.5:
+            print(f"[BATTLE] {reason}")
+            self._last_battle_skip_log_at = current_time
+
+    def _record_battle_input(self, action, detail="", current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        detail_text = str(detail or "").strip()
+        message = f"{action}: {detail_text}" if detail_text else str(action)
+        self._battle_runtime["last_input_at"] = current_time
+        self._battle_runtime["last_action_at"] = current_time
+        if str(action).lower() == "attack":
+            self._battle_runtime["last_attack_decision"] = detail_text or "attack"
+        if str(action).lower() == "movement":
+            self._battle_runtime["last_movement"] = detail_text
+        if debug and current_time - self._last_battle_input_log_at >= 0.75:
+            print(f"[BATTLE] input dispatched: {message}")
+            self._last_battle_input_log_at = current_time
+
+    def force_generic_fallback(self, reason, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        self._battle_runtime["fallback_active"] = True
+        self._battle_runtime["active_logic_name"] = "GenericFallbackLogic"
+        self._battle_runtime["failure_count"] = int(self._battle_runtime.get("failure_count", 0) or 0) + 1
+        self._set_battle_skip_reason(reason, current_time=current_time, fallback=True)
+        return self._recover_missing_player_in_match(current_time)
 
     def _is_plausible_player_detection(self, data):
         players = (data or {}).get("player") or []
@@ -1209,24 +1372,33 @@ class Play(Movement):
         self._last_missing_player_recovery_at = current_time
         self._missing_player_recovery_toggle = not self._missing_player_recovery_toggle
         try:
+            self._set_battle_skip_reason(
+                "player detection missing; recovery action enabled",
+                current_time=current_time,
+                fallback=True,
+            )
             if self._uses_analog_movement():
                 if self._is_brawl_ball_mode(self.selected_gamemode):
                     angle = 270.0
                 else:
                     angle = 270.0 if self.game_mode == 3 else 0.0
                 self.window_controller.move_joystick_angle(angle, radius=self._analog_movement_radius * 0.72)
+                self._record_battle_input("movement", f"fallback angle {angle:.0f}", current_time)
             else:
                 primary = "w" if self.game_mode == 3 else "d"
                 self.window_controller.keys_down([primary])
                 self.window_controller.keys_up([key for key in ["w", "a", "s", "d"] if key != primary])
+                self._record_battle_input("movement", f"fallback key {primary}", current_time)
             if current_time - self.time_since_last_attack >= max(0.8, self.attack_cooldown):
-                self.attack()
+                if self.attack():
+                    self._battle_runtime["last_attack_decision"] = "missing-player recovery poke"
         except Exception as exc:
-            if debug and (current_time - self._last_no_player_log_time >= 2.0):
-                print(f"[MATCH] missing-player recovery input failed: {exc}")
+            if current_time - self._last_battle_error_log_at >= 2.0:
+                print(f"[BATTLE][ERROR] missing-player recovery input failed: {exc}")
+                self._last_battle_error_log_at = current_time
         return True
 
-    def reset_match_control_state(self, current_time=None):
+    def reset_match_control_state(self, current_time=None, brawler=None):
         current_time = current_time if current_time is not None else time.time()
         try:
             self.window_controller.keys_up(list("wasd"))
@@ -1267,6 +1439,7 @@ class Play(Movement):
         self._missing_player_recovery_toggle = False
         self._pending_end_result = None
         self._allow_skill_inputs = True
+        self.start_match_runtime(brawler or self.current_brawler, current_time)
 
     def load_brawler_ranges(self, brawlers_info=None):
         if not brawlers_info:
@@ -1274,9 +1447,12 @@ class Play(Movement):
         screen_size_ratio = self.window_controller.scale_factor
         ranges = {}
         for brawler, info in brawlers_info.items():
-            attack_range = info['attack_range']
-            safe_range = info['safe_range']
-            super_range = info['super_range']
+            if not isinstance(info, dict):
+                continue
+            defaults = self._generic_brawler_info()
+            attack_range = info.get('attack_range', defaults["attack_range"])
+            safe_range = info.get('safe_range', defaults["safe_range"])
+            super_range = info.get('super_range', defaults["super_range"])
             v = [safe_range, attack_range, super_range]
             ranges[brawler] = [int(v[0] * screen_size_ratio), int(v[1] * screen_size_ratio), int(v[2] * screen_size_ratio)]
         return ranges
@@ -2209,6 +2385,7 @@ class Play(Movement):
         if isinstance(movement, (float, int)):
             self.window_controller.move_joystick_angle(float(movement), radius=self._analog_movement_radius)
             self.keys_hold = []
+            self._record_battle_input("movement", f"angle {float(movement):.0f}")
             return
 
         movement = movement.lower()
@@ -2226,6 +2403,8 @@ class Play(Movement):
         self.window_controller.keys_up(keys_to_keyUp)
 
         self.keys_hold = keys_to_keyDown
+        if movement:
+            self._record_battle_input("movement", movement)
 
     def _debounce_angle(self, angle):
         if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
@@ -2308,7 +2487,12 @@ class Play(Movement):
     def get_brawler_range(self, brawler):
         if self.brawler_ranges is None:
             self.brawler_ranges = self.load_brawler_ranges(self.brawlers_info)
-        return self.brawler_ranges[brawler]
+        brawler_key = self.resolve_brawler_name(brawler)
+        if brawler_key in self.brawler_ranges:
+            return self.brawler_ranges[brawler_key]
+        scale = max(float(getattr(self.window_controller, "scale_factor", 1.0) or 1.0), 0.5)
+        self._battle_runtime["fallback_active"] = True
+        return [int(260 * scale), int(440 * scale), int(520 * scale)]
 
     def loop(self, brawler, data, current_time, wall_context):
         player_pos = self.get_player_pos(data['player'][0])
@@ -2337,6 +2521,24 @@ class Play(Movement):
             else:
                 self._planned_analog_reason = None
                 movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
+            if not movement and str(getattr(self, "_runtime_state", "") or "") == "match":
+                movement = "W" if self.game_mode == 3 else "D"
+                self._set_battle_skip_reason(
+                    "movement decision empty; using safe generic movement",
+                    current_time=current_time,
+                    fallback=True,
+                )
+            self._battle_runtime["last_movement"] = str(movement)
+            if not (data.get("enemy") or []):
+                self._set_battle_skip_reason(
+                    f"no target found; moving safely ({movement})",
+                    current_time=current_time,
+                )
+            else:
+                target_state = "hittable" if self.target_info.get("hittable") else "blocked"
+                if debug and current_time - self._last_battle_skip_log_at >= 1.5:
+                    print(f"[BATTLE] movement decision: {movement}; target={target_state}")
+                    self._last_battle_skip_log_at = current_time
             self.do_movement(movement)
             self.time_since_movement = time.time()
         return movement
@@ -2592,9 +2794,16 @@ class Play(Movement):
         return movement
 
     def get_movement(self, player_data, enemy_data, wall_context, brawler):
+        brawler = self.resolve_brawler_name(brawler)
         brawler_info = self.brawlers_info.get(brawler)
         if not brawler_info:
-            raise ValueError(f"Brawler '{brawler}' not found in brawlers info.")
+            brawler_info = self._generic_brawler_info()
+            self._battle_runtime["active_logic_name"] = "GenericFallbackLogic"
+            self._battle_runtime["fallback_active"] = True
+            self._set_battle_skip_reason(
+                f"brawler info missing for '{brawler or 'unknown'}'; using generic fallback logic",
+                fallback=True,
+            )
 
         # Hold-attack auto-release: if the brawler has been holding attack past
         # its maximum hold duration, release the attack button.
@@ -2620,6 +2829,7 @@ class Play(Movement):
         if self.is_showdown_mode:
             showdown_fog_escape = self._get_showdown_fog_escape_move(player_data, wall_context)
         if not self.is_there_enemy(enemy_data):
+            self._battle_runtime["last_attack_decision"] = "no target visible"
             if self.is_showdown_mode:
                 return self.no_enemy_movement(player_data, wall_context)
 
@@ -2672,6 +2882,7 @@ class Play(Movement):
             effective_attack_range,
         )
         if enemy_coords is None:
+            self._battle_runtime["last_attack_decision"] = "target scan returned no confident target"
             return self.no_enemy_movement(player_data, wall_context)
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
@@ -2889,11 +3100,18 @@ class Play(Movement):
             else:
                 attack_issued = self.attack()
             if attack_issued:
+                self._battle_runtime["last_attack_decision"] = (
+                    f"attack target distance={int(enemy_distance)} hittable={bool(self.target_info['hittable'])}"
+                )
                 self._consume_ammo(current_time)
                 self.time_since_last_attack = current_time
                 if self._burst_mode and self.current_ammo <= 0:
                     self._burst_mode = False
                     self._last_burst_end_time = current_time
+        else:
+            self._battle_runtime["last_attack_decision"] = (
+                f"hold fire target distance={int(enemy_distance)} hittable={bool(self.target_info['hittable'])}"
+            )
         self.try_use_super_on_enemy(
             brawler,
             brawler_info,
@@ -2906,6 +3124,10 @@ class Play(Movement):
         return movement
 
     def main(self, frame, brawler):
+        raw_brawler = brawler
+        brawler = self.resolve_brawler_name(brawler)
+        if raw_brawler and brawler and str(raw_brawler).strip().lower() != brawler:
+            print(f"[MATCH] current brawler resolved: {brawler}")
         if brawler != self.current_brawler:
             self.current_brawler = brawler
             self.shot_timestamps = []
@@ -2916,6 +3138,8 @@ class Play(Movement):
             self.time_since_holding_attack = None
         current_time = time.time()
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
+        if runtime_state == "match":
+            self._note_battle_tick(current_time, brawler)
         data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time) or {}
         raw_supporting_entities = (
             self._entity_count(data, "enemy")
@@ -2996,6 +3220,12 @@ class Play(Movement):
             self._reset_match_state_guard()
             self._reset_wall_stuck_state(current_time)
             self.escape_state["phase"] = None
+            if runtime_state == "match":
+                self._set_battle_skip_reason(
+                    "player detection missing; battle loop using recovery path",
+                    current_time=current_time,
+                    fallback=True,
+                )
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"
@@ -3110,4 +3340,13 @@ class Play(Movement):
             self.is_super_ready = False
 
         self.current_frame = frame
-        movement = self.loop(brawler, data, current_time, wall_context)
+        try:
+            movement = self.loop(brawler, data, current_time, wall_context)
+        except Exception as exc:
+            self._battle_runtime["failure_count"] = int(self._battle_runtime.get("failure_count", 0) or 0) + 1
+            self._battle_runtime["fallback_active"] = True
+            if current_time - self._last_battle_error_log_at >= 1.0:
+                print(f"[BATTLE][ERROR] battle loop failed for {brawler or 'unknown'}: {exc}")
+                print(traceback.format_exc().rstrip())
+                self._last_battle_error_log_at = current_time
+            self.force_generic_fallback("battle loop exception; generic fallback active", current_time)

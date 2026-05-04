@@ -3,6 +3,7 @@ import gc
 import sys
 import threading
 import time
+import traceback
 
 import cv2
 
@@ -135,6 +136,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._live_push_interval = 0.25
             self._live_stats_push_interval = 0.25
             self._roster_push_interval = 2.0
+            self._last_battle_watchdog_log_at = 0.0
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
@@ -496,7 +498,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     if previous_state != "match" or not getattr(self.Stage_manager, "_match_in_progress", False):
                         if self.Stage_manager.mark_match_started():
                             if hasattr(self.Play, "reset_match_control_state"):
-                                self.Play.reset_match_control_state(now)
+                                active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+                                self.Play.reset_match_control_state(now, active_entry.get("brawler"))
                             if hasattr(self.Play, "note_confirmed_match_state"):
                                 self.Play.note_confirmed_match_state(now)
                             self.match_ready_at = now
@@ -541,6 +544,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         return default
 
             brawler = str(active_entry.get("brawler", "") or "")
+            battle_state = {}
+            if hasattr(self.Play, "get_battle_runtime_state"):
+                try:
+                    battle_state = self.Play.get_battle_runtime_state()
+                except Exception:
+                    battle_state = {}
             current_match_counter = int(getattr(tobs, "match_counter", 0) or 0)
             current_history_revision = int(getattr(tobs, "history_revision", 0) or 0)
             current_kills = int(getattr(self.Play, "_enemies_killed_this_match", 0) or 0)
@@ -693,6 +702,13 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         match_active=self.current_state == "match",
                         farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
                         farm_remaining=len(self.Stage_manager.brawlers_pick_data),
+                        battle_logic=battle_state.get("active_logic_name", ""),
+                        battle_fallback=bool(battle_state.get("fallback_active", False)),
+                        battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
+                        battle_last_action=battle_state.get("last_action_at", 0.0),
+                        battle_last_input=battle_state.get("last_input_at", 0.0),
+                        battle_last_skip=battle_state.get("last_skip_reason", ""),
+                        battle_failures=battle_state.get("failure_count", 0),
                     )
                 except Exception as live_exc:
                     if now - self._last_live_exception_time >= 5.0:
@@ -829,16 +845,51 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     c += 1
                     continue
 
-                brawler = self.Stage_manager.brawlers_pick_data[0]['brawler']
+                active_entry = self.Stage_manager.brawlers_pick_data[0] if self.Stage_manager.brawlers_pick_data else {}
+                raw_brawler = str(active_entry.get("brawler", "") or "").strip()
+                if hasattr(self.Play, "resolve_brawler_name"):
+                    brawler = self.Play.resolve_brawler_name(raw_brawler)
+                else:
+                    brawler = raw_brawler.lower()
+                if not brawler:
+                    if loop_now - self._last_battle_watchdog_log_at >= 2.0:
+                        print("[BATTLE][ERROR] match state is active but no current brawler is configured")
+                        self._last_battle_watchdog_log_at = loop_now
+                    if hasattr(self.Play, "force_generic_fallback"):
+                        self.Play.force_generic_fallback("missing active brawler; generic fallback active", loop_now)
+                    c += 1
+                    continue
                 if self.Play.current_brawler != brawler:
                     self.Play.current_brawler = brawler
                     self.Stage_manager.Trophy_observer.start_session_brawler(
                         brawler,
-                        self.Stage_manager.brawlers_pick_data[0].get("trophies", 0),
+                        active_entry.get("trophies", 0),
                     )
                 play_started_at = time.perf_counter()
-                self.Play.main(frame, brawler)
+                try:
+                    self.Play.main(frame, brawler)
+                except Exception as play_exc:
+                    print(f"[BATTLE][ERROR] Play.main failed for {brawler}: {play_exc}")
+                    print(traceback.format_exc().rstrip())
+                    if hasattr(self.Play, "force_generic_fallback"):
+                        self.Play.force_generic_fallback("Play.main exception; generic fallback active", loop_now)
                 record_timing("play_main", time.perf_counter() - play_started_at, print_every=120)
+                if self.current_state == "match" and hasattr(self.Play, "get_battle_runtime_state"):
+                    battle_state = self.Play.get_battle_runtime_state()
+                    match_started_at = float(battle_state.get("match_started_at", 0.0) or 0.0)
+                    last_tick_at = float(battle_state.get("last_battle_tick_at", 0.0) or 0.0)
+                    last_action_at = float(battle_state.get("last_action_at", 0.0) or 0.0)
+                    no_tick = match_started_at > 0.0 and loop_now - match_started_at > 1.5 and last_tick_at < match_started_at
+                    no_action = match_started_at > 0.0 and loop_now - match_started_at > 2.5 and last_action_at < match_started_at
+                    if no_tick or no_action:
+                        if loop_now - self._last_battle_watchdog_log_at >= 2.0:
+                            print(
+                                "[BATTLE][ERROR] match is active but combat has not produced "
+                                f"{'a tick' if no_tick else 'an action'}; activating fallback"
+                            )
+                            self._last_battle_watchdog_log_at = loop_now
+                        if hasattr(self.Play, "force_generic_fallback"):
+                            self.Play.force_generic_fallback("battle watchdog activated generic fallback", loop_now)
                 pending_result = getattr(self.Play, "_pending_end_result", None)
                 if pending_result:
                     print(f"[RESULT] play.py queued pending result {pending_result}")

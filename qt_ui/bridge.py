@@ -46,6 +46,7 @@ class QtBridge(QObject):
     logsChanged = Signal("QVariantList")
     notificationRaised = Signal(str, str)
     sessionSummaryReady = Signal("QVariantMap")
+    updateStatusChanged = Signal("QVariantMap")
 
     def __init__(self, version_str, brawlers, pyla_main_fn, login_fn=None, saved_brawler_data=None):
         super().__init__()
@@ -67,8 +68,16 @@ class QtBridge(QObject):
         self.general_config = self._load_general_config()
         self.time_config = load_config("time")
         self.login_config = load_toml_as_dict("cfg/login.toml")
-        self.brawlers_info = load_brawlers_info()
+        self._brawler_load_error = ""
+        self._brawler_load_state = {"state": "loading", "message": "Loading brawlers...", "count": 0}
+        try:
+            self.brawlers_info = load_brawlers_info()
+        except Exception as exc:
+            self.brawlers_info = {}
+            self._brawler_load_error = str(exc)
         self._all_brawlers = self._discover_brawler_names(self._input_brawlers)
+        self._refresh_brawler_load_state()
+        self._update_status = self._default_update_status("idle")
         self.brawlers_data = self._normalize_roster(saved_brawler_data or self._load_saved_roster())
         self.capabilities = {
             "visual_overlay": os.path.exists("visual_overlay.py"),
@@ -121,6 +130,9 @@ class QtBridge(QObject):
         config = load_config("general")
         config.setdefault("current_emulator", "LDPlayer")
         config.setdefault("map_orientation", "vertical")
+        config.setdefault("performance_profile", "balanced")
+        config.setdefault("auto_update_checks", "no")
+        config.setdefault("auto_update_ignored_sha", "")
         return config
 
     def _discover_brawler_names(self, names):
@@ -142,6 +154,27 @@ class QtBridge(QObject):
                     if value:
                         discovered.add(value)
         return sorted(discovered)
+
+    def _refresh_brawler_load_state(self):
+        count = len(self._all_brawlers or [])
+        if self._brawler_load_error:
+            self._brawler_load_state = {
+                "state": "error",
+                "message": f"Could not load brawler data: {self._brawler_load_error}",
+                "count": count,
+            }
+        elif count <= 0:
+            self._brawler_load_state = {
+                "state": "empty",
+                "message": "No brawlers were found in cfg/brawlers_info.json or the icon folders.",
+                "count": 0,
+            }
+        else:
+            self._brawler_load_state = {
+                "state": "ready",
+                "message": f"{count} brawlers loaded.",
+                "count": count,
+            }
 
     @staticmethod
     def _is_enabled(value):
@@ -535,6 +568,64 @@ class QtBridge(QObject):
     def _tool_path(*parts):
         return Path(os.getcwd(), *parts)
 
+    def _performance_profiles_payload(self):
+        try:
+            from performance_profile import PERFORMANCE_PROFILES
+
+            rows = []
+            labels = {
+                "balanced": "Balanced",
+                "low_end": "Low Quality",
+                "quality": "High Quality",
+            }
+            for key in ("balanced", "low_end", "quality"):
+                profile = PERFORMANCE_PROFILES.get(key, {})
+                rows.append({
+                    "value": key,
+                    "label": profile.get("label", labels.get(key, key)),
+                    "description": profile.get("description", ""),
+                })
+            return rows
+        except Exception:
+            return [
+                {
+                    "value": "balanced",
+                    "label": "Balanced",
+                    "description": "Recommended mode. Balances speed, accuracy, and resource usage for most users.",
+                },
+                {
+                    "value": "low_end",
+                    "label": "Low Quality",
+                    "description": "Fastest and lightest mode for weaker PCs, with less visual detail for detection.",
+                },
+                {
+                    "value": "quality",
+                    "label": "High Quality",
+                    "description": "Most detailed mode for stronger PCs when runtime speed remains stable.",
+                },
+            ]
+
+    def _default_update_status(self, state="idle", error=""):
+        return {
+            "ok": False,
+            "state": state,
+            "currentVersion": str(self.general_config.get("pyla_version", self._version_str) or self._version_str),
+            "localSha": "",
+            "latestSha": "",
+            "availableVersion": "",
+            "updateAvailable": False,
+            "source": "Meganugger/PylaAI [main]",
+            "summary": "",
+            "changelog": "",
+            "url": "",
+            "error": error,
+            "ignored": False,
+            "autoUpdateEnabled": self._is_enabled(self.general_config.get("auto_update_checks", "no")),
+        }
+
+    def _emit_update_status(self):
+        self.updateStatusChanged.emit(dict(self._update_status))
+
     def _tool_status_payload(self):
         updater_script = self._tool_path("tools", "updater.py")
         updater_exe = self._tool_path("updater.exe")
@@ -558,6 +649,8 @@ class QtBridge(QObject):
             "performanceProfilesAvailable": profile_module.exists(),
             "localUpdateSha": local_sha,
             "updateSource": update_source,
+            "autoUpdateEnabled": self._is_enabled(self.general_config.get("auto_update_checks", "no")),
+            "ignoredUpdateSha": str(self.general_config.get("auto_update_ignored_sha", "") or ""),
         }
 
     @Slot(result="QVariantMap")
@@ -629,8 +722,12 @@ class QtBridge(QObject):
         if force:
             command.append("--force")
         try:
+            self._update_status.update({"state": "installing", "error": ""})
+            self._emit_update_status()
             creationflags = subprocess.CREATE_NEW_CONSOLE if os.name == "nt" else 0
             subprocess.Popen(command, cwd=os.getcwd(), creationflags=creationflags)
+            self._update_status.update({"state": "restart required"})
+            self._emit_update_status()
             self._notification(
                 "info",
                 "Updater launched in a separate console. Close PylaAI before installing over this running copy.",
@@ -642,27 +739,57 @@ class QtBridge(QObject):
 
     @Slot(result="QVariantMap")
     def checkForUpdates(self):
+        self._update_status = self._default_update_status("checking")
+        self._emit_update_status()
         try:
             from tools import updater
 
-            latest_sha = updater.latest_branch_sha() or ""
-            local_sha = updater.read_local_update_sha(Path(os.getcwd())) or ""
-            update_available = bool(latest_sha and latest_sha != local_sha)
-            if update_available:
-                self._notification("info", "A newer GitHub branch revision is available. Use Launch Updater when ready.")
-            elif latest_sha:
+            status = updater.build_update_status(Path(os.getcwd()))
+            ignored_sha = str(self.general_config.get("auto_update_ignored_sha", "") or "")
+            status["ignored"] = bool(status.get("latestSha") and status.get("latestSha") == ignored_sha)
+            status["autoUpdateEnabled"] = self._is_enabled(self.general_config.get("auto_update_checks", "no"))
+            self._update_status = status
+            self._emit_update_status()
+            if status.get("updateAvailable") and not status.get("ignored"):
+                self._notification("info", "A newer GitHub branch revision is available.")
+            elif status.get("updateAvailable") and status.get("ignored"):
+                self._notification("info", "A newer GitHub branch revision is available, but this version is ignored.")
+            elif status.get("ok"):
                 self._notification("success", "This folder is already marked as the latest GitHub branch revision.")
             else:
                 self._notification("warning", "Could not read the latest GitHub revision right now.")
-            return {
-                "ok": bool(latest_sha),
-                "latestSha": latest_sha,
-                "localSha": local_sha,
-                "updateAvailable": update_available,
-            }
+            return dict(self._update_status)
         except Exception as exc:
+            self._update_status = self._default_update_status("failed", str(exc))
+            self._emit_update_status()
             self._notification("error", f"Update check failed: {exc}")
-            return {"ok": False, "error": str(exc)}
+            return dict(self._update_status)
+
+    @Slot(bool, result="QVariantMap")
+    def setAutoUpdateChecks(self, enabled):
+        self.general_config["auto_update_checks"] = "yes" if enabled else "no"
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        self._update_status["autoUpdateEnabled"] = bool(enabled)
+        self._emit_state()
+        self._emit_update_status()
+        self._notification(
+            "success",
+            "Automatic update checks enabled." if enabled else "Automatic update checks disabled.",
+        )
+        return {"ok": True, "autoUpdateEnabled": bool(enabled)}
+
+    @Slot(str, result="QVariantMap")
+    def ignoreUpdateVersion(self, sha):
+        ignored_sha = str(sha or self._update_status.get("latestSha", "") or "").strip()
+        if not ignored_sha:
+            return {"ok": False, "error": "missing update version"}
+        self.general_config["auto_update_ignored_sha"] = ignored_sha
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        self._update_status["ignored"] = True
+        self._emit_state()
+        self._emit_update_status()
+        self._notification("info", "This update version will not prompt again.")
+        return {"ok": True, "ignoredSha": ignored_sha}
 
     def _prepare_bot_control_events(self):
         self._bot_stop_requested = False
@@ -760,6 +887,9 @@ class QtBridge(QObject):
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
             "toolStatus": self._tool_status_payload(),
+            "updateStatus": dict(self._update_status),
+            "performanceProfiles": self._performance_profiles_payload(),
+            "brawlerLoadState": dict(self._brawler_load_state),
             "live": dict(self._live_data),
         }
 
@@ -784,6 +914,25 @@ class QtBridge(QObject):
     @Slot(result="QVariantList")
     def getBrawlers(self):
         return self._build_brawler_payload()
+
+    @Slot(result="QVariantMap")
+    def refreshBrawlers(self):
+        self._brawler_load_state = {"state": "loading", "message": "Loading brawlers...", "count": 0}
+        self._emit_state()
+        self._brawler_load_error = ""
+        try:
+            self.brawlers_info = load_brawlers_info()
+        except Exception as exc:
+            self.brawlers_info = {}
+            self._brawler_load_error = str(exc)
+        self._all_brawlers = self._discover_brawler_names(self._input_brawlers)
+        self._refresh_brawler_load_state()
+        self._emit_state()
+        if self._brawler_load_state["state"] == "ready":
+            self._notification("success", self._brawler_load_state["message"])
+        else:
+            self._notification("warning" if self._brawler_load_state["state"] == "empty" else "error", self._brawler_load_state["message"])
+        return dict(self._brawler_load_state)
 
     @Slot(result="QVariantList")
     def getFarmPreview(self):
@@ -898,6 +1047,9 @@ class QtBridge(QObject):
             "auto_push_target_trophies",
             "current_emulator",
             "map_orientation",
+            "performance_profile",
+            "auto_update_checks",
+            "auto_update_ignored_sha",
         ):
             if key in general:
                 self.general_config[key] = general[key]
