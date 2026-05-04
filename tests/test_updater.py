@@ -9,6 +9,7 @@ from tools.updater import (
     copy_update_files,
     merge_toml_text,
     repo_branch,
+    read_installed_update_sha,
     read_local_update_sha,
     restore_preserved_files,
     write_local_update_info,
@@ -116,6 +117,77 @@ class UpdaterTest(unittest.TestCase):
             self.assertFalse(status["ok"])
             self.assertEqual(status["state"], "failed")
             self.assertEqual(status["currentVersion"], "1.0.0+test")
+
+    def test_update_status_does_not_prompt_when_local_marker_matches_latest(self):
+        with workspace_tempdir() as tmp:
+            project = Path(tmp)
+            (project / "cfg").mkdir()
+            (project / "cfg" / "general_config.toml").write_text('pyla_version = "1.0.0+main"\n', encoding="utf-8")
+            write_local_update_info(project, "abc123")
+
+            import tools.updater as updater_module
+
+            original = updater_module.latest_branch_info
+            updater_module.latest_branch_info = lambda _project=None: {
+                "sha": "abc123",
+                "short_sha": "abc123",
+                "repo": "Meganugger/PylaAI",
+                "branch": "main",
+                "summary": "same commit",
+                "message": "same commit",
+                "html_url": "",
+            }
+            try:
+                status = build_update_status(project)
+            finally:
+                updater_module.latest_branch_info = original
+
+            self.assertTrue(status["ok"])
+            self.assertFalse(status["updateAvailable"])
+            self.assertEqual(status["state"], "up to date")
+            self.assertEqual(read_installed_update_sha(project), "abc123")
+
+    def test_update_status_does_not_prompt_when_local_git_head_is_ahead(self):
+        with workspace_tempdir() as tmp:
+            project = Path(tmp)
+            (project / "cfg").mkdir()
+            (project / "cfg" / "general_config.toml").write_text('pyla_version = "1.0.0+main"\n', encoding="utf-8")
+
+            import tools.updater as updater_module
+
+            originals = (
+                updater_module.latest_branch_info,
+                updater_module.read_local_update_sha,
+                updater_module.read_current_git_sha,
+                updater_module.is_git_ancestor,
+            )
+            updater_module.latest_branch_info = lambda _project=None: {
+                "sha": "remote123",
+                "short_sha": "remote123",
+                "repo": "Meganugger/PylaAI",
+                "branch": "main",
+                "summary": "remote ancestor",
+                "message": "remote ancestor",
+                "html_url": "",
+            }
+            updater_module.read_local_update_sha = lambda _project: None
+            updater_module.read_current_git_sha = lambda _project: "local456"
+            updater_module.is_git_ancestor = lambda _project, ancestor, descendant: (
+                ancestor == "remote123" and descendant == "local456"
+            )
+            try:
+                status = build_update_status(project)
+            finally:
+                (
+                    updater_module.latest_branch_info,
+                    updater_module.read_local_update_sha,
+                    updater_module.read_current_git_sha,
+                    updater_module.is_git_ancestor,
+                ) = originals
+
+            self.assertTrue(status["ok"])
+            self.assertFalse(status["updateAvailable"])
+            self.assertEqual(status["state"], "up to date")
 
     def test_repo_branch_infers_branch_specific_version_when_env_is_not_set(self):
         with workspace_tempdir() as tmp:
