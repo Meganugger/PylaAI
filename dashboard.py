@@ -21,7 +21,7 @@ from pathlib import Path
 
 from PIL import Image
 from customtkinter import CTkImage
-from tkinter import filedialog
+from tkinter import filedialog, messagebox
 
 from gui.theme import COLORS, FONT_FAMILY, FONT_FAMILY_ALT, S, apply_appearance, font, ui_font
 from lobby_automation import LobbyAutomation
@@ -1525,17 +1525,36 @@ class Dashboard(ctk.CTk):
         tools_f.pack(fill="x", padx=S(20), pady=S(4))
         ctk.CTkLabel(
             tools_f,
-            text="Updater, runtime preflight, and performance profiles are available from here.",
+            text="Updater, runtime preflight, and performance profiles are available from here. Updates are checked from GitHub and still ask before launching the installer.",
             font=("Segoe UI", S(12)),
             text_color=TXT,
         ).pack(anchor="w", padx=S(14), pady=(S(12), S(4)))
+        profile_help = (
+            "Low Quality: lighter capture (24 FPS, 854px, lower bitrate, fewer threads) for weaker PCs.\n"
+            "Balanced: recommended 30 FPS, 960px capture with moderate thread limits.\n"
+            "High Quality: sharper 1280px capture and higher bitrate for stronger PCs."
+        )
+        ctk.CTkLabel(
+            tools_f,
+            text=profile_help,
+            font=("Segoe UI", S(11)),
+            text_color=MUTED,
+            justify="left",
+        ).pack(anchor="w", padx=S(14), pady=(0, S(8)))
         tool_row = ctk.CTkFrame(tools_f, fg_color="transparent")
         tool_row.pack(fill="x", padx=S(14), pady=S(8))
-        self._profile_var = ctk.StringVar(value="balanced")
+        profile_labels = {
+            "balanced": "Balanced",
+            "low_end": "Low Quality",
+            "quality": "High Quality",
+        }
+        self._profile_label_to_value = {label: key for key, label in profile_labels.items()}
+        current_profile = str(self.general_config.get("performance_profile", "balanced"))
+        self._profile_var = ctk.StringVar(value=profile_labels.get(current_profile, "Balanced"))
         ctk.CTkOptionMenu(
             tool_row,
             variable=self._profile_var,
-            values=["balanced", "low_end", "quality"],
+            values=list(self._profile_label_to_value.keys()),
             font=("Segoe UI", S(12)),
             fg_color=SECTION,
             button_color=ACCENT,
@@ -1553,6 +1572,21 @@ class Dashboard(ctk.CTk):
             width=S(130),
             command=self._apply_performance_profile_from_ui,
         ).pack(side="left", padx=S(4))
+
+        update_row = ctk.CTkFrame(tools_f, fg_color="transparent")
+        update_row.pack(fill="x", padx=S(14), pady=(0, S(12)))
+        self._auto_update_var = ctk.StringVar(value=self.general_config.get("auto_update_checks", "no"))
+        ctk.CTkCheckBox(
+            update_row,
+            text="Ask when updates are available",
+            variable=self._auto_update_var,
+            onvalue="yes",
+            offvalue="no",
+            fg_color=ACCENT,
+            hover_color=ACCENT_H,
+            text_color=TXT,
+            command=self._save_auto_update_preference,
+        ).pack(side="left")
         ctk.CTkButton(
             tool_row,
             text="Runtime Check",
@@ -1767,7 +1801,8 @@ class Dashboard(ctk.CTk):
             self._set_tool_status("Runtime preflight failed to run", RED)
 
     def _apply_performance_profile_from_ui(self):
-        profile = self._profile_var.get() if hasattr(self, "_profile_var") else "balanced"
+        selected = self._profile_var.get() if hasattr(self, "_profile_var") else "Balanced"
+        profile = getattr(self, "_profile_label_to_value", {}).get(selected, selected)
         try:
             from performance_profile import apply_performance_profile
 
@@ -1783,17 +1818,48 @@ class Dashboard(ctk.CTk):
         try:
             from tools import updater
 
-            latest_sha = updater.latest_branch_sha()
-            local_sha = updater.read_local_update_sha(Path(os.getcwd()))
-            if not latest_sha:
-                self._set_tool_status("Could not check GitHub updates right now", GOLD)
-            elif latest_sha == local_sha:
+            status = updater.build_update_status(Path(os.getcwd()))
+            latest_sha = status.get("latestSha", "")
+            ignored_sha = str(self.general_config.get("auto_update_ignored_sha", "") or "")
+            if not status.get("ok"):
+                self._set_tool_status(status.get("error") or "Could not check GitHub updates right now", GOLD)
+            elif not status.get("updateAvailable"):
                 self._set_tool_status("Already on latest marked GitHub revision", GREEN)
+            elif latest_sha and latest_sha == ignored_sha:
+                self._set_tool_status("Update available, but this version is ignored", GOLD)
             else:
                 self._set_tool_status("Update available from GitHub", GOLD)
+                self._prompt_update(status)
         except Exception as exc:
             print(f"Update check failed: {exc}")
             self._set_tool_status("Update check failed", RED)
+
+    def _save_auto_update_preference(self):
+        if not hasattr(self, "_auto_update_var"):
+            return
+        self.general_config["auto_update_checks"] = self._auto_update_var.get()
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        self._set_tool_status(
+            "Automatic update prompts enabled" if self._auto_update_var.get() == "yes" else "Automatic update prompts disabled",
+            GREEN,
+        )
+
+    def _prompt_update(self, status):
+        latest_sha = str(status.get("latestSha", "") or "")
+        summary = str(status.get("summary", "") or "No changelog summary was returned.")
+        message = (
+            f"Installed: {status.get('currentVersion') or 'unknown'} {str(status.get('localSha') or '')[:12]}\n"
+            f"Available: {latest_sha[:12] or status.get('availableVersion') or 'unknown'}\n"
+            f"Source: {status.get('source') or 'Meganugger/PylaAI [main]'}\n\n"
+            f"{summary}\n\nLaunch the updater now?"
+        )
+        answer = messagebox.askyesnocancel("PylaAI Update Available", message)
+        if answer is True:
+            self._launch_updater_from_ui(force=False)
+        elif answer is None and latest_sha:
+            self.general_config["auto_update_ignored_sha"] = latest_sha
+            save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+            self._set_tool_status("This update version will not prompt again", GOLD)
 
     def _launch_updater_from_ui(self, force=False):
         updater_exe = os.path.abspath("updater.exe")
@@ -4537,4 +4603,6 @@ class Dashboard(ctk.CTk):
     def run(self):
         """Start the dashboard main loop."""
         self.after(500, self._tick)
+        if str(self.general_config.get("auto_update_checks", "no")).lower() == "yes":
+            self.after(1200, self._check_updates_from_ui)
         self.mainloop()

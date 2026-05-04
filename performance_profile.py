@@ -19,7 +19,8 @@ except Exception:  # pragma: no cover - depends on local environment
 
 PERFORMANCE_PROFILES = {
     "balanced": {
-        "description": "Stable default capture and detection settings for most PCs.",
+        "label": "Balanced",
+        "description": "Recommended mode. Keeps 30 FPS capture at 960px width with moderate CPU/thread limits, balancing speed, accuracy, and resource usage for most PCs.",
         "general_config": {
             "cpu_or_gpu": "auto",
             "max_ips": 24,
@@ -35,7 +36,8 @@ PERFORMANCE_PROFILES = {
         },
     },
     "low_end": {
-        "description": "Lower heat and CPU use for older laptops or thermal throttling.",
+        "label": "Low Quality",
+        "description": "Fastest and lightest mode. Lowers capture FPS, capture width, bitrate, and worker threads for weaker PCs or thermal throttling, with less visual detail for detection.",
         "general_config": {
             "cpu_or_gpu": "auto",
             "max_ips": 20,
@@ -51,7 +53,8 @@ PERFORMANCE_PROFILES = {
         },
     },
     "quality": {
-        "description": "Sharper capture for stronger PCs; use when IPS remains stable.",
+        "label": "High Quality",
+        "description": "Most detailed mode. Raises capture width and bitrate while keeping 30 FPS for stronger PCs, improving visual detail and reliability when IPS stays stable.",
         "general_config": {
             "cpu_or_gpu": "auto",
             "max_ips": 24,
@@ -123,6 +126,7 @@ def apply_performance_profile(
     bot_config = deepcopy(_read_toml(bot_config_path))
 
     general_config.update(profile["general_config"])
+    general_config["performance_profile"] = profile_key
     bot_config.update(profile["bot_config"])
 
     if save:
@@ -131,6 +135,7 @@ def apply_performance_profile(
 
     return {
         "profile": profile_key,
+        "label": profile.get("label", profile_key),
         "description": profile["description"],
         "general_config": general_config,
         "bot_config": bot_config,
