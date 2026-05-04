@@ -39,7 +39,9 @@ class PerformanceProfileTest(unittest.TestCase):
             general = read_toml(general_path)
             bot = read_toml(bot_path)
             self.assertEqual(result["profile"], "balanced")
-            self.assertEqual(general["max_ips"], 24)
+            self.assertEqual(general["max_ips"], 60)
+            self.assertEqual(general["target_ips"], 60)
+            self.assertEqual(general["scrcpy_max_fps"], 60)
             self.assertEqual(general["scrcpy_max_width"], 960)
             self.assertEqual(general["scrcpy_bitrate"], 3000000)
             self.assertEqual(general["onnx_cpu_threads"], 4)
@@ -56,8 +58,9 @@ class PerformanceProfileTest(unittest.TestCase):
             apply_performance_profile("low-end", str(general_path), str(bot_path))
 
             general = read_toml(general_path)
-            self.assertEqual(general["max_ips"], 20)
-            self.assertEqual(general["scrcpy_max_fps"], 24)
+            self.assertEqual(general["max_ips"], 30)
+            self.assertEqual(general["target_ips"], 30)
+            self.assertEqual(general["scrcpy_max_fps"], 30)
             self.assertEqual(general["scrcpy_max_width"], 854)
             self.assertEqual(general["used_threads"], 2)
 
