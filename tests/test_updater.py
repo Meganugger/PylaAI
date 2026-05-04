@@ -1,11 +1,14 @@
 import tempfile
 import unittest
+import os
 from pathlib import Path
 
 from tools.updater import (
     backup_preserved_files,
+    build_update_status,
     copy_update_files,
     merge_toml_text,
+    repo_branch,
     read_local_update_sha,
     restore_preserved_files,
     write_local_update_info,
@@ -94,6 +97,41 @@ class UpdaterTest(unittest.TestCase):
             write_local_update_info(project, "abc123")
 
             self.assertEqual(read_local_update_sha(project), "abc123")
+
+    def test_update_status_reports_failure_without_throwing(self):
+        with workspace_tempdir() as tmp:
+            project = Path(tmp)
+            (project / "cfg").mkdir()
+            (project / "cfg" / "general_config.toml").write_text('pyla_version = "1.0.0+test"\n', encoding="utf-8")
+
+            import tools.updater as updater_module
+
+            original = updater_module.latest_branch_info
+            updater_module.latest_branch_info = lambda: (_ for _ in ()).throw(RuntimeError("offline"))
+            try:
+                status = build_update_status(project)
+            finally:
+                updater_module.latest_branch_info = original
+
+            self.assertFalse(status["ok"])
+            self.assertEqual(status["state"], "failed")
+            self.assertEqual(status["currentVersion"], "1.0.0+test")
+
+    def test_repo_branch_infers_branch_specific_version_when_env_is_not_set(self):
+        with workspace_tempdir() as tmp:
+            project = Path(tmp)
+            (project / "cfg").mkdir()
+            (project / "cfg" / "general_config.toml").write_text(
+                'pyla_version = "1.0.0+strongestbotfull"\n',
+                encoding="utf-8",
+            )
+
+            original = os.environ.pop("PYLA_UPDATE_BRANCH", None)
+            try:
+                self.assertEqual(repo_branch(project), "strongest-bot-full")
+            finally:
+                if original is not None:
+                    os.environ["PYLA_UPDATE_BRANCH"] = original
 
 
 if __name__ == "__main__":

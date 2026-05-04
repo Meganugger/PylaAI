@@ -20,11 +20,15 @@ ApplicationWindow {
     property var live: ({})
     property var logs: []
     property var toolStatus: ({})
+    property var updateStatus: ({ "state": "idle" })
+    property var performanceProfiles: []
+    property var brawlerLoadState: ({ "state": "loading", "message": "Loading brawlers...", "count": 0 })
     property int pageIndex: 0
     property string selectedBrawler: ""
     property string toastText: ""
     property string toastLevel: "info"
     property real brawlerListSavedContentY: 0
+    property string updatePromptedSha: ""
 
     readonly property color bg: "#090A0E"
     readonly property color sidebar: "#07080C"
@@ -190,6 +194,50 @@ ApplicationWindow {
             return "sequential"
         return raw
     }
+    function shortSha(value) {
+        const text = String(value || "")
+        return text.length > 12 ? text.slice(0, 12) : text
+    }
+    function currentProfileValue() {
+        if (!performanceProfileModel || performanceProfile.currentIndex < 0 || performanceProfile.currentIndex >= performanceProfileModel.count)
+            return "balanced"
+        return String(performanceProfileModel.get(performanceProfile.currentIndex).value || "balanced")
+    }
+    function currentProfileDescription() {
+        if (!performanceProfileModel || performanceProfile.currentIndex < 0 || performanceProfile.currentIndex >= performanceProfileModel.count)
+            return ""
+        return String(performanceProfileModel.get(performanceProfile.currentIndex).description || "")
+    }
+    function rebuildPerformanceProfileModel() {
+        performanceProfileModel.clear()
+        const rows = performanceProfiles && performanceProfiles.length ? performanceProfiles : [
+            {"value": "balanced", "label": "Balanced", "description": "Recommended mode. Balances speed, accuracy, and resource usage for most users."},
+            {"value": "low_end", "label": "Low Quality", "description": "Fastest and lightest mode for weaker PCs, with less visual detail for detection."},
+            {"value": "quality", "label": "High Quality", "description": "Most detailed mode for stronger PCs when runtime speed remains stable."}
+        ]
+        for (let i = 0; i < rows.length; ++i)
+            performanceProfileModel.append({"value": rows[i].value, "label": rows[i].label, "description": rows[i].description})
+    }
+    function setPerformanceProfileIndex(value) {
+        const desired = String(value || "balanced")
+        for (let i = 0; i < performanceProfileModel.count; ++i) {
+            if (String(performanceProfileModel.get(i).value) === desired) {
+                performanceProfile.currentIndex = i
+                return
+            }
+        }
+        performanceProfile.currentIndex = 0
+    }
+    function maybePromptForUpdate(status, manual) {
+        const s = status || updateStatus || ({})
+        if (!s.updateAvailable || s.ignored)
+            return
+        const latest = String(s.latestSha || "")
+        if (!manual && latest && updatePromptedSha === latest)
+            return
+        updatePromptedSha = latest
+        updatePopup.open()
+    }
     function currentFarmStrategyValue() {
         if (!farmStrategyModel || farmStrategy.currentIndex < 0 || farmStrategy.currentIndex >= farmStrategyModel.count)
             return "lowest_first"
@@ -269,7 +317,11 @@ ApplicationWindow {
         live = state.live || {}
         logs = (state.logs || []).slice()
         toolStatus = state.toolStatus || (backend.getToolStatus ? backend.getToolStatus() : ({}))
+        updateStatus = state.updateStatus || updateStatus
+        performanceProfiles = (state.performanceProfiles || []).slice ? (state.performanceProfiles || []).slice() : (state.performanceProfiles || [])
+        brawlerLoadState = state.brawlerLoadState || brawlerLoadState
         rebuildComboModels()
+        rebuildPerformanceProfileModel()
         if (!selectedBrawler && brawlers.length) selectedBrawler = brawlers[0].name
         hydrateEditors()
     }
@@ -314,6 +366,8 @@ ApplicationWindow {
     }
     function applyProfile(profile) {
         const result = backend.applyPerformanceProfile(profile)
+        if (result && result.ok)
+            setPerformanceProfileIndex(result.profile || profile)
         toolStatus = backend.getToolStatus()
         return result
     }
@@ -324,8 +378,18 @@ ApplicationWindow {
     }
     function checkUpdates() {
         const result = backend.checkForUpdates()
+        updateStatus = result || updateStatus
         logs = backend.getLogs()
+        maybePromptForUpdate(updateStatus, true)
         return result
+    }
+    function runAutoUpdateCheck() {
+        if (!autoUpdateChecks.checked || !backend)
+            return
+        const result = backend.checkForUpdates()
+        updateStatus = result || updateStatus
+        logs = backend.getLogs()
+        maybePromptForUpdate(updateStatus, false)
     }
     function applyStateToForms() {
         const general = (state && state.general) ? state.general : ({})
@@ -376,6 +440,8 @@ ApplicationWindow {
         crashCheck.text = String(timeCfg.check_if_brawl_stars_crashed || 10)
         farmEnabled.checked = boolFrom(bot.smart_trophy_farm)
         farmTarget.text = String(bot.trophy_farm_target || 500)
+        autoUpdateChecks.checked = boolFrom(general.auto_update_checks)
+        setPerformanceProfileIndex(general.performance_profile || "balanced")
         let farmStrategyIndex = 0
         const desiredFarmStrategy = farmStrategyUiValue(bot.trophy_farm_strategy || "lowest_first")
         for (let strategyIdx = 0; strategyIdx < farmStrategyModel.count; ++strategyIdx) {
@@ -393,6 +459,7 @@ ApplicationWindow {
     ListModel { id: questExcludeModel }
     ListModel { id: gamemodeModel }
     ListModel { id: emulatorModel }
+    ListModel { id: performanceProfileModel }
     ListModel {
         id: farmStrategyModel
         ListElement { label: "Lowest trophies first"; value: "lowest_first" }
@@ -730,6 +797,14 @@ ApplicationWindow {
         hydrate(backend.initialState())
         applyStateToForms()
         rebuildExcludeModels()
+        autoUpdateTimer.start()
+    }
+
+    Timer {
+        id: autoUpdateTimer
+        interval: 900
+        repeat: false
+        onTriggered: runAutoUpdateCheck()
     }
 
     Connections {
@@ -748,6 +823,7 @@ ApplicationWindow {
         function onLogsChanged(data) { logs = data || [] }
         function onNotificationRaised(level, message) { notify(level, message) }
         function onSessionSummaryReady(summary) { summaryView.text = JSON.stringify(summary, null, 2); summaryPopup.open() }
+        function onUpdateStatusChanged(status) { updateStatus = status || updateStatus; maybePromptForUpdate(updateStatus, false) }
     }
 
     Popup {
@@ -775,6 +851,57 @@ ApplicationWindow {
             Label { text: "Session Summary"; color: root.textMain; font.pixelSize: 24; font.bold: true }
             TextArea { id: summaryView; Layout.fillWidth: true; Layout.fillHeight: true; readOnly: true; color: root.textMain; wrapMode: TextEdit.Wrap; background: Rectangle { radius: 12; color: root.panelAlt; border.color: root.border; border.width: 1 } }
             AppButton { text: "Close"; onClicked: summaryPopup.close() }
+        }
+    }
+
+    Popup {
+        id: updatePopup
+        width: Math.min(root.width * 0.52, 680)
+        modal: true
+        anchors.centerIn: parent
+        padding: 0
+        closePolicy: Popup.CloseOnEscape
+        background: Rectangle { radius: 14; color: root.panel; border.color: root.border; border.width: 1 }
+        ColumnLayout {
+            anchors.fill: parent
+            anchors.margins: 20
+            spacing: 14
+            SectionEyebrow { text: "UPDATE AVAILABLE" }
+            CardTitle { text: "Install New Version?" }
+            Label {
+                Layout.fillWidth: true
+                text: "A newer PylaAI revision is available. The updater keeps your cfg settings, but you should close the running bot before installing."
+                color: root.textDim
+                font.pixelSize: 14
+                wrapMode: Text.WordWrap
+            }
+            GridLayout {
+                Layout.fillWidth: true
+                columns: 2
+                columnSpacing: 14
+                rowSpacing: 8
+                Label { text: "Installed"; color: root.textDim; font.pixelSize: 13 }
+                Label { Layout.fillWidth: true; text: String(updateStatus.currentVersion || state.version || "-") + "  " + shortSha(updateStatus.localSha || ""); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                Label { text: "Available"; color: root.textDim; font.pixelSize: 13 }
+                Label { Layout.fillWidth: true; text: shortSha(updateStatus.latestSha || updateStatus.availableVersion || "-"); color: root.success; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                Label { text: "Source"; color: root.textDim; font.pixelSize: 13 }
+                Label { Layout.fillWidth: true; text: String(updateStatus.source || toolStatus.updateSource || "-"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+            }
+            Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+            Label {
+                Layout.fillWidth: true
+                text: updateStatus.summary ? "Latest change: " + updateStatus.summary : "No changelog summary was returned by GitHub."
+                color: root.textMain
+                font.pixelSize: 13
+                wrapMode: Text.WordWrap
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 10
+                AppButton { text: "Update Now"; highlighted: true; implicitWidth: 140; onClicked: { launchUpdater(false); updatePopup.close() } }
+                AppButton { text: "Later"; implicitWidth: 100; onClicked: updatePopup.close() }
+                AppButton { text: "Don't Ask"; implicitWidth: 130; onClicked: { backend.ignoreUpdateVersion(String(updateStatus.latestSha || "")); updatePopup.close() } }
+            }
         }
     }
 
@@ -1188,6 +1315,27 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             spacing: 12
                                             Label {
+                                                Layout.fillWidth: true
+                                                text: String((brawlerLoadState && brawlerLoadState.message) || "")
+                                                color: brawlerLoadState.state === "error" ? root.danger : brawlerLoadState.state === "empty" ? root.warning : root.textDim
+                                                font.pixelSize: 13
+                                                wrapMode: Text.WordWrap
+                                            }
+                                            AppButton {
+                                                text: "Refresh Brawlers"
+                                                implicitWidth: 170
+                                                onClicked: {
+                                                    const status = backend.refreshBrawlers()
+                                                    brawlerLoadState = status || brawlerLoadState
+                                                    brawlers = backend.getBrawlers()
+                                                    rebuildExcludeModels()
+                                                }
+                                            }
+                                        }
+                                        RowLayout {
+                                            Layout.fillWidth: true
+                                            spacing: 12
+                                            Label {
                                                 text: farmPreview.length + " brawler(s) currently qualify for the build order"
                                                 color: root.textDim
                                                 font.pixelSize: 13
@@ -1265,7 +1413,7 @@ ApplicationWindow {
                                             border.width: 1
                                             Label {
                                                 anchors.centerIn: parent
-                                                text: "No brawlers are currently below the target with these settings."
+                                                text: brawlerLoadState.state === "error" ? "Brawler loading failed. Use Refresh Brawlers and check Logs." : brawlerLoadState.state === "empty" ? "No brawlers are loaded yet." : "No brawlers are currently below the target with these settings."
                                                 color: root.textDim
                                                 font.pixelSize: 13
                                             }
@@ -1307,6 +1455,7 @@ ApplicationWindow {
                                             Layout.fillWidth: true
                                             Layout.fillHeight: true
                                             Layout.preferredHeight: 220
+                                            visible: excludeModel.count > 0
                                             clip: true
                                             spacing: 8
                                             boundsBehavior: Flickable.StopAtBounds
@@ -1368,6 +1517,24 @@ ApplicationWindow {
                                                         font.bold: model.checked
                                                     }
                                                 }
+                                            }
+                                        }
+                                        Rectangle {
+                                            Layout.fillWidth: true
+                                            Layout.preferredHeight: 70
+                                            visible: excludeModel.count === 0
+                                            radius: 14
+                                            color: root.panelAlt
+                                            border.color: root.border
+                                            border.width: 1
+                                            Label {
+                                                anchors.centerIn: parent
+                                                width: parent.width - 28
+                                                text: brawlerLoadState.state === "loading" ? "Loading brawlers..." : brawlerLoadState.state === "error" ? "Could not load brawlers. Refresh or check Logs for the exact error." : "No brawlers are available for farm selection."
+                                                color: brawlerLoadState.state === "error" ? root.danger : root.textDim
+                                                font.pixelSize: 13
+                                                wrapMode: Text.WordWrap
+                                                horizontalAlignment: Text.AlignHCenter
                                             }
                                         }
                                     }
@@ -1621,6 +1788,16 @@ ApplicationWindow {
                                             SummaryTile {
                                                 label: "Farm Mode"
                                                 value: boolFrom(botStateValue("smart_trophy_farm", "no")) ? "TROPHY FARM" : "STANDARD"
+                                            }
+                                            SummaryTile {
+                                                label: "Battle Logic"
+                                                value: String(live.battle_logic || "-").toUpperCase()
+                                                valueColor: live.battle_fallback ? root.warning : root.textMain
+                                            }
+                                            SummaryTile {
+                                                label: "Battle Status"
+                                                value: live.battle_last_skip ? String(live.battle_last_skip).toUpperCase() : "READY"
+                                                valueColor: live.battle_failures ? root.danger : root.textMain
                                             }
                                         }
                                     }
@@ -1944,15 +2121,51 @@ ApplicationWindow {
                                         spacing: 16
                                         SectionEyebrow { text: "LOCAL TOOLS" }
                                         CardTitle { text: "Updater & Runtime" }
+                                        GridLayout {
+                                            Layout.fillWidth: true
+                                            columns: width >= 980 ? 2 : 1
+                                            columnSpacing: 14
+                                            rowSpacing: 10
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
+                                                AppLabel { text: "Performance Profile" }
+                                                AppComboBox {
+                                                    id: performanceProfile
+                                                    Layout.fillWidth: true
+                                                    model: performanceProfileModel
+                                                    textRole: "label"
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: currentProfileDescription()
+                                                    color: root.textDim
+                                                    font.pixelSize: 13
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 8
+                                                AppLabel { text: "Update Checks" }
+                                                AppCheckBox {
+                                                    id: autoUpdateChecks
+                                                    text: "Ask when updates are available"
+                                                    onToggled: backend.setAutoUpdateChecks(checked)
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: "Pyla checks GitHub and asks before launching the updater. Updates are not installed silently."
+                                                    color: root.textDim
+                                                    font.pixelSize: 13
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
+                                        }
                                         RowLayout {
                                             Layout.fillWidth: true
                                             spacing: 12
-                                            AppComboBox {
-                                                id: performanceProfile
-                                                implicitWidth: 190
-                                                model: ["balanced", "low_end", "quality"]
-                                            }
-                                            AppButton { text: "Apply Profile"; implicitWidth: 150; onClicked: applyProfile(performanceProfile.currentText) }
+                                            AppButton { text: "Apply Profile"; implicitWidth: 150; onClicked: applyProfile(currentProfileValue()) }
                                             AppButton { text: "Runtime Check"; implicitWidth: 150; onClicked: runRuntimePreflight() }
                                             AppButton { text: "Check Updates"; implicitWidth: 150; onClicked: checkUpdates() }
                                             AppButton { text: "Launch Updater"; implicitWidth: 160; highlighted: true; onClicked: launchUpdater(false) }
@@ -1962,10 +2175,14 @@ ApplicationWindow {
                                             columns: 2
                                             columnSpacing: 14
                                             rowSpacing: 8
+                                            Label { text: "Update status"; color: root.textDim; font.pixelSize: 13 }
+                                            Label { Layout.fillWidth: true; text: String(updateStatus.state || "idle").toUpperCase() + (updateStatus.error ? ": " + updateStatus.error : ""); color: updateStatus.state === "failed" ? root.danger : updateStatus.updateAvailable ? root.warning : root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
                                             Label { text: "Update source"; color: root.textDim; font.pixelSize: 13 }
                                             Label { Layout.fillWidth: true; text: String(toolStatus.updateSource || "Meganugger/PylaAI [main]"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
                                             Label { text: "Local marker"; color: root.textDim; font.pixelSize: 13 }
                                             Label { Layout.fillWidth: true; text: String(toolStatus.localUpdateSha || "not recorded"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                                            Label { text: "Available"; color: root.textDim; font.pixelSize: 13 }
+                                            Label { Layout.fillWidth: true; text: updateStatus.latestSha ? shortSha(updateStatus.latestSha) + (updateStatus.summary ? " - " + updateStatus.summary : "") : "not checked"; color: updateStatus.updateAvailable ? root.warning : root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
                                         }
                                     }
                                 }
