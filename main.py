@@ -141,11 +141,21 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 self.Time_management.states["state_check"] = 0.0
             except Exception:
                 pass
+            general_config = load_toml_as_dict("cfg/general_config.toml")
             try:
-                self.max_ips = int(load_toml_as_dict("cfg/general_config.toml")['max_ips'])
+                self.max_ips = int(general_config['max_ips'])
             except ValueError:
                 self.max_ips = None
-            self.run_for_minutes = int(load_toml_as_dict("cfg/general_config.toml")['run_for_minutes'])
+            try:
+                self.target_ips = int(general_config.get("target_ips", self.max_ips or general_config.get("scrcpy_max_fps", 60)))
+            except (TypeError, ValueError):
+                self.target_ips = int(general_config.get("scrcpy_max_fps", 60) or 60)
+            print(
+                "[PERF] target IPS/FPS "
+                f"target_ips={self.target_ips} max_ips={self.max_ips if self.max_ips else 'auto'} "
+                f"scrcpy_max_fps={general_config.get('scrcpy_max_fps', 'auto')}"
+            )
+            self.run_for_minutes = int(general_config['run_for_minutes'])
             self.start_time = time.time()
             self.time_to_stop = False
             self.in_cooldown = False
@@ -783,6 +793,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     active_dashboard.update_live(
                         start_time=self.start_time,
                         ips=self.current_ips,
+                        target_ips=self.target_ips,
                         state=self.state,
                         brawler=brawler,
                         trophies=live_trophies,

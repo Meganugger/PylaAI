@@ -1,6 +1,10 @@
 import unittest
+import time
+import numpy as np
 
+from brawlstars_api import parse_player_profile_payload, normalize_player_tag
 from dashboard import Dashboard
+from farm_roster import build_farm_plan
 from play import Play
 from qt_ui.bridge import QtBridge
 
@@ -77,6 +81,88 @@ class BrawlBallAndFarmTests(unittest.TestCase):
 
         self.assertEqual(dashboard._farm_candidate_brawlers(), ["darryl", "shelly"])
 
+    def test_qt_trophy_farm_uses_all_local_brawlers_without_scan_or_roster(self):
+        bridge = QtBridge.__new__(QtBridge)
+        bridge._all_brawlers = ["shelly", "colt"]
+        bridge.brawlers_data = []
+        bridge._farm_state = {}
+        bridge.bot_config = {
+            "trophy_farm_mode": "manual",
+            "trophy_farm_target": 500,
+            "trophy_farm_strategy": "lowest_first",
+            "trophy_farm_excluded": [],
+        }
+        bridge.general_config = {"auto_push_target_trophies": 1000}
+        bridge.brawlers_info = {}
+        bridge._brawler_scan_data = lambda: {}
+        bridge._match_history_map = lambda: {}
+
+        roster, queue, target, _strategy = bridge._build_trophy_farm_roster()
+
+        self.assertEqual(target, 500)
+        self.assertEqual([item["brawler"] for item in queue], ["colt", "shelly"])
+        self.assertEqual([item["brawler"] for item in roster], ["colt", "shelly"])
+
+    def test_manual_farm_mode_builds_queue_from_owned_brawlers_below_target(self):
+        plan = build_farm_plan(
+            all_brawlers=["shelly", "colt", "darryl"],
+            farm_state={
+                "manual_roster": {
+                    "shelly": {"owned": True, "included": True, "trophies": 40},
+                    "colt": {"owned": False, "included": True, "trophies": 10},
+                    "darryl": {"owned": True, "included": False, "trophies": 0},
+                }
+            },
+            target=100,
+            strategy="lowest_first",
+            mode="manual",
+        )
+
+        self.assertEqual([row["brawler"] for row in plan["queue"]], ["shelly"])
+        reasons = {row["brawler"]: row["reason"] for row in plan["rows"]}
+        self.assertEqual(reasons["colt"], "Not marked owned/unlocked")
+
+    def test_api_farm_mode_uses_only_unlocked_api_roster(self):
+        payload = {
+            "name": "Tester",
+            "tag": "#P123",
+            "brawlers": [
+                {"name": "SHELLY", "trophies": 50, "highestTrophies": 80, "power": 9, "rank": 12},
+                {"name": "DARRYL", "trophies": 140, "power": 7},
+            ],
+        }
+        parsed = parse_player_profile_payload(payload, "#P123")
+        plan = build_farm_plan(
+            all_brawlers=["shelly", "colt", "darryl"],
+            farm_state={"api_roster": parsed["brawlers"]},
+            target=100,
+            strategy="lowest_first",
+            mode="api",
+        )
+
+        self.assertEqual([row["brawler"] for row in plan["queue"]], ["shelly"])
+        self.assertNotIn("colt", [row["brawler"] for row in plan["rows"]])
+
+    def test_invalid_api_tag_is_rejected_before_network_use(self):
+        with self.assertRaises(ValueError):
+            normalize_player_tag("#BADTAG!")
+
+    def test_brawlball_combat_strafe_is_disabled(self):
+        movement = object.__new__(Play)
+        movement.selected_gamemode = "brawlball"
+        movement.is_showdown_mode = False
+        movement.current_ammo = 3
+
+        self.assertFalse(
+            movement._should_enable_combat_strafe(
+                target_hittable=True,
+                should_retreat_for_ammo=False,
+                enemy_distance=220,
+                effective_safe_range=180,
+                attack_range=300,
+            )
+        )
+
     def test_brawler_name_resolution_is_case_and_punctuation_safe(self):
         movement = object.__new__(Play)
         movement.brawlers_info = {"darryl": {}, "8bit": {}}
@@ -93,6 +179,20 @@ class BrawlBallAndFarmTests(unittest.TestCase):
 
         self.assertEqual(movement.get_brawler_range("Not A Brawler"), [260, 440, 520])
         self.assertTrue(movement._battle_runtime["fallback_active"])
+
+    def test_missing_player_can_use_estimated_match_position(self):
+        movement = object.__new__(Play)
+        movement.window_controller = DummyWindow()
+        movement._runtime_state = "match"
+        movement._last_confirmed_match_time = time.time()
+        movement._last_match_evidence_time = time.time()
+        movement.time_since_player_last_found = time.time() - 2.0
+
+        frame = np.zeros((1080, 1920, 3), dtype=np.uint8)
+        data = movement._estimate_player_detection(frame, {"enemy": [[100, 100, 150, 150]]}, time.time())
+
+        self.assertEqual(data["_player_source"], "estimated")
+        self.assertTrue(data["player"])
 
 
 if __name__ == "__main__":

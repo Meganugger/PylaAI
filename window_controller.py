@@ -201,6 +201,14 @@ class WindowController:
             self.last_frame = None
             self.last_frame_time = 0.0
             self.last_joystick_pos = (None, None)
+            self.last_joystick_down_time = 0.0
+            self.last_joystick_move_time = 0.0
+            self.last_movement_log_time = 0.0
+            self.last_movement_error_log_time = 0.0
+            self.joystick_refresh_seconds = float(general_config.get("joystick_refresh_seconds", 0.35))
+            self.joystick_repress_seconds = float(general_config.get("joystick_repress_seconds", 1.8))
+            self.joystick_down_move_delay = float(general_config.get("joystick_down_move_delay", 0.012))
+            self.input_debug = str(general_config.get("input_debug", general_config.get("super_debug", "no"))).lower() == "yes"
             self.FRAME_STALE_TIMEOUT = 10.0  # MuMu can have periodic frame delays; 5s was too aggressive
             self._last_frame_hash = None
             self._consecutive_identical_frames = 0
@@ -308,6 +316,8 @@ class WindowController:
             self._last_healthy_frame_time = time.time()
             self.frame_condition.notify_all()
         self.last_joystick_pos = (None, None)
+        self.last_joystick_down_time = 0.0
+        self.last_joystick_move_time = 0.0
         self.are_we_moving = False
 
     def _build_scrcpy_client(self):
@@ -557,21 +567,139 @@ class WindowController:
 
     def touch_down(self, x, y, pointer_id=0):
         # We explicitly pass the pointer_id
-        self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_DOWN, pointer_id)
+        if self.scrcpy_client is None or getattr(self.scrcpy_client, "control", None) is None:
+            raise ConnectionError("scrcpy input control is not ready")
+        self.scrcpy_client.control.touch(int(round(x)), int(round(y)), scrcpy.ACTION_DOWN, pointer_id)
+        return True
 
     def touch_move(self, x, y, pointer_id=0):
-        self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_MOVE, pointer_id)
+        if self.scrcpy_client is None or getattr(self.scrcpy_client, "control", None) is None:
+            raise ConnectionError("scrcpy input control is not ready")
+        self.scrcpy_client.control.touch(int(round(x)), int(round(y)), scrcpy.ACTION_MOVE, pointer_id)
+        return True
 
     def touch_up(self, x, y, pointer_id=0):
-        self.scrcpy_client.control.touch(int(x), int(y), scrcpy.ACTION_UP, pointer_id)
+        if self.scrcpy_client is None or getattr(self.scrcpy_client, "control", None) is None:
+            raise ConnectionError("scrcpy input control is not ready")
+        self.scrcpy_client.control.touch(int(round(x)), int(round(y)), scrcpy.ACTION_UP, pointer_id)
+        return True
+
+    def calculate_joystick_endpoint(self, angle_degrees: float, radius: float = 145.0):
+        """Return scaled joystick start/end coordinates for a screen-space angle.
+
+        0 degrees is right, 90 is down, 180 is left, 270 is up.
+        """
+        if self.joystick_x is None or self.joystick_y is None:
+            raise RuntimeError("joystick geometry is not ready; no frame has been captured yet")
+        angle = float(angle_degrees) % 360.0
+        angle_rad = math.radians(angle)
+        scaled_radius = float(radius) * max(float(self.scale_factor or 1.0), 0.5)
+        target_x = self.joystick_x + math.cos(angle_rad) * scaled_radius
+        target_y = self.joystick_y + math.sin(angle_rad) * scaled_radius
+        if self.width and self.height:
+            target_x = min(max(0.0, target_x), float(self.width - 1))
+            target_y = min(max(0.0, target_y), float(self.height - 1))
+        return {
+            "angle": angle,
+            "radius": float(radius),
+            "scaled_radius": scaled_radius,
+            "start": (float(self.joystick_x), float(self.joystick_y)),
+            "end": (float(target_x), float(target_y)),
+        }
+
+    def _movement_result(self, ok, attempted, detail, *, angle=None, start=None, end=None, error=""):
+        return {
+            "ok": bool(ok),
+            "attempted": bool(attempted),
+            "backend": "scrcpy_touch",
+            "pointer": self.PID_JOYSTICK,
+            "angle": angle,
+            "start": start,
+            "end": end,
+            "detail": detail,
+            "error": str(error or ""),
+        }
+
+    def _log_movement_result(self, result, now=None):
+        now = now or time.time()
+        if result.get("ok"):
+            if not self.input_debug and now - self.last_movement_log_time < 1.0:
+                return
+            self.last_movement_log_time = now
+            start = result.get("start") or ("?", "?")
+            end = result.get("end") or ("?", "?")
+            print(
+                "[INPUT] movement "
+                f"backend={result.get('backend')} pointer={result.get('pointer')} "
+                f"start=({int(round(start[0]))},{int(round(start[1]))}) end=({int(round(end[0]))},{int(round(end[1]))}) "
+                f"angle={float(result.get('angle') or 0):.1f} detail={result.get('detail')}"
+            )
+        else:
+            if now - self.last_movement_error_log_time < 1.0:
+                return
+            self.last_movement_error_log_time = now
+            print(f"[INPUT][ERROR] movement dispatch failed: {result.get('error') or result.get('detail')}")
+
+    def move_joystick_angle(self, angle_degrees: float, radius: float = 145.0):
+        now = time.time()
+        try:
+            geometry = self.calculate_joystick_endpoint(angle_degrees, radius)
+            start_x, start_y = geometry["start"]
+            target_x, target_y = geometry["end"]
+
+            if self.are_we_moving and now - self.last_joystick_down_time > self.joystick_repress_seconds:
+                self.stop_joystick()
+
+            attempted = False
+            if not self.are_we_moving:
+                self.touch_down(start_x, start_y, pointer_id=self.PID_JOYSTICK)
+                self.are_we_moving = True
+                self.last_joystick_down_time = now
+                attempted = True
+                if self.joystick_down_move_delay > 0:
+                    time.sleep(self.joystick_down_move_delay)
+
+            same_target = self.last_joystick_pos == (target_x, target_y)
+            refresh_due = now - self.last_joystick_move_time >= self.joystick_refresh_seconds
+            if (not same_target) or refresh_due:
+                self.touch_move(target_x, target_y, pointer_id=self.PID_JOYSTICK)
+                self.last_joystick_pos = (target_x, target_y)
+                self.last_joystick_move_time = now
+                attempted = True
+
+            result = self._movement_result(
+                True,
+                attempted,
+                "held" if not attempted else "sent",
+                angle=geometry["angle"],
+                start=geometry["start"],
+                end=geometry["end"],
+            )
+            if attempted:
+                self._log_movement_result(result, now=now)
+            return result
+        except Exception as exc:
+            result = self._movement_result(False, True, "failed", angle=angle_degrees, error=exc)
+            self._log_movement_result(result, now=now)
+            return result
+
+    def stop_joystick(self):
+        if self.are_we_moving:
+            up_x, up_y = self.last_joystick_pos
+            if up_x is None or up_y is None:
+                up_x, up_y = self.joystick_x, self.joystick_y
+            try:
+                self.touch_up(up_x, up_y, pointer_id=self.PID_JOYSTICK)
+            except Exception as exc:
+                print(f"[INPUT][ERROR] movement release failed: {exc}")
+            self.are_we_moving = False
+            self.last_joystick_pos = (None, None)
+            self.last_joystick_down_time = 0.0
+            self.last_joystick_move_time = 0.0
 
     def keys_up(self, keys: List[str]):
         if "".join(keys).lower() == "wasd":
-            if self.are_we_moving:
-                # Use PID_JOYSTICK so we don't lift the attack finger
-                self.touch_up(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
-                self.are_we_moving = False
-                self.last_joystick_pos = (None, None)
+            self.stop_joystick()
 
     def keys_down(self, keys: List[str]):
 
@@ -582,14 +710,13 @@ class WindowController:
                 delta_x += dx
                 delta_y += dy
 
-        if not self.are_we_moving:
-            self.touch_down(self.joystick_x, self.joystick_y, pointer_id=self.PID_JOYSTICK)
-            self.are_we_moving = True
-            self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
+        if delta_x == 0 and delta_y == 0:
+            self.stop_joystick()
+            return self._movement_result(True, True, "stopped")
 
-        if self.last_joystick_pos != (self.joystick_x + delta_x, self.joystick_y + delta_y):
-            self.touch_move(self.joystick_x + delta_x, self.joystick_y + delta_y, pointer_id=self.PID_JOYSTICK)
-            self.last_joystick_pos = (self.joystick_x + delta_x, self.joystick_y + delta_y)
+        angle = math.degrees(math.atan2(delta_y, delta_x)) % 360.0
+        radius = math.hypot(delta_x, delta_y) / max(float(self.scale_factor or 1.0), 0.5)
+        return self.move_joystick_angle(angle, radius=max(100.0, radius))
 
     def click(self, x: int, y: int, delay=0.005, already_include_ratio=True, touch_up=True, touch_down=True):
         if not already_include_ratio:
@@ -601,14 +728,15 @@ class WindowController:
         time.sleep(delay)
         if touch_up:
             self.touch_up(x, y, pointer_id=self.PID_ATTACK)
+        return True
 
     def press_key(self, key, delay=0.005, touch_up=True, touch_down=True):
         if key not in key_coords_dict:
-            return
+            return False
         x, y = key_coords_dict[key]
         target_x = x * self.width_ratio
         target_y = y * self.height_ratio
-        self.click(target_x, target_y, delay, touch_up=touch_up, touch_down=touch_down)
+        return self.click(target_x, target_y, delay, touch_up=touch_up, touch_down=touch_down)
 
     def press_continue(self, hold_seconds=0.0, include_fallback_clicks=True):
         delay = float(hold_seconds) if hold_seconds and hold_seconds > 0 else 0.005

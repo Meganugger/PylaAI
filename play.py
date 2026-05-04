@@ -144,6 +144,18 @@ class Movement:
             "started_at": time.time(),
             "fixed": ""
         }
+        self.fix_angle_state = {
+            "delay_to_trigger": bot_config["unstuck_movement_delay"],
+            "duration": bot_config["unstuck_movement_hold_time"],
+            "toggled": False,
+            "started_at": time.time(),
+            "fixed_angle": 0.0,
+        }
+        self._movement_anchor_angle = None
+        self._movement_anchor_angle_pos = None
+        self._analog_movement_radius = float(bot_config.get("analog_movement_radius", 145.0))
+        self._analog_turn_threshold = float(bot_config.get("analog_turn_threshold", 12.0))
+        self._committed_analog_reason = None
         self.game_mode = bot_config["gamemode_type"]
         self.game_mode_name = str(bot_config.get("gamemode", "knockout") or "knockout").strip().lower()
         self.is_showdown = "showdown" in self.game_mode_name
@@ -184,6 +196,7 @@ class Movement:
         self._last_valid_enemy_hp = -1
         self._hp_debug_info = {}  # Debug info for overlay
         self.last_attack_time = time.time()  # Initialize to now so regen doesn't trigger at start
+        self.attack_cooldown = float(bot_config.get("attack_cooldown", 0.16))
         self.REGEN_DELAY = 3.0        # seconds without attacking before HP starts regenerating
         self.LOW_HP_THRESHOLD = 25    # below this %, retreat (but still attack if safe)
         self.is_regenerating = False
@@ -1902,6 +1915,66 @@ class Movement:
         return math.hypot(dx, dy)
 
     @staticmethod
+    def angle_from_direction(dx, dy):
+        return math.degrees(math.atan2(dy, dx)) % 360.0
+
+    @staticmethod
+    def _angle_difference(first_angle, second_angle):
+        return abs((float(first_angle) - float(second_angle) + 180.0) % 360.0 - 180.0)
+
+    def _uses_analog_movement(self):
+        mode_name = str(
+            getattr(self, "game_mode_name", getattr(self, "selected_gamemode", "")) or ""
+        ).strip().lower()
+        return "showdown" in mode_name or mode_name in {
+            "brawlball",
+            "brawl_ball",
+            "brawl ball",
+            "brawll ball",
+        }
+
+    def _should_enable_combat_strafe(self, target_hittable, should_retreat_for_ammo, enemy_distance, effective_safe_range, attack_range):
+        if self._uses_analog_movement():
+            return False
+        return (
+            bool(target_hittable)
+            and not bool(should_retreat_for_ammo)
+            and float(enemy_distance or 0) > float(effective_safe_range or 0) * 0.75
+            and float(enemy_distance or 0) <= float(attack_range or 0) * 1.05
+            and int(getattr(self, "current_ammo", getattr(self, "_ammo", 0)) or 0) > 0
+        )
+
+    @staticmethod
+    def _entity_count(data, key):
+        if not data:
+            return 0
+        value = data.get(key)
+        if not value:
+            return 0
+        try:
+            return len(value)
+        except TypeError:
+            return 1
+
+    def _reset_match_state_guard(self):
+        self._state_guard_detected_frames = 0
+        self._last_state_guard_detection_time = 0.0
+
+    def _is_plausible_player_detection(self, data):
+        players = (data or {}).get("player") or []
+        if not players:
+            return False
+        try:
+            x1, y1, x2, y2 = [float(value) for value in players[0][:4]]
+        except Exception:
+            return False
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        area = width * height
+        scale = max(float(getattr(self.window_controller, "scale_factor", 1.0) or 1.0), 0.5)
+        return width >= (55.0 * scale) and height >= (78.0 * scale) and area >= (6500.0 * scale)
+
+    @staticmethod
     def is_there_enemy(enemy_data):
         if not enemy_data:
             return False
@@ -1920,10 +1993,20 @@ class Movement:
         return "S" if direction_y > 0 else "W"
 
     def attack(self, touch_up=True, touch_down=True):
-        self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
-        self.last_attack_time = time.time()
+        if not self._can_issue_live_input():
+            return False
+        attack_cooldown = float(getattr(self, "attack_cooldown", 0.0) or 0.0)
+        if touch_up and touch_down and attack_cooldown > 0:
+            current_time = time.time()
+            if current_time - self.last_attack_time < attack_cooldown:
+                return False
+            self.last_attack_time = current_time
+        dispatched = self.window_controller.press_key("M", touch_up=touch_up, touch_down=touch_down)
+        if dispatched is False:
+            print("[INPUT][ERROR] attack dispatch was not attempted")
+            return False
         self.is_regenerating = False
-        self._record_battle_input("attack", "primary", self.last_attack_time)
+        self._record_battle_input("attack", "primary attack")
         return True
 
     def use_hypercharge(self):
@@ -2332,7 +2415,23 @@ class Play(Movement):
         self.wall_detection_confidence = float(bot_config["wall_detection_confidence"])
         self._wall_conf_base = max(0.15, min(0.85, self.wall_detection_confidence))
         self._wall_conf_active = self._wall_conf_base
-        self.entity_detection_confidence = bot_config["entity_detection_confidence"]
+        self.entity_detection_confidence = float(bot_config["entity_detection_confidence"])
+        self.entity_detection_retry_confidence = float(
+            bot_config.get("entity_detection_retry_confidence", max(0.25, self.entity_detection_confidence - 0.2))
+        )
+        self.entity_detection_retry_missing_delay = float(bot_config.get("entity_detection_retry_missing_delay", 0.35))
+        self.entity_detection_retry_interval = float(bot_config.get("entity_detection_retry_interval", 0.75))
+        self._last_retry_detection_time = 0.0
+        self._last_retry_player_log_time = 0.0
+        self._last_valid_player_bbox = None
+        self._last_valid_player_seen_at = 0.0
+        self.recent_player_restore_max_age = float(bot_config.get("recent_player_restore_max_age", 1.8))
+        self.recent_player_restore_support_age = float(bot_config.get("recent_player_restore_support_age", 1.25))
+        self.recent_player_restore_solo_age = float(bot_config.get("recent_player_restore_solo_age", 0.45))
+        self._state_guard_detected_frames = 0
+        self._last_state_guard_detection_time = 0.0
+        self._allow_skill_inputs = False
+        self._last_live_player_source = "none"
         self.seconds_to_hold_attack_after_reaching_max = bot_config.get("seconds_to_hold_attack_after_reaching_max", 1.5)
         self.time_since_holding_attack = None  # None = not holding; time.time() = when hold started
         self._runtime_state = "starting"
@@ -2493,6 +2592,7 @@ class Play(Movement):
             "fallback_active": False,
             "last_movement": "",
             "last_attack_decision": "",
+            "player_detection_status": "",
         }
 
     def _battle_state(self):
@@ -2590,6 +2690,39 @@ class Play(Movement):
             print(f"[BATTLE] input dispatched: {message}")
             self._last_battle_input_log_at = current_time
 
+    def _record_movement_result(self, result, detail, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        if isinstance(result, dict):
+            if not result.get("ok", False):
+                self._battle_runtime["failure_count"] = int(self._battle_runtime.get("failure_count", 0) or 0) + 1
+                self._set_battle_skip_reason(
+                    f"movement dispatch failed: {result.get('error') or result.get('detail')}",
+                    current_time=current_time,
+                    fallback=True,
+                )
+                return False
+            if not result.get("attempted", True):
+                return True
+        self._record_battle_input("movement", detail, current_time)
+        return True
+
+    def _dispatch_movement_angle(self, angle, detail=None, current_time=None, radius=None):
+        current_time = current_time if current_time is not None else time.time()
+        radius = self._analog_movement_radius if radius is None else radius
+        result = self.window_controller.move_joystick_angle(float(angle), radius=radius)
+        label = detail or f"angle {float(angle):.0f}"
+        return self._record_movement_result(result, label, current_time)
+
+    def _dispatch_movement_keys(self, keys_to_key_down, keys_to_key_up=None, detail=None, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        result = True
+        if keys_to_key_down:
+            result = self.window_controller.keys_down(keys_to_key_down)
+        if keys_to_key_up:
+            self.window_controller.keys_up(keys_to_key_up)
+        label = detail or "".join(keys_to_key_down or [])
+        return self._record_movement_result(result, label, current_time)
+
     def force_generic_fallback(self, reason, current_time=None):
         current_time = current_time if current_time is not None else time.time()
         state = self._battle_state()
@@ -2675,6 +2808,124 @@ class Play(Movement):
             return False
         return brawler_data.get('hold_attack', 0) > 0
 
+    def _player_box_metrics(self, data):
+        players = (data or {}).get("player") or []
+        if not players:
+            return {}
+        try:
+            x1, y1, x2, y2 = [float(value) for value in players[0][:4]]
+        except Exception:
+            return {"count": len(players), "error": "invalid player box coordinates"}
+        width = abs(x2 - x1)
+        height = abs(y2 - y1)
+        return {
+            "count": len(players),
+            "width": round(width, 1),
+            "height": round(height, 1),
+            "area": round(width * height, 1),
+        }
+
+    def _estimate_player_detection(self, frame, data, current_time):
+        if frame is None or not hasattr(frame, "shape"):
+            return data
+        if data.get("player"):
+            return data
+        if not self._can_issue_live_input(current_time):
+            return data
+        supporting = self._entity_count(data, "enemy") + self._entity_count(data, "teammate")
+        missing_for = current_time - float(getattr(self, "time_since_player_last_found", 0.0) or 0.0)
+        if supporting <= 0 and missing_for < 1.2:
+            return data
+        height, width = frame.shape[:2]
+        controller = getattr(self, "window_controller", None)
+        controller_scale = getattr(controller, "scale_factor", None)
+        scale = max(float(controller_scale or min(width / 1920.0, height / 1080.0) or 1.0), 0.5)
+        box_w = 95.0 * scale
+        box_h = 120.0 * scale
+        cx = width * 0.5
+        cy = height * 0.58
+        estimated = dict(data)
+        estimated["player"] = [[cx - box_w / 2, cy - box_h / 2, cx + box_w / 2, cy + box_h / 2]]
+        estimated["_player_source"] = "estimated"
+        estimated["_player_detection_reason"] = (
+            "using estimated self position from screen center "
+            f"(enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')}, "
+            f"missing_for={missing_for:.2f}s)"
+        )
+        return estimated
+
+    def _describe_player_detection_failure(self, frame, data, current_time, raw_supporting_entities=0):
+        if frame is None:
+            return "player detection failed: no frame"
+        if not hasattr(frame, "shape"):
+            return f"player detection failed: unsupported frame type {type(frame).__name__}"
+        if isinstance(data, dict) and data.get("_detection_error"):
+            return f"player detection failed: detector error {data.get('_detection_error')}"
+        if isinstance(data, dict) and data.get("player"):
+            metrics = self._player_box_metrics(data)
+            return (
+                "player detection failed: implausible player box "
+                f"{metrics}, threshold scale={max(float(self.window_controller.scale_factor or 1.0), 0.5):.2f}"
+            )
+        if not isinstance(data, dict):
+            data = {}
+        retry_text = "retry not attempted"
+        if data.get("_retry_attempted"):
+            retry_text = (
+                f"retry conf={float(data.get('_retry_confidence', self.entity_detection_retry_confidence)):.2f} "
+                f"player={data.get('_retry_player_count', 0)}"
+            )
+        else:
+            retry_in = max(
+                0.0,
+                self.entity_detection_retry_interval - (current_time - self._last_retry_detection_time),
+            )
+            retry_text = f"retry in {retry_in:.2f}s"
+        return (
+            "player detection missing "
+            f"(frame={frame.shape[1]}x{frame.shape[0]}, "
+            f"base_conf={float(data.get('_detector_confidence', self.entity_detection_confidence)):.2f}, "
+            f"enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')}, "
+            f"support={raw_supporting_entities}, {retry_text})"
+        )
+
+    def _should_promote_detected_match(self, data, runtime_state, checked_state, current_time):
+        player_count = self._entity_count(data, "player")
+        if player_count <= 0 or not self._is_plausible_player_detection(data):
+            self._reset_match_state_guard()
+            return False
+
+        enemy_count = self._entity_count(data, "enemy")
+        teammate_count = self._entity_count(data, "teammate")
+        supporting_entities = enemy_count + teammate_count
+        if checked_state == "match":
+            self._reset_match_state_guard()
+            return True
+        if runtime_state not in {"starting", "lobby"}:
+            self._reset_match_state_guard()
+            return False
+        if current_time - self._last_state_guard_detection_time > 1.0:
+            self._state_guard_detected_frames = 0
+        self._last_state_guard_detection_time = current_time
+        self._state_guard_detected_frames += 1
+        required_support_frames = 2 if checked_state in {"lobby", "starting"} else 1
+        if supporting_entities > 0 and self._state_guard_detected_frames >= required_support_frames:
+            if debug:
+                print(
+                    "[MATCH] promoting to match from gameplay detections "
+                    f"(player={player_count}, enemy={enemy_count}, teammate={teammate_count}, state={checked_state})"
+                )
+            return True
+        required_frames = 5 if checked_state == "lobby" else 4
+        if checked_state in {"", "lobby", "starting"} and self._state_guard_detected_frames >= required_frames:
+            if debug:
+                print(
+                    "[MATCH] promoting after repeated player detections "
+                    f"(frames={self._state_guard_detected_frames}, state={checked_state})"
+                )
+            return True
+        return False
+
     @classmethod
     def can_attack_through_walls(cls, brawler, skill_type, brawlers_info=None):
         if not brawlers_info: brawlers_info = load_brawlers_info()
@@ -2727,7 +2978,7 @@ class Play(Movement):
 
     def _get_pathfinder_movement(self, player_pos, target_pos):
         """Use A* pathfinder to navigate around walls toward a target.
-        
+
         Returns a WASD string, or None if pathfinding is unavailable/fails.
         """
         if (not hasattr(self, '_path_planner') or self._path_planner is None
@@ -2743,6 +2994,18 @@ class Play(Movement):
         except Exception:
             pass
         return None
+
+    def _remember_player_detection(self, data, current_time):
+        if str((data or {}).get("_player_source", "")).lower() == "estimated":
+            return
+        players = (data or {}).get("player") or []
+        if not players or not self._is_plausible_player_detection(data):
+            return
+        try:
+            self._last_valid_player_bbox = [float(value) for value in players[0][:4]]
+            self._last_valid_player_seen_at = current_time
+        except Exception:
+            pass
 
     def _get_pathfinder_movement_away(self, player_pos, threat_pos):
         """Use A* pathfinder to flee from a threat around walls.
@@ -2783,12 +3046,28 @@ class Play(Movement):
                 current_time=current_time,
                 fallback=True,
             )
-            primary = "w" if self.game_mode == 3 or self._is_brawl_ball_mode() else "d"
-            self.window_controller.keys_down([primary])
-            self.window_controller.keys_up([key for key in ["w", "a", "s", "d"] if key != primary])
-            self._record_battle_input("movement", f"fallback key {primary}", current_time)
-            if current_time - self.last_attack_time >= 0.8:
-                self.attack()
+            if self._uses_analog_movement() and hasattr(self.window_controller, "move_joystick_angle"):
+                if self._is_brawl_ball_mode():
+                    angle = 270.0
+                else:
+                    angle = 270.0 if self.game_mode == 3 else 0.0
+                self._dispatch_movement_angle(
+                    angle,
+                    detail=f"fallback angle {angle:.0f}",
+                    current_time=current_time,
+                    radius=self._analog_movement_radius * 0.72,
+                )
+            else:
+                primary = "w" if self.game_mode == 3 else "d"
+                self._dispatch_movement_keys(
+                    [primary],
+                    [key for key in ["w", "a", "s", "d"] if key != primary],
+                    detail=f"fallback key {primary}",
+                    current_time=current_time,
+                )
+            if current_time - self.last_attack_time >= max(0.8, float(getattr(self, "attack_cooldown", 0.0) or 0.0)):
+                if self.attack():
+                    self._battle_runtime["last_attack_decision"] = "missing-player recovery poke"
         except Exception as exc:
             if current_time - self._last_battle_error_log_at >= 2.0:
                 print(f"[BATTLE][ERROR] missing-player recovery input failed: {exc}")
@@ -3445,14 +3724,25 @@ class Play(Movement):
         
         return filtered
 
-    def get_main_data(self, frame):
+    def get_main_data(self, frame, runtime_state="", current_time=None):
+        if current_time is None:
+            current_time = time.time()
         # === FRAME SKIPPING FOR IPS OPTIMIZATION ===
         # Process every 2nd frame for higher GPU utilization
         self._frame_skip_counter += 1
-        
+
         # Always run ONNX inference for consistent GPU usage (no frame skipping)
         # This keeps GPU at steady utilization instead of fluctuating
-        data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
+        try:
+            data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_confidence)
+        except Exception as exc:
+            if current_time - self._last_retry_player_log_time >= 2.0:
+                print(f"[BATTLE][ERROR] player/entity detection failed: {exc}")
+                self._last_retry_player_log_time = current_time
+            return {"_detection_error": str(exc)}
+        if not isinstance(data, dict):
+            data = {}
+        data["_detector_confidence"] = self.entity_detection_confidence
         
         # --- HUD portrait strip: filter ALL classes in the top ~7% of frame ---
         # The ONNX model sometimes classifies HUD brawler portraits as
@@ -3503,7 +3793,36 @@ class Play(Movement):
         
         self._cached_detection_data = data
         self._frame_skip_counter = 0
-        
+
+        if data.get("player"):
+            data["_player_source"] = "base"
+        else:
+            supporting_entities = self._entity_count(data, "enemy") + self._entity_count(data, "teammate")
+            player_missing_for = current_time - float(getattr(self, "time_since_player_last_found", 0.0) or 0.0)
+            allow_retry = (
+                self.entity_detection_retry_confidence < self.entity_detection_confidence
+                and player_missing_for >= self.entity_detection_retry_missing_delay
+                and supporting_entities > 0
+                and self.has_recent_match_context(current_time)
+            )
+            if allow_retry and (current_time - self._last_retry_detection_time) >= self.entity_detection_retry_interval:
+                self._last_retry_detection_time = current_time
+                data["_retry_attempted"] = True
+                data["_retry_confidence"] = self.entity_detection_retry_confidence
+                try:
+                    retry_data = self.Detect_main_info.detect_objects(frame, conf_tresh=self.entity_detection_retry_confidence)
+                except Exception as exc:
+                    data["_retry_error"] = str(exc)
+                    retry_data = {}
+                data["_retry_player_count"] = self._entity_count(retry_data, "player")
+                if isinstance(retry_data, dict) and retry_data.get("player"):
+                    retry_data["_player_source"] = "retry"
+                    retry_data["_detector_confidence"] = self.entity_detection_retry_confidence
+                    retry_data["_retry_attempted"] = True
+                    data = retry_data
+            if runtime_state == "match" and not data.get("player"):
+                data = self._estimate_player_detection(frame, data, current_time)
+
         return data
 
     def _direction_enters_gas(self, move_direction):
@@ -3599,7 +3918,35 @@ class Play(Movement):
             if key in data and data[key]:
                 self.time_since_detections[key] = time.time()
 
+    def _is_path_blocked_angle(self, player_pos, angle_degrees, wall_context, distance=None):
+        if player_pos is None or not wall_context:
+            return False
+        walls = wall_context.get("rectangles") if isinstance(wall_context, dict) else wall_context
+        if not walls:
+            return False
+        if distance is None:
+            distance = self.TILE_SIZE * float(getattr(self.window_controller, "scale_factor", 1.0) or 1.0)
+        angle_rad = math.radians(float(angle_degrees) % 360.0)
+        new_pos = (
+            player_pos[0] + math.cos(angle_rad) * distance,
+            player_pos[1] + math.sin(angle_rad) * distance,
+        )
+        return self.walls_are_in_line_of_sight(LineString([player_pos, new_pos]), walls)
+
+    def _choose_unstuck_angle(self, angle, player_pos, wall_context):
+        desired = float(angle) % 360.0
+        for offset in (90.0, -90.0, 135.0, -135.0, 180.0):
+            candidate = (desired + offset) % 360.0
+            if not self._is_path_blocked_angle(player_pos, candidate, wall_context):
+                return candidate
+        return desired
+
     def do_movement(self, movement):
+        if isinstance(movement, (float, int)):
+            self.keys_hold = []
+            self._dispatch_movement_angle(float(movement), detail=f"angle {float(movement):.0f}")
+            return
+
         movement = str(movement or "").lower()
         keys_to_keyDown = []
         keys_to_keyUp = []
@@ -3609,13 +3956,87 @@ class Play(Movement):
             else:
                 keys_to_keyUp.append(key)
 
-        if keys_to_keyDown:
-            self.window_controller.keys_down(keys_to_keyDown)
-
-        self.window_controller.keys_up(keys_to_keyUp)
+        self._dispatch_movement_keys(keys_to_keyDown, keys_to_keyUp, detail=movement)
 
         self.keys_hold = keys_to_keyDown
-        self._record_battle_input("movement", movement or "stop", time.time())
+
+    def _debounce_angle(self, angle):
+        if self.last_movement is None or not isinstance(self.last_movement, (float, int)):
+            self.last_movement = float(angle)
+            self.last_movement_time = time.time()
+            return float(angle)
+
+        if self._angle_difference(angle, self.last_movement) > self._analog_turn_threshold:
+            self.last_movement = float(angle)
+            self.last_movement_time = time.time()
+
+        return float(self.last_movement)
+
+    def unstuck_angle_if_needed(self, angle, current_time=None, player_pos=None, wall_context=None):
+        if current_time is None:
+            current_time = time.time()
+        angle = float(angle) % 360.0
+        state = self.fix_angle_state
+        movement_reason = str(self._committed_analog_reason or "")
+
+        if state["toggled"]:
+            if current_time - state["started_at"] > state["duration"]:
+                state["toggled"] = False
+                self._movement_anchor_angle = angle
+                self._movement_anchor_angle_pos = player_pos
+                self.time_since_different_movement = current_time
+            else:
+                return float(state["fixed_angle"])
+
+        if (
+            self._movement_anchor_angle is None
+            or self._angle_difference(angle, self._movement_anchor_angle) > 18.0
+        ):
+            self._movement_anchor_angle = angle
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        if movement_reason in {"team_follow", "team_hold", "team_orbit", "team_space", "roam"}:
+            self._movement_anchor_angle = angle
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        if (
+            player_pos is not None
+            and self._movement_anchor_angle_pos is not None
+            and self.get_distance(self._movement_anchor_angle_pos, player_pos) >= self._unstuck_progress_distance
+        ):
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        blocked_forward = (
+            player_pos is not None
+            and wall_context is not None
+            and bool(wall_context.get("rectangles"))
+            and self._is_path_blocked_angle(player_pos, angle, wall_context)
+        )
+        if not blocked_forward:
+            self._movement_anchor_angle = angle
+            self._movement_anchor_angle_pos = player_pos
+            self.time_since_different_movement = current_time
+            return angle
+
+        if current_time - self.time_since_different_movement > state["delay_to_trigger"]:
+            fixed_angle = self._choose_unstuck_angle(angle, player_pos, wall_context or {})
+            if self._angle_difference(fixed_angle, angle) < 12.0:
+                self._movement_anchor_angle = angle
+                self._movement_anchor_angle_pos = player_pos
+                self.time_since_different_movement = current_time
+                return angle
+            state["fixed_angle"] = fixed_angle
+            state["toggled"] = True
+            state["started_at"] = current_time
+            return fixed_angle
+
+        return angle
 
     def get_brawler_range(self, brawler):
         if self.brawler_ranges is None:
@@ -5186,7 +5607,7 @@ class Play(Movement):
         self._note_battle_tick(current_time, brawler)
         runtime_state = str(getattr(self, "_runtime_state", "") or "")
         try:
-            data = self.get_main_data(frame)
+            data = self.get_main_data(frame, runtime_state=runtime_state, current_time=current_time)
         except Exception as exc:
             print(f"[BATTLE][ERROR] detection failed before battle loop: {exc}")
             print(traceback.format_exc().rstrip())
@@ -5197,6 +5618,35 @@ class Play(Movement):
         if isinstance(data, dict):
             raw_supporting_entities = len(data.get('enemy') or []) + len(data.get('teammate') or [])
         if data:
+            player_source = str(data.get("_player_source", "base") or "base")
+            self._last_live_player_source = player_source
+            self._allow_skill_inputs = (
+                bool(data.get("player"))
+                and (
+                    player_source == "base"
+                    or (player_source == "retry" and raw_supporting_entities > 0)
+                    or (player_source == "estimated" and raw_supporting_entities > 0)
+                )
+            )
+            if player_source == "estimated":
+                self._set_battle_skip_reason(
+                    data.get("_player_detection_reason", "player detection estimated; using recovery position"),
+                    current_time=current_time,
+                    fallback=True,
+                )
+            self._remember_player_detection(data, current_time)
+            if (
+                self._is_plausible_player_detection(data)
+                and (
+                    self._entity_count(data, "enemy") > 0
+                    or self._entity_count(data, "teammate") > 0
+                    or (
+                        runtime_state == "match"
+                        and (current_time - self._last_confirmed_match_time) <= 1.0
+                    )
+                )
+            ):
+                self._last_match_evidence_time = current_time
             if raw_has_player:
                 self.time_since_player_last_found = time.time()
             if runtime_state != "match":
@@ -5462,6 +5912,20 @@ class Play(Movement):
 
         if not data:
             self._player_was_visible = False
+            self._allow_skill_inputs = False
+            self._reset_match_state_guard()
+            if runtime_state == "match":
+                reason = self._describe_player_detection_failure(
+                    frame,
+                    data,
+                    current_time,
+                    raw_supporting_entities=raw_supporting_entities,
+                )
+                self._set_battle_skip_reason(
+                    f"{reason}; battle loop using recovery path",
+                    current_time=current_time,
+                    fallback=True,
+                )
             player_missing_for = current_time - self.time_since_player_last_found
             if (
                 runtime_state == "match"

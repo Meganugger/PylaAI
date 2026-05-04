@@ -9,10 +9,11 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
-import requests
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtWidgets import QFileDialog
 
+from brawlstars_api import fetch_player_profile, normalize_brawler_name, normalize_player_tag
+from farm_roster import build_farm_plan, load_farm_state, mask_api_key, normalize_farm_mode, normalize_farm_strategy, now_iso, save_farm_state
 from gui.api import check_if_exists
 from gui.config_store import load_config
 from lobby_automation import LobbyAutomation
@@ -66,6 +67,7 @@ class QtBridge(QObject):
 
         self.bot_config = self._load_bot_config()
         self.general_config = self._load_general_config()
+        self._farm_state = load_farm_state()
         self.time_config = load_config("time")
         self.login_config = load_toml_as_dict("cfg/login.toml")
         self._brawler_load_error = ""
@@ -118,6 +120,7 @@ class QtBridge(QObject):
         config.setdefault("gamemode", "knockout")
         config.setdefault("gamemode_type", 3)
         config.setdefault("smart_trophy_farm", "no")
+        config.setdefault("trophy_farm_mode", "manual")
         config.setdefault("trophy_farm_target", 500)
         config.setdefault("trophy_farm_strategy", "lowest_first")
         config.setdefault("trophy_farm_excluded", [])
@@ -133,6 +136,10 @@ class QtBridge(QObject):
         config.setdefault("performance_profile", "balanced")
         config.setdefault("auto_update_checks", "no")
         config.setdefault("auto_update_ignored_sha", "")
+        config.setdefault("brawlstars_api_key", "")
+        config.setdefault("brawlstars_player_tag", "")
+        config.setdefault("target_ips", 60)
+        config.setdefault("scrcpy_max_fps", 60)
         return config
 
     def _discover_brawler_names(self, names):
@@ -182,15 +189,7 @@ class QtBridge(QObject):
 
     @staticmethod
     def _normalize_farm_strategy(value):
-        normalized = str(value or "").strip().lower()
-        aliases = {
-            "lowest_first": "lowest_first",
-            "highest_first": "highest_winrate",
-            "highest_winrate": "highest_winrate",
-            "in_order": "sequential",
-            "sequential": "sequential",
-        }
-        return aliases.get(normalized, "lowest_first")
+        return normalize_farm_strategy(value)
 
     def _validate_existing_login(self):
         api_base_url = str(self.general_config.get("api_base_url", "localhost")).strip()
@@ -214,6 +213,7 @@ class QtBridge(QObject):
             "performance": "performance",
             "strongestbot": "strongest-bot",
             "strongestbotfull": "strongest-bot-full",
+            "strongestbotrl": "strongest-bot-rl",
         }
         if "+" in raw:
             base, local = raw.split("+", 1)
@@ -360,27 +360,14 @@ class QtBridge(QObject):
 
     def _fetch_player_brawlers_from_api(self):
         api_key = str(self.general_config.get("brawlstars_api_key", "")).strip()
-        player_tag = str(self.general_config.get("brawlstars_player_tag", "")).strip().upper().replace("#", "")
-        if not api_key:
-            raise ValueError("Add a Brawl Stars API key in Settings first.")
-        if not player_tag:
-            raise ValueError("Add a player tag in Settings first.")
-
-        response = requests.get(
-            f"https://api.brawlstars.com/v1/players/%23{player_tag}",
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=15,
-        )
-        if response.status_code == 403:
-            raise ValueError("The Brawl Stars API key was rejected.")
-        if response.status_code == 404:
-            raise ValueError("The player tag was not found.")
-        response.raise_for_status()
-        payload = response.json()
-        brawlers = payload.get("brawlers", [])
-        if not isinstance(brawlers, list):
-            raise ValueError("The API response did not contain a valid brawler list.")
-        return brawlers
+        player_tag = str(self.general_config.get("brawlstars_player_tag", "")).strip()
+        profile = fetch_player_profile(api_key, player_tag, timeout=15)
+        rows = []
+        for brawler, entry in profile.get("brawlers", {}).items():
+            row = dict(entry)
+            row["name"] = row.get("name") or brawler
+            rows.append(row)
+        return rows
 
     def _build_brawler_payload(self):
         scan_data = self._brawler_scan_data()
@@ -449,102 +436,75 @@ class QtBridge(QObject):
             source.update(overrides)
         target = max(0, self._as_int(source.get("trophy_farm_target", 500), 500))
         strategy = self._normalize_farm_strategy(source.get("trophy_farm_strategy", "lowest_first"))
+        mode = normalize_farm_mode(source.get("trophy_farm_mode", "manual"))
         excluded = self._normalize_brawler_set(
             source.get("trophy_farm_excluded", []),
             scan_data=self._brawler_scan_data(),
         )
         return {
+            "mode": mode,
             "target": target,
             "strategy": strategy,
             "excluded": excluded,
         }
 
-    def _build_trophy_farm_roster(self, overrides=None):
-        farm_settings = self._farm_settings(overrides)
-        target = farm_settings["target"]
-        strategy = farm_settings["strategy"]
-        excluded = farm_settings["excluded"]
-        scan_data = self._brawler_scan_data()
-        roster_lookup = {
-            self._canonical_brawler_name(entry.get("brawler", ""), scan_data=scan_data): entry
-            for entry in self.brawlers_data
-            if isinstance(entry, dict) and str(entry.get("brawler", "")).strip()
+    def _farm_plan(self, overrides=None):
+        settings = self._farm_settings(overrides)
+        return build_farm_plan(
+            all_brawlers=self._all_brawlers,
+            selected_roster=self.brawlers_data,
+            scan_data=self._brawler_scan_data(),
+            farm_state=getattr(self, "_farm_state", {}) or {},
+            target=settings["target"],
+            strategy=settings["strategy"],
+            excluded=settings["excluded"],
+            mode=settings["mode"],
+            history=self._match_history_map(),
+        )
+
+    def _farm_status_payload(self, overrides=None):
+        plan = self._farm_plan(overrides)
+        farm_state = getattr(self, "_farm_state", {}) or {}
+        api_roster = farm_state.get("api_roster", {}) if isinstance(farm_state, dict) else {}
+        return {
+            "mode": plan["mode"],
+            "target": plan["target"],
+            "strategy": plan["strategy"],
+            "queueCount": len(plan["queue"]),
+            "rosterCount": len(plan["rows"]),
+            "emptyReason": plan["empty_reason"],
+            "apiLoadedCount": len(api_roster) if isinstance(api_roster, dict) else 0,
+            "apiPlayerName": str(farm_state.get("api_player_name", "") or ""),
+            "apiPlayerTag": str(farm_state.get("api_player_tag", "") or ""),
+            "apiLastRefresh": str(farm_state.get("api_last_refresh", "") or ""),
+            "apiKeyMasked": mask_api_key(self.general_config.get("brawlstars_api_key", "")),
         }
-        history = self._match_history_map()
-        queue = []
 
-        if scan_data:
-            source_brawlers = set()
-            for brawler in self._all_brawlers:
-                canonical = self._canonical_brawler_name(brawler, scan_data=scan_data)
-                if canonical and self._scan_entry_for_brawler(canonical, scan_data).get("unlocked") is True:
-                    source_brawlers.add(canonical)
-            for scan_name, scan_entry in scan_data.items():
-                canonical = self._canonical_brawler_name(scan_name, scan_data=scan_data)
-                if canonical and isinstance(scan_entry, dict) and scan_entry.get("unlocked") is True:
-                    source_brawlers.add(canonical)
-        else:
-            source_brawlers = {
-                self._canonical_brawler_name(brawler, scan_data=scan_data)
-                for brawler in self._all_brawlers
-                if str(brawler or "").strip()
-            }
-            source_brawlers.update(roster_lookup)
-            source_brawlers = {brawler for brawler in source_brawlers if brawler}
-
-        for brawler in sorted(source_brawlers):
-            if brawler in excluded:
-                continue
-
-            scan_entry = self._scan_entry_for_brawler(brawler, scan_data)
-            if scan_data and scan_entry.get("unlocked") is not True:
-                continue
-
-            selected_entry = roster_lookup.get(brawler, {})
-            trophies = self._as_int(selected_entry.get("trophies", scan_entry.get("trophies", 0)), 0)
-            if trophies >= target:
-                continue
-
-            history_entry = history.get(brawler, {})
-            if not isinstance(history_entry, dict):
-                history_entry = {}
-            wins = self._as_int(history_entry.get("victory", 0), 0)
-            defeats = self._as_int(history_entry.get("defeat", 0), 0)
-            total_games = wins + defeats
-            winrate = round((wins / total_games) * 100) if total_games else 50
-            queue.append({
-                "brawler": brawler,
-                "trophies": trophies,
-                "winrate": winrate,
-                "total_games": total_games,
-                "source": selected_entry,
-            })
-
-        if strategy == "highest_winrate":
-            queue.sort(key=lambda item: (-item["winrate"], item["trophies"], item["brawler"]))
-        elif strategy == "sequential":
-            queue.sort(key=lambda item: item["brawler"])
-        else:
-            queue.sort(key=lambda item: (item["trophies"], item["brawler"]))
-
+    def _build_trophy_farm_roster(self, overrides=None):
+        plan = self._farm_plan(overrides)
+        target = plan["target"]
+        strategy = plan["strategy"]
         roster = []
-        for item in queue:
-            source = item.get("source", {})
+        for item in plan["queue"]:
             roster.append({
                 "brawler": item["brawler"],
                 "push_until": target,
                 "trophies": item["trophies"],
-                "wins": self._as_int(source.get("wins", 0), 0),
+                "wins": 0,
                 "type": "trophies",
-                "automatically_pick": bool(source.get("automatically_pick", True)),
-                "win_streak": self._as_int(source.get("win_streak", 0), 0),
-                "manual_trophies": bool(source.get("manual_trophies", False)),
+                "automatically_pick": True,
+                "win_streak": 0,
+                "manual_trophies": True,
+                "selection_method": f"farm_{plan['mode']}",
             })
 
-        return roster, queue, target, strategy
+        return roster, plan["queue"], target, strategy
 
     def _build_trophy_farm_preview(self, overrides=None):
-        _roster, queue, target, strategy = self._build_trophy_farm_roster(overrides)
+        plan = self._farm_plan(overrides)
+        queue = plan["queue"]
+        target = plan["target"]
+        strategy = plan["strategy"]
         preview = []
         for index, item in enumerate(queue, start=1):
             preview.append({
@@ -557,6 +517,11 @@ class QtBridge(QObject):
                 "matches": self._as_int(item.get("total_games", 0), 0),
                 "target": target,
                 "strategy": strategy,
+                "mode": plan["mode"],
+                "source": item.get("source", plan["mode"]),
+                "owned": bool(item.get("owned", True)),
+                "included": bool(item.get("included", True)),
+                "reason": item.get("reason", ""),
             })
         return preview
 
@@ -656,6 +621,8 @@ class QtBridge(QObject):
             "brawlers": self._build_brawler_payload(),
             "history": self.getHistory(),
             "farmPreview": self.getFarmPreview(),
+            "farmRoster": self.getFarmRoster(),
+            "farmStatus": self.getFarmStatus(),
             "logs": self.getLogs(),
             "gamemodes": list(GAMEMODES),
             "emulators": list(EMULATORS),
@@ -738,8 +705,8 @@ class QtBridge(QObject):
         try:
             from tools import updater
 
-            local_sha = updater.read_local_update_sha(Path(os.getcwd())) or ""
-            update_source = f"{updater.repo_slug()} [{updater.repo_branch()}]"
+            local_sha = updater.read_installed_update_sha(Path(os.getcwd())) or ""
+            update_source = f"{updater.repo_slug()} [{updater.repo_branch(Path(os.getcwd()))}]"
         except Exception:
             pass
         return {
@@ -938,9 +905,109 @@ class QtBridge(QObject):
     def getFarmPreview(self):
         return self._build_trophy_farm_preview()
 
+    @Slot(result="QVariantList")
+    def getFarmRoster(self):
+        plan = self._farm_plan()
+        rows = []
+        for row in sorted(plan["rows"], key=lambda item: (not item.get("qualifies", False), item.get("trophies", 0), item.get("brawler", ""))):
+            brawler = row.get("brawler", "")
+            rows.append({
+                "brawler": brawler,
+                "displayName": str(row.get("displayName") or brawler).title(),
+                "icon": self._icon_url_for(brawler),
+                "trophies": self._as_int(row.get("trophies", 0), 0),
+                "highestTrophies": self._as_int(row.get("highestTrophies", row.get("trophies", 0)), 0),
+                "power": self._as_int(row.get("power", 0), 0),
+                "rank": self._as_int(row.get("rank", 0), 0),
+                "owned": bool(row.get("owned", False)),
+                "included": bool(row.get("included", True)),
+                "excluded": bool(row.get("excluded", False)),
+                "qualifies": bool(row.get("qualifies", False)),
+                "source": str(row.get("source", plan["mode"])),
+                "reason": str(row.get("reason", "")),
+                "target": plan["target"],
+                "order": self._as_int(row.get("order", 0), 0),
+                "winrate": self._as_int(row.get("winrate", 50), 50),
+            })
+        return rows
+
+    @Slot(result="QVariantMap")
+    def getFarmStatus(self):
+        return self._farm_status_payload()
+
     @Slot("QVariantMap", result="QVariantList")
     def previewFarmSettings(self, payload):
         return self._build_trophy_farm_preview(payload or {})
+
+    @Slot("QVariantMap", result="QVariantMap")
+    def updateManualFarmBrawler(self, payload):
+        brawler = self._canonical_brawler_name(payload.get("brawler", ""))
+        if not brawler:
+            return {"ok": False, "error": "Choose a brawler first."}
+        manual_roster = self._farm_state.setdefault("manual_roster", {})
+        if not isinstance(manual_roster, dict):
+            manual_roster = {}
+            self._farm_state["manual_roster"] = manual_roster
+        row = dict(manual_roster.get(brawler, {}))
+        row["owned"] = bool(payload.get("owned", row.get("owned", True)))
+        row["included"] = bool(payload.get("included", row.get("included", True)))
+        row["trophies"] = self._as_int(payload.get("trophies", row.get("trophies", 0)), 0)
+        row["priority"] = self._as_int(payload.get("priority", row.get("priority", 0)), 0)
+        row["source"] = "manual"
+        manual_roster[brawler] = row
+        save_farm_state(self._farm_state)
+        self._emit_state()
+        return {"ok": True, "brawler": brawler}
+
+    @Slot(str, str, result="QVariantMap")
+    def fetchFarmRosterFromApi(self, apiKey, playerTag):
+        api_key = str(apiKey or self.general_config.get("brawlstars_api_key", "") or "").strip()
+        player_tag = str(playerTag or self.general_config.get("brawlstars_player_tag", "") or "").strip()
+        try:
+            normalized_tag = f"#{normalize_player_tag(player_tag)}"
+            profile = fetch_player_profile(api_key, normalized_tag, timeout=15)
+        except Exception as exc:
+            self._notification("error", f"Could not fetch Brawl Stars roster: {exc}")
+            return {"ok": False, "error": str(exc)}
+
+        api_roster = {}
+        for api_name, row in profile.get("brawlers", {}).items():
+            internal = self._resolve_internal_brawler_name(api_name) or normalize_brawler_name(api_name)
+            item = dict(row)
+            item["brawler"] = internal
+            item["displayName"] = str(row.get("name") or internal).title()
+            item["owned"] = True
+            item["included"] = True
+            item["source"] = "api"
+            api_roster[internal] = item
+
+        self.general_config["brawlstars_api_key"] = api_key
+        self.general_config["brawlstars_player_tag"] = profile.get("player_tag") or normalized_tag
+        self.bot_config["trophy_farm_mode"] = "api"
+        self._farm_state["api_roster"] = api_roster
+        self._farm_state["api_player_name"] = profile.get("player_name", "")
+        self._farm_state["api_player_tag"] = profile.get("player_tag", normalized_tag)
+        self._farm_state["api_last_refresh"] = now_iso()
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
+        save_farm_state(self._farm_state)
+        self._emit_state()
+        self._notification("success", f"Fetched {len(api_roster)} unlocked brawler(s) from the Brawl Stars API.")
+        return {"ok": True, "count": len(api_roster), "playerTag": self._farm_state["api_player_tag"]}
+
+    @Slot(result="QVariantMap")
+    def clearFarmApiCredentials(self):
+        self.general_config["brawlstars_api_key"] = ""
+        self.general_config["brawlstars_player_tag"] = ""
+        self._farm_state["api_roster"] = {}
+        self._farm_state["api_player_name"] = ""
+        self._farm_state["api_player_tag"] = ""
+        self._farm_state["api_last_refresh"] = ""
+        save_dict_as_toml(self.general_config, "cfg/general_config.toml")
+        save_farm_state(self._farm_state)
+        self._emit_state()
+        self._notification("info", "Cleared saved Brawl Stars API credentials and API roster.")
+        return {"ok": True}
 
     @Slot()
     def importAllBrawlersFromBrawlStarsApi(self):
@@ -1003,6 +1070,9 @@ class QtBridge(QObject):
     def saveFarmSettings(self, payload):
         farm_enabled = self._is_enabled(payload.get("smart_trophy_farm", self.bot_config.get("smart_trophy_farm", "no")))
         self.bot_config["smart_trophy_farm"] = "yes" if farm_enabled else "no"
+        self.bot_config["trophy_farm_mode"] = normalize_farm_mode(
+            payload.get("trophy_farm_mode", self.bot_config.get("trophy_farm_mode", "manual"))
+        )
         self.bot_config["trophy_farm_strategy"] = self._normalize_farm_strategy(
             payload.get("trophy_farm_strategy", self.bot_config.get("trophy_farm_strategy", "lowest_first"))
         )
@@ -1021,7 +1091,7 @@ class QtBridge(QObject):
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
         self._emit_state()
         if farm_enabled:
-            self._notification("success", "Farm settings saved. Trophy Farm will build its queue the next time you start the bot.")
+            self._notification("success", f"Farm settings saved in {self.bot_config['trophy_farm_mode'].upper()} mode. Trophy Farm will build its queue the next time you start the bot.")
         else:
             self._notification("success", "Farm settings saved. Start Bot will keep using your normal roster until Trophy Farm is enabled.")
 
@@ -1034,8 +1104,10 @@ class QtBridge(QObject):
 
         for key in (
             "max_ips",
+            "target_ips",
             "cpu_or_gpu",
             "super_debug",
+            "input_debug",
             "personal_webhook",
             "discord_id",
             "brawlstars_api_key",
@@ -1050,6 +1122,12 @@ class QtBridge(QObject):
             "performance_profile",
             "auto_update_checks",
             "auto_update_ignored_sha",
+            "scrcpy_max_fps",
+            "scrcpy_max_width",
+            "scrcpy_bitrate",
+            "joystick_refresh_seconds",
+            "joystick_repress_seconds",
+            "joystick_down_move_delay",
         ):
             if key in general:
                 self.general_config[key] = general[key]
@@ -1057,6 +1135,13 @@ class QtBridge(QObject):
         self.general_config["emulator_port"] = self._as_int(self.general_config.get("emulator_port", 5037), 5037)
         self.general_config["run_for_minutes"] = self._as_int(self.general_config.get("run_for_minutes", 600), 600)
         self.general_config["auto_push_target_trophies"] = self._as_int(self.general_config.get("auto_push_target_trophies", 1000), 1000)
+        self.general_config["target_ips"] = self._as_int(self.general_config.get("target_ips", self.general_config.get("max_ips", 60)), 60)
+        self.general_config["scrcpy_max_fps"] = self._as_int(self.general_config.get("scrcpy_max_fps", self.general_config["target_ips"]), self.general_config["target_ips"])
+        self.general_config["scrcpy_max_width"] = self._as_int(self.general_config.get("scrcpy_max_width", 960), 960)
+        self.general_config["scrcpy_bitrate"] = self._as_int(self.general_config.get("scrcpy_bitrate", 3000000), 3000000)
+        self.general_config["joystick_refresh_seconds"] = self._as_float(self.general_config.get("joystick_refresh_seconds", 0.35), 0.35)
+        self.general_config["joystick_repress_seconds"] = self._as_float(self.general_config.get("joystick_repress_seconds", 1.8), 1.8)
+        self.general_config["joystick_down_move_delay"] = self._as_float(self.general_config.get("joystick_down_move_delay", 0.012), 0.012)
 
         for key in (
             "minimum_movement_delay",
@@ -1212,7 +1297,8 @@ class QtBridge(QObject):
         if self._is_enabled(self.bot_config.get("smart_trophy_farm", "no")):
             runtime_roster, queue, target, _strategy = self._build_trophy_farm_roster()
             if not runtime_roster:
-                self._notification("warning", f"Trophy Farm is enabled, but no eligible brawlers are below {target} trophies.")
+                reason = self._farm_status_payload().get("emptyReason") or f"No eligible brawlers are below {target} trophies."
+                self._notification("warning", f"Trophy Farm is enabled, but the queue is empty: {reason}")
                 return
             self.brawlers_data = self._normalize_roster(runtime_roster)
             self._emit_roster()
