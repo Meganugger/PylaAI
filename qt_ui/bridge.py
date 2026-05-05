@@ -59,6 +59,8 @@ class QtBridge(QObject):
         self._bot_stop_event = None
         self._bot_pause_event = None
         self._bot_stop_requested = False
+        self._bot_paused = False
+        self._bot_control_state = "stopped"
         self._live_data = {}
         self._session_summary = None
         self._event_log = []
@@ -757,12 +759,60 @@ class QtBridge(QObject):
 
     def _prepare_bot_control_events(self):
         self._bot_stop_requested = False
+        self._bot_paused = False
+        self._bot_control_state = "running"
         self._bot_stop_event = threading.Event()
         self._bot_pause_event = threading.Event()
         self._live_data = {}
         self._event_log = []
+        self._live_data.update({
+            "bot_control_state": self._bot_control_state,
+            "bot_paused": False,
+        })
         self.liveDataChanged.emit(self._live_data.copy())
         self._emit_logs()
+
+    def _is_bot_thread_alive(self):
+        return bool(self._bot_thread and self._bot_thread.is_alive())
+
+    def _set_bot_control_state(self, control_state, paused=None):
+        self._bot_control_state = str(control_state or "stopped")
+        if paused is not None:
+            self._bot_paused = bool(paused)
+        with self._live_lock:
+            self._live_data.update({
+                "bot_control_state": self._bot_control_state,
+                "bot_paused": self._bot_paused,
+            })
+            payload = dict(self._live_data)
+        self.liveDataChanged.emit(payload)
+        return payload
+
+    def _release_active_bot_inputs(self, reason):
+        import sys
+
+        managers = []
+        for module in (sys.modules.get("__main__"), inspect.getmodule(self._pyla_main)):
+            if module is None:
+                continue
+            manager = getattr(module, "_active_stage_manager", None)
+            if manager is not None and manager not in managers:
+                managers.append(manager)
+        released = False
+        for manager in managers:
+            controller = getattr(manager, "window_controller", None)
+            if controller is None:
+                continue
+            try:
+                if hasattr(controller, "release_all_inputs"):
+                    controller.release_all_inputs(reason)
+                else:
+                    controller.keys_up(list("wasd"))
+                released = True
+            except Exception as exc:
+                self._push_log("warning", f"[BOT][WARN] input release failed: {exc}")
+        if not released:
+            self._push_log("info", "[INPUT] releasing active touches skipped; no active controller yet")
 
     def _set_runtime_binding(self, name, value):
         import sys
@@ -805,6 +855,10 @@ class QtBridge(QObject):
         finally:
             self._set_runtime_binding("_active_dashboard", None)
             self._set_runtime_binding("_active_stage_manager", None)
+            self._bot_paused = False
+            self._bot_stop_requested = False
+            self._set_bot_control_state("stopped", paused=False)
+            self._push_log("info", "[BOT] stopped")
 
     def after(self, ms, callback):
         QTimer.singleShot(int(ms), callback)
@@ -1331,19 +1385,62 @@ class QtBridge(QObject):
 
         self._bot_thread = threading.Thread(target=self._run_bot, daemon=True)
         self._bot_thread.start()
+        self._set_bot_control_state("running", paused=False)
         self._notification("success", "Bot started.")
         self._emit_state()
 
     @Slot()
     def stopBot(self):
+        if not self._is_bot_thread_alive():
+            self._bot_stop_requested = False
+            if self._bot_pause_event:
+                self._bot_pause_event.clear()
+            self._set_bot_control_state("stopped", paused=False)
+            self._notification("warning", "[BOT][WARN] stop requested but bot was not running")
+            return
+        self._push_log("info", "[BOT] stop requested")
         self._bot_stop_requested = True
         if self._bot_stop_event:
             self._bot_stop_event.set()
         if self._bot_pause_event:
             self._bot_pause_event.clear()
+        self._bot_paused = False
+        self._set_bot_control_state("stopping", paused=False)
+        self._release_active_bot_inputs("stop requested")
         self._notification("info", "Stop signal sent to the bot.")
+
+    @Slot()
+    def pauseBot(self):
+        if not self._is_bot_thread_alive():
+            self._notification("warning", "[BOT][WARN] pause requested but bot is not running")
+            return
+        if self._bot_paused:
+            self._notification("warning", "[BOT][WARN] pause requested but bot is already paused")
+            return
+        if self._bot_pause_event:
+            self._bot_pause_event.set()
+        self._bot_paused = True
+        self._set_bot_control_state("paused", paused=True)
+        self._push_log("info", "[BOT] pause requested")
+        self._release_active_bot_inputs("pause requested")
+        self._notification("info", "Bot paused.")
+
+    @Slot()
+    def resumeBot(self):
+        if not self._is_bot_thread_alive():
+            self._notification("warning", "[BOT][WARN] resume requested but bot is not running")
+            return
+        if not self._bot_paused:
+            self._notification("warning", "[BOT][WARN] resume requested but bot is not paused")
+            return
+        if self._bot_pause_event:
+            self._bot_pause_event.clear()
+        self._bot_paused = False
+        self._set_bot_control_state("running", paused=False)
+        self._notification("info", "[BOT] resumed")
 
     @Slot()
     def on_app_about_to_quit(self):
         if self._bot_stop_event:
             self._bot_stop_event.set()
+        self._release_active_bot_inputs("app closing")
