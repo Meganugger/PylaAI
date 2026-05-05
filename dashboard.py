@@ -4408,6 +4408,15 @@ class Dashboard(ctk.CTk):
             self._bot_stop_event.set()
         if hasattr(self, '_bot_pause_event') and self._bot_pause_event:
             self._bot_pause_event.clear()
+        try:
+            import sys
+            main_module = sys.modules.get('__main__')
+            manager = getattr(main_module, '_active_stage_manager', None) if main_module else None
+            controller = getattr(manager, 'window_controller', None) if manager else None
+            if controller is not None and hasattr(controller, 'release_all_inputs'):
+                controller.release_all_inputs("stop requested")
+        except Exception:
+            pass
         # Don't clear live data yet - summary popup will read it
         # self._live_data.clear() is done after summary is shown
 

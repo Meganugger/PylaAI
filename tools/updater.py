@@ -54,6 +54,10 @@ SKIPPED_FILES = {
     "updater.exe",
 }
 
+PRESERVED_ROOT_FILES = {
+    "latest_brawler_data.json",
+}
+
 
 def wait_for_enter(prompt="Press Enter to close...") -> None:
     try:
@@ -445,25 +449,38 @@ def find_project_root(extracted_dir: Path) -> Path:
 
 def backup_preserved_files(project_dir: Path, backup_dir: Path) -> None:
     cfg_dir = project_dir / "cfg"
-    if not cfg_dir.exists():
-        return
-    for source in cfg_dir.iterdir():
-        if source.suffix.lower() not in (".toml", ".json") or not source.is_file():
+    if cfg_dir.exists():
+        for source in cfg_dir.iterdir():
+            if source.suffix.lower() not in (".toml", ".json") or not source.is_file():
+                continue
+            relative_path = source.relative_to(project_dir)
+            destination = backup_dir / relative_path
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+            print(f"[UPDATE] backed up user config {relative_path}")
+    for filename in PRESERVED_ROOT_FILES:
+        source = project_dir / filename
+        if not source.exists() or not source.is_file():
             continue
-        relative_path = source.relative_to(project_dir)
-        destination = backup_dir / relative_path
+        destination = backup_dir / filename
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, destination)
-        print(f"Preserved {relative_path}")
+        print(f"[UPDATE] backed up user config {filename}")
 
 
 def restore_preserved_files(project_dir: Path, backup_dir: Path) -> None:
     cfg_backup = backup_dir / "cfg"
-    if not cfg_backup.exists():
-        return
-    for old_config in cfg_backup.iterdir():
-        if old_config.suffix.lower() not in (".toml", ".json") or not old_config.is_file():
-            continue
+    preserved_files = []
+    if cfg_backup.exists():
+        preserved_files.extend([
+            old_config for old_config in cfg_backup.iterdir()
+            if old_config.suffix.lower() in (".toml", ".json") and old_config.is_file()
+        ])
+    for filename in PRESERVED_ROOT_FILES:
+        root_backup = backup_dir / filename
+        if root_backup.exists() and root_backup.is_file():
+            preserved_files.append(root_backup)
+    for old_config in preserved_files:
         relative_path = old_config.relative_to(backup_dir)
         destination = project_dir / relative_path
         if destination.exists() and old_config.suffix.lower() == ".toml":
@@ -472,21 +489,21 @@ def restore_preserved_files(project_dir: Path, backup_dir: Path) -> None:
                 old_config.read_text(encoding="utf-8-sig"),
             )
             destination.write_text(merged, encoding="utf-8")
-            print(f"Merged {relative_path}")
+            print(f"[UPDATE] merged config defaults {relative_path}")
         elif destination.exists() and old_config.suffix.lower() == ".json":
             try:
                 new_data = json.loads(destination.read_text(encoding="utf-8-sig"))
                 old_data = json.loads(old_config.read_text(encoding="utf-8-sig"))
                 merged = merge_json_data(new_data, old_data)
                 destination.write_text(json.dumps(merged, indent=4), encoding="utf-8")
-                print(f"Merged {relative_path}")
+                print(f"[UPDATE] merged config defaults {relative_path}")
             except Exception:
                 shutil.copy2(old_config, destination)
-                print(f"Restored {relative_path}")
+                print(f"[UPDATE] restored user settings {relative_path}")
         else:
             destination.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(old_config, destination)
-            print(f"Restored {relative_path}")
+            print(f"[UPDATE] restored user settings {relative_path}")
 
 
 def should_skip(relative_path: Path, source: Path) -> bool:
