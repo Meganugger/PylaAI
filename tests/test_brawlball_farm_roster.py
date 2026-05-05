@@ -38,6 +38,48 @@ class BrawlBallAndFarmTests(unittest.TestCase):
         self.assertIn("W", move)
         self.assertIn("D", move)
 
+    def test_brawlball_opening_route_returns_stable_angle_across_ticks(self):
+        movement = object.__new__(Play)
+        movement.window_controller = DummyWindow()
+        movement.selected_gamemode = "brawlball"
+        movement.game_mode = 3
+        movement._battle_runtime = Play._new_battle_runtime_state(movement)
+        start = time.time()
+        movement._battle_runtime["match_started_at"] = start
+        movement._brawl_ball_opening_seconds = 6.0
+        movement._brawl_ball_opening_hold_seconds = 2.0
+        movement._brawl_ball_opening_angle = None
+        movement._brawl_ball_opening_angle_until = 0.0
+        movement._last_brawl_ball_opening_log_at = start
+        movement._last_angle_smoothing_log_at = start
+
+        first = movement._get_brawl_ball_opening_angle((960.0, 940.0), start + 0.2)
+        second = movement._get_brawl_ball_opening_angle((960.0, 160.0), start + 0.6)
+
+        self.assertEqual(round(first), round(second))
+
+    def test_brawlball_no_detection_fallback_uses_opening_route(self):
+        movement = object.__new__(Play)
+        movement.window_controller = DummyWindow()
+        movement.selected_gamemode = "brawlball"
+        movement.game_mode = 3
+        movement._runtime_state = "match"
+        movement._last_confirmed_match_time = time.time()
+        movement._last_match_evidence_time = time.time()
+        movement._battle_runtime = Play._new_battle_runtime_state(movement)
+        movement._battle_runtime["match_started_at"] = time.time()
+        movement._brawl_ball_opening_seconds = 6.0
+        movement._brawl_ball_opening_hold_seconds = 1.0
+        movement._brawl_ball_opening_angle = None
+        movement._brawl_ball_opening_angle_until = 0.0
+        movement._last_brawl_ball_opening_log_at = time.time()
+        movement._last_angle_smoothing_log_at = time.time()
+
+        angle = movement._get_brawl_ball_opening_angle(None, time.time() + 0.1)
+
+        self.assertEqual(round(angle), 270)
+        self.assertEqual(movement._battle_runtime["active_strategy"], "brawlball_opening")
+
     def test_farm_candidates_show_roster_without_scan_data(self):
         dashboard = object.__new__(Dashboard)
         dashboard.all_brawlers = ["shelly", "colt", "darryl"]
@@ -179,6 +221,13 @@ class BrawlBallAndFarmTests(unittest.TestCase):
 
         self.assertEqual(movement.get_brawler_range("Not A Brawler"), [260, 440, 520])
         self.assertTrue(movement._battle_runtime["fallback_active"])
+
+    def test_role_mapping_uses_brawler_playstyle_with_fighter_fallback(self):
+        movement = object.__new__(Play)
+        movement.brawlers_info = {"darryl": {"playstyle": "tank"}, "mystery": {"playstyle": "unknown"}}
+
+        self.assertEqual(movement._playstyle_name("DARRYL"), "tank")
+        self.assertEqual(movement._playstyle_name("mystery"), "fighter")
 
     def test_missing_player_can_use_estimated_match_position(self):
         movement = object.__new__(Play)

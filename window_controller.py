@@ -241,6 +241,8 @@ class WindowController:
         self.are_we_moving = False
         self.PID_JOYSTICK = 1  # ID for WASD movement
         self.PID_ATTACK = 2  # ID for clicks/attacks
+        self.last_attack_pos = (None, None)
+        self.attack_pointer_down = False
 
     def _list_online_devices(self):
         devices = []
@@ -697,6 +699,27 @@ class WindowController:
             self.last_joystick_down_time = 0.0
             self.last_joystick_move_time = 0.0
 
+    def release_all_inputs(self, reason=""):
+        detail = f" ({reason})" if reason else ""
+        print(f"[INPUT] releasing active touches{detail}")
+        self.stop_joystick()
+        up_x, up_y = getattr(self, "last_attack_pos", (None, None))
+        attack_was_down = bool(getattr(self, "attack_pointer_down", False))
+        if attack_was_down and (up_x is None or up_y is None):
+            try:
+                attack_x, attack_y = key_coords_dict["M"]
+                up_x = attack_x * self.width_ratio
+                up_y = attack_y * self.height_ratio
+            except Exception:
+                up_x = up_y = None
+        if attack_was_down and up_x is not None and up_y is not None:
+            try:
+                self.touch_up(up_x, up_y, pointer_id=self.PID_ATTACK)
+            except Exception as exc:
+                print(f"[INPUT][ERROR] attack release failed: {exc}")
+        self.last_attack_pos = (None, None)
+        self.attack_pointer_down = False
+
     def keys_up(self, keys: List[str]):
         if "".join(keys).lower() == "wasd":
             self.stop_joystick()
@@ -725,9 +748,13 @@ class WindowController:
         # Use PID_ATTACK for clicks so we don't interrupt movement
         if touch_down:
             self.touch_down(x, y, pointer_id=self.PID_ATTACK)
+            self.last_attack_pos = (x, y)
+            self.attack_pointer_down = True
         time.sleep(delay)
         if touch_up:
             self.touch_up(x, y, pointer_id=self.PID_ATTACK)
+            self.last_attack_pos = (None, None)
+            self.attack_pointer_down = False
         return True
 
     def press_key(self, key, delay=0.005, touch_up=True, touch_down=True):
@@ -777,6 +804,10 @@ class WindowController:
         self.touch_up(int(end_x), int(end_y), pointer_id=self.PID_ATTACK)
 
     def close(self):
+        try:
+            self.release_all_inputs("controller closing")
+        except Exception:
+            pass
         if hasattr(self, 'scrcpy_client'):
             client = self.scrcpy_client
             self.scrcpy_client = None

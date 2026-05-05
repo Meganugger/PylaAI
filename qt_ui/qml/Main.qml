@@ -150,6 +150,12 @@ ApplicationWindow {
         return row ? liveMetricNumber(row.win_streak || row.winStreak, 0) : 0
     }
     function displayState(value) { return String(value || "ready").replace(/_/g, " ").toUpperCase() }
+    function botControlState() { return String(live.bot_control_state || "stopped").toLowerCase() }
+    function botIsRunningLike() {
+        const control = botControlState()
+        return control === "running" || control === "paused" || control === "stopping"
+    }
+    function botIsPaused() { return botControlState() === "paused" || live.bot_paused === true }
     function liveWinRate() {
         const matches = liveSessionMatches()
         return matches > 0 ? Math.round((liveSessionVictories() * 100) / matches) + "%" : "0%"
@@ -895,7 +901,8 @@ ApplicationWindow {
 
     Popup {
         id: updatePopup
-        width: Math.min(root.width * 0.52, 680)
+        width: Math.min(root.width - 56, 660)
+        height: Math.min(root.height - 80, 560)
         modal: true
         anchors.centerIn: parent
         padding: 0
@@ -907,36 +914,49 @@ ApplicationWindow {
             spacing: 14
             SectionEyebrow { text: "UPDATE AVAILABLE" }
             CardTitle { text: "Install New Version?" }
-            Label {
+            ScrollView {
                 Layout.fillWidth: true
-                text: "A newer PylaAI revision is available. The updater keeps your cfg settings, but you should close the running bot before installing."
-                color: root.textDim
-                font.pixelSize: 14
-                wrapMode: Text.WordWrap
-            }
-            GridLayout {
-                Layout.fillWidth: true
-                columns: 2
-                columnSpacing: 14
-                rowSpacing: 8
-                Label { text: "Installed"; color: root.textDim; font.pixelSize: 13 }
-                Label { Layout.fillWidth: true; text: String(updateStatus.currentVersion || state.version || "-") + "  " + shortSha(updateStatus.localSha || ""); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
-                Label { text: "Available"; color: root.textDim; font.pixelSize: 13 }
-                Label { Layout.fillWidth: true; text: shortSha(updateStatus.latestSha || updateStatus.availableVersion || "-"); color: root.success; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
-                Label { text: "Source"; color: root.textDim; font.pixelSize: 13 }
-                Label { Layout.fillWidth: true; text: String(updateStatus.source || toolStatus.updateSource || "-"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
-            }
-            Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
-            Label {
-                Layout.fillWidth: true
-                text: updateStatus.summary ? "Latest change: " + updateStatus.summary : "No changelog summary was returned by GitHub."
-                color: root.textMain
-                font.pixelSize: 13
-                wrapMode: Text.WordWrap
+                Layout.fillHeight: true
+                clip: true
+                contentWidth: availableWidth
+                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                ColumnLayout {
+                    width: parent.width
+                    spacing: 14
+                    Label {
+                        Layout.fillWidth: true
+                        text: "A newer PylaAI revision is available. The updater keeps your cfg settings, but you should close the running bot before installing."
+                        color: root.textDim
+                        font.pixelSize: 14
+                        wrapMode: Text.WordWrap
+                    }
+                    GridLayout {
+                        Layout.fillWidth: true
+                        columns: 2
+                        columnSpacing: 14
+                        rowSpacing: 8
+                        Label { text: "Installed"; color: root.textDim; font.pixelSize: 13 }
+                        Label { Layout.fillWidth: true; text: String(updateStatus.currentVersion || state.version || "-") + "  " + shortSha(updateStatus.localSha || ""); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                        Label { text: "Available"; color: root.textDim; font.pixelSize: 13 }
+                        Label { Layout.fillWidth: true; text: shortSha(updateStatus.latestSha || updateStatus.availableVersion || "-"); color: root.success; font.pixelSize: 13; font.bold: true; elide: Text.ElideRight }
+                        Label { text: "Source"; color: root.textDim; font.pixelSize: 13 }
+                        Label { Layout.fillWidth: true; text: String(updateStatus.source || toolStatus.updateSource || "-"); color: root.textMain; font.pixelSize: 13; elide: Text.ElideRight }
+                    }
+                    Rectangle { Layout.fillWidth: true; height: 1; color: root.border }
+                    Label {
+                        Layout.fillWidth: true
+                        text: updateStatus.summary ? "Latest change: " + updateStatus.summary : "No changelog summary was returned by GitHub."
+                        color: root.textMain
+                        font.pixelSize: 13
+                        wrapMode: Text.WordWrap
+                    }
+                }
             }
             RowLayout {
                 Layout.fillWidth: true
+                Layout.alignment: Qt.AlignRight
                 spacing: 10
+                Item { Layout.fillWidth: true }
                 AppButton { text: "Update Now"; highlighted: true; implicitWidth: 140; onClicked: { launchUpdater(false); updatePopup.close() } }
                 AppButton { text: "Later"; implicitWidth: 100; onClicked: updatePopup.close() }
                 AppButton { text: "Don't Ask"; implicitWidth: 130; onClicked: { backend.ignoreUpdateVersion(String(updateStatus.latestSha || "")); updatePopup.close() } }
@@ -1093,8 +1113,9 @@ ApplicationWindow {
                                         RowLayout {
                                             spacing: 12
                                             AppButton { text: "Save Controls"; onClicked: saveControl() }
-                                            AccentButton { text: "Start Bot"; onClicked: backend.startBot() }
-                                            DestructiveButton { text: "Stop Bot"; onClicked: backend.stopBot() }
+                                            AccentButton { text: "Start Bot"; enabled: !botIsRunningLike(); onClicked: backend.startBot() }
+                                            AppButton { text: botIsPaused() ? "Resume Bot" : "Pause Bot"; enabled: botControlState() === "running" || botIsPaused(); onClicked: botIsPaused() ? backend.resumeBot() : backend.pauseBot() }
+                                            DestructiveButton { text: "Stop Bot"; enabled: botIsRunningLike(); onClicked: backend.stopBot() }
                                         }
                                     }
                                 }
@@ -1991,6 +2012,16 @@ ApplicationWindow {
                                                 valueColor: hasCapability("advanced_live") ? root.gold : root.textMain
                                             }
                                             SummaryTile {
+                                                label: "Bot Control"
+                                                value: botIsPaused() ? "PAUSED" : botControlState() === "running" ? "RUNNING" : botControlState() === "stopping" ? "STOPPING" : "STOPPED"
+                                                valueColor: botIsPaused() ? root.warning : botControlState() === "running" ? root.success : root.textMain
+                                            }
+                                            SummaryTile {
+                                                label: "Role / Strategy"
+                                                value: (String(live.battle_role || "-") + " / " + String(live.battle_strategy || "-")).toUpperCase()
+                                                valueColor: root.info
+                                            }
+                                            SummaryTile {
                                                 label: "Battle Logic"
                                                 value: String(live.battle_logic || "-").toUpperCase()
                                                 valueColor: live.battle_fallback ? root.warning : root.textMain
@@ -2298,7 +2329,27 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Entity Confidence" } AppTextField { id: entityConf; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Hold Attack" } AppTextField { id: holdAttack; Layout.fillWidth: true } }
                                         }
-                                        RowLayout { spacing: 18; AppCheckBox { id: playAgain; text: "Play again on win" } AppCheckBox { id: useGadgets; text: "Use gadgets" } }
+                                        RowLayout {
+                                            spacing: 18
+                                            ColumnLayout {
+                                                Layout.fillWidth: true
+                                                spacing: 4
+                                                AppCheckBox {
+                                                    id: playAgain
+                                                    text: "Play again on win"
+                                                    ToolTip.visible: hovered
+                                                    ToolTip.text: "Only use Play Again after wins. Defeats return to lobby before queueing again for safer progress tracking."
+                                                }
+                                                Label {
+                                                    Layout.fillWidth: true
+                                                    text: "Only uses Play Again after wins. Defeats return to lobby before queueing again for safer progress tracking."
+                                                    color: root.textDim
+                                                    font.pixelSize: 12
+                                                    wrapMode: Text.WordWrap
+                                                }
+                                            }
+                                            AppCheckBox { id: useGadgets; text: "Use gadgets" }
+                                        }
                                         GridLayout {
                                             width: parent.width
                                             columns: 3

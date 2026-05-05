@@ -1,6 +1,8 @@
 import tempfile
 import unittest
 import os
+import contextlib
+import io
 from pathlib import Path
 
 from tools.updater import (
@@ -42,6 +44,7 @@ class UpdaterTest(unittest.TestCase):
             )
             (project / "updater.exe").write_text("old updater", encoding="utf-8")
             (project / "main.py").write_text("old", encoding="utf-8")
+            (project / "latest_brawler_data.json").write_text('[{"brawler": "darryl"}]', encoding="utf-8")
 
             (source / "cfg").mkdir(parents=True)
             (source / "cfg" / "brawl_stars_api.toml").write_text('api_token = ""\n', encoding="utf-8")
@@ -78,6 +81,37 @@ class UpdaterTest(unittest.TestCase):
             self.assertFalse((project / "adb.exe").exists())
             self.assertEqual((project / "main.py").read_text(encoding="utf-8"), "new")
             self.assertEqual((project / "new_file.py").read_text(encoding="utf-8"), "added")
+            self.assertIn('"darryl"', (project / "latest_brawler_data.json").read_text(encoding="utf-8"))
+
+    def test_update_config_preservation_logs_do_not_leak_api_key(self):
+        with workspace_tempdir() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            source = root / "source"
+            backup = root / "backup"
+
+            (project / "cfg").mkdir(parents=True)
+            (project / "cfg" / "general_config.toml").write_text(
+                'brawlstars_api_key = "SECRET_API_KEY"\ntarget_ips = 60\n',
+                encoding="utf-8",
+            )
+            (source / "cfg").mkdir(parents=True)
+            (source / "cfg" / "general_config.toml").write_text(
+                'brawlstars_api_key = ""\ntarget_ips = 30\nnew_default = true\n',
+                encoding="utf-8",
+            )
+
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                backup_preserved_files(project, backup)
+                copy_update_files(source, project)
+                restore_preserved_files(project, backup)
+
+            merged = (project / "cfg" / "general_config.toml").read_text(encoding="utf-8")
+            self.assertIn('brawlstars_api_key = "SECRET_API_KEY"', merged)
+            self.assertIn("target_ips = 60", merged)
+            self.assertIn("new_default = true", merged)
+            self.assertNotIn("SECRET_API_KEY", output.getvalue())
 
     def test_toml_merge_keeps_user_values_and_adds_new_defaults(self):
         merged = merge_toml_text(

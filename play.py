@@ -156,6 +156,14 @@ class Movement:
         self._analog_movement_radius = float(bot_config.get("analog_movement_radius", 145.0))
         self._analog_turn_threshold = float(bot_config.get("analog_turn_threshold", 12.0))
         self._committed_analog_reason = None
+        self._brawl_ball_opening_seconds = float(bot_config.get("brawl_ball_opening_seconds", 6.0))
+        self._brawl_ball_opening_hold_seconds = float(bot_config.get("brawl_ball_opening_hold_seconds", 1.4))
+        self._brawl_ball_opening_angle = None
+        self._brawl_ball_opening_angle_until = 0.0
+        self._brawl_ball_opening_move = ""
+        self._brawl_ball_opening_move_until = 0.0
+        self._last_brawl_ball_opening_log_at = 0.0
+        self._last_angle_smoothing_log_at = 0.0
         self.game_mode = bot_config["gamemode_type"]
         self.game_mode_name = str(bot_config.get("gamemode", "knockout") or "knockout").strip().lower()
         self.is_showdown = "showdown" in self.game_mode_name
@@ -839,6 +847,17 @@ class Movement:
         elif playstyle == "assassin":
             contact_ratio = 0.66
         return max(95, int(attack_range * contact_ratio))
+
+    def _playstyle_name(self, brawler):
+        brawler_key = self.resolve_brawler_name(brawler)
+        info = self.brawlers_info.get(brawler_key, {}) if hasattr(self, "brawlers_info") else {}
+        playstyle = str((info or {}).get("playstyle", "fighter") or "fighter").lower()
+        return playstyle if playstyle in PLAYSTYLE_CONFIG else "fighter"
+
+    def _set_battle_strategy(self, strategy):
+        state = self._battle_state() if hasattr(self, "_battle_state") else getattr(self, "_battle_runtime", None)
+        if isinstance(state, dict):
+            state["active_strategy"] = str(strategy or "battle")
 
     def _spend_ammo(self):
         """Track that we fired a shot."""
@@ -2593,6 +2612,8 @@ class Play(Movement):
             "last_movement": "",
             "last_attack_decision": "",
             "player_detection_status": "",
+            "active_role": "",
+            "active_strategy": "",
         }
 
     def _battle_state(self):
@@ -2627,6 +2648,8 @@ class Play(Movement):
             "fallback_active": logic_name == "GenericFallbackLogic",
             "last_movement": "",
             "last_attack_decision": "",
+            "active_role": self._playstyle_name(brawler_key),
+            "active_strategy": "match_start",
         })
         print("[MATCH] Entered match")
         print(f"[MATCH] current brawler resolved: {brawler_key or 'unknown'}")
@@ -2645,6 +2668,7 @@ class Play(Movement):
         state = self._battle_state()
         brawler_key = self.resolve_brawler_name(brawler)
         logic_name = self._select_battle_logic_name(brawler_key)
+        role = self._playstyle_name(brawler_key)
         if state.get("active_brawler") != brawler_key:
             print(f"[MATCH] current brawler resolved: {brawler_key or 'unknown'}")
         if state.get("active_logic_name") != logic_name:
@@ -2653,11 +2677,13 @@ class Play(Movement):
             "last_battle_tick_at": current_time,
             "active_brawler": brawler_key,
             "active_logic_name": logic_name,
+            "active_role": role,
             "fallback_active": logic_name == "GenericFallbackLogic" or bool(state.get("fallback_active")),
         })
         self._last_match_evidence_time = current_time
         if debug and current_time - self._last_battle_tick_log_at >= 2.0:
-            print(f"[BATTLE] tick brawler={brawler_key or 'unknown'} logic={logic_name}")
+            strategy = state.get("active_strategy") or "battle"
+            print(f"[BATTLE] tick brawler={brawler_key or 'unknown'} logic={logic_name} role={role} strategy={strategy}")
             self._last_battle_tick_log_at = current_time
 
     def _set_battle_skip_reason(self, reason, current_time=None, fallback=False):
@@ -2768,6 +2794,11 @@ class Play(Movement):
         self.time_since_holding_attack = None
         self._last_missing_player_recovery_at = 0.0
         self._missing_player_recovery_toggle = False
+        self._brawl_ball_opening_angle = None
+        self._brawl_ball_opening_angle_until = 0.0
+        self._brawl_ball_opening_move = ""
+        self._brawl_ball_opening_move_until = 0.0
+        self._last_brawl_ball_opening_log_at = 0.0
         self._pending_end_result = None
         self.start_match_runtime(brawler or self.current_brawler, current_time)
 
@@ -2842,13 +2873,33 @@ class Play(Movement):
         scale = max(float(controller_scale or min(width / 1920.0, height / 1080.0) or 1.0), 0.5)
         box_w = 95.0 * scale
         box_h = 120.0 * scale
-        cx = width * 0.5
-        cy = height * 0.58
+        reason_prefix = "using estimated self position"
+        if getattr(self, "_last_valid_player_bbox", None):
+            age = current_time - float(getattr(self, "_last_valid_player_seen_at", 0.0) or 0.0)
+            if age <= 4.0:
+                try:
+                    lx1, ly1, lx2, ly2 = [float(value) for value in self._last_valid_player_bbox[:4]]
+                    cx = (lx1 + lx2) / 2.0
+                    cy = (ly1 + ly2) / 2.0
+                    reason_prefix = f"using recent self position estimate age={age:.2f}s"
+                except Exception:
+                    cx = width * 0.5
+                    cy = height * 0.58
+            else:
+                cx = width * 0.5
+                cy = height * 0.58
+        elif self._is_brawl_ball_mode():
+            cx = width * 0.5
+            cy = height * 0.70
+            reason_prefix = "using brawlball spawn-side self estimate"
+        else:
+            cx = width * 0.5
+            cy = height * 0.58
         estimated = dict(data)
         estimated["player"] = [[cx - box_w / 2, cy - box_h / 2, cx + box_w / 2, cy + box_h / 2]]
         estimated["_player_source"] = "estimated"
         estimated["_player_detection_reason"] = (
-            "using estimated self position from screen center "
+            f"{reason_prefix} "
             f"(enemy={self._entity_count(data, 'enemy')}, teammate={self._entity_count(data, 'teammate')}, "
             f"missing_for={missing_for:.2f}s)"
         )
@@ -3026,13 +3077,77 @@ class Play(Movement):
             pass
         return None
 
-    def _is_brawl_ball_mode(self):
-        return self.game_mode_name in (
+    def _is_brawl_ball_mode(self, mode_name=None):
+        name = str(mode_name if mode_name is not None else getattr(self, "game_mode_name", getattr(self, "selected_gamemode", "")) or "").strip().lower()
+        return name in (
             "brawlball",
             "brawl_ball",
             "brawl ball",
             "brawll ball",
         )
+
+    def _brawl_ball_opening_elapsed(self, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        started_at = float((getattr(self, "_battle_runtime", {}) or {}).get("match_started_at", 0.0) or 0.0)
+        if started_at <= 0.0:
+            return None
+        return max(0.0, current_time - started_at)
+
+    def _get_brawl_ball_opening_angle(self, player_pos=None, current_time=None):
+        if not self._is_brawl_ball_mode():
+            return None
+        current_time = current_time if current_time is not None else time.time()
+        elapsed = self._brawl_ball_opening_elapsed(current_time)
+        if elapsed is None or elapsed > float(getattr(self, "_brawl_ball_opening_seconds", 0.0) or 0.0):
+            return None
+        width = max(1.0, float(getattr(self.window_controller, "width", brawl_stars_width) or brawl_stars_width))
+        height = max(1.0, float(getattr(self.window_controller, "height", brawl_stars_height) or brawl_stars_height))
+        if player_pos:
+            if getattr(self, "game_mode", 3) == 5:
+                target_x = width * (0.58 if player_pos[0] < width * 0.50 else 0.42)
+                target = (target_x, height * 0.50)
+            else:
+                target_y = height * (0.44 if player_pos[1] >= height * 0.50 else 0.56)
+                target = (width * 0.50, target_y)
+            angle = self.angle_from_direction(target[0] - player_pos[0], target[1] - player_pos[1])
+        else:
+            angle = 0.0 if getattr(self, "game_mode", 3) == 5 else 270.0
+        previous = getattr(self, "_brawl_ball_opening_angle", None)
+        hold_until = float(getattr(self, "_brawl_ball_opening_angle_until", 0.0) or 0.0)
+        if previous is not None and current_time < hold_until and self._angle_difference(angle, previous) > 35.0:
+            if current_time - getattr(self, "_last_angle_smoothing_log_at", 0.0) >= 1.0:
+                print(f"[BATTLE] suppressing jitter angle change old={float(previous):.0f} new={float(angle):.0f}")
+                self._last_angle_smoothing_log_at = current_time
+            angle = previous
+        else:
+            self._brawl_ball_opening_angle_until = current_time + float(getattr(self, "_brawl_ball_opening_hold_seconds", 1.4) or 1.4)
+        self._brawl_ball_opening_angle = float(angle) % 360.0
+        self._set_battle_strategy("brawlball_opening")
+        if current_time - getattr(self, "_last_brawl_ball_opening_log_at", 0.0) >= 1.5:
+            print(f"[BATTLE] brawlball opening route active angle={self._brawl_ball_opening_angle:.0f}")
+            print("[BATTLE] spawn escape route active")
+            self._last_brawl_ball_opening_log_at = current_time
+        return self._brawl_ball_opening_angle
+
+    def _get_brawl_ball_opening_move(self, player_pos=None, current_time=None):
+        angle = self._get_brawl_ball_opening_angle(player_pos, current_time)
+        if angle is None:
+            return ""
+        current_time = current_time if current_time is not None else time.time()
+        previous = str(getattr(self, "_brawl_ball_opening_move", "") or "")
+        hold_until = float(getattr(self, "_brawl_ball_opening_move_until", 0.0) or 0.0)
+        dx, dy = self.angle_to_vector(angle)
+        h_key = "D" if dx > 0.35 else "A" if dx < -0.35 else ""
+        v_key = "S" if dy > 0.35 else "W" if dy < -0.35 else ""
+        move = (v_key + h_key) or ("D" if getattr(self, "game_mode", 3) == 5 else "W")
+        if previous and current_time < hold_until and move != previous:
+            if current_time - getattr(self, "_last_angle_smoothing_log_at", 0.0) >= 1.0:
+                print(f"[BATTLE] movement jitter suppressed old={previous} new={move}")
+                self._last_angle_smoothing_log_at = current_time
+            return previous
+        self._brawl_ball_opening_move = move
+        self._brawl_ball_opening_move_until = current_time + float(getattr(self, "_brawl_ball_opening_hold_seconds", 1.4) or 1.4)
+        return move
 
     def _recover_missing_player_in_match(self, current_time):
         if not self._can_issue_live_input(current_time):
@@ -3048,7 +3163,11 @@ class Play(Movement):
             )
             if self._uses_analog_movement() and hasattr(self.window_controller, "move_joystick_angle"):
                 if self._is_brawl_ball_mode():
-                    angle = 270.0
+                    angle = self._get_brawl_ball_opening_angle(None, current_time)
+                    if angle is None:
+                        angle = 0.0 if self.game_mode == 5 else 270.0
+                    self.last_movement = float(angle)
+                    self.last_movement_time = current_time
                 else:
                     angle = 270.0 if self.game_mode == 3 else 0.0
                 self._dispatch_movement_angle(
@@ -3058,10 +3177,11 @@ class Play(Movement):
                     radius=self._analog_movement_radius * 0.72,
                 )
             else:
-                primary = "w" if self.game_mode == 3 else "d"
+                opening_move = self._get_brawl_ball_opening_move(None, current_time) if self._is_brawl_ball_mode() else ""
+                primary = opening_move.lower() if opening_move else ("w" if self.game_mode == 3 else "d")
                 self._dispatch_movement_keys(
-                    [primary],
-                    [key for key in ["w", "a", "s", "d"] if key != primary],
+                    list(primary),
+                    [key for key in ["w", "a", "s", "d"] if key not in primary],
                     detail=f"fallback key {primary}",
                     current_time=current_time,
                 )
@@ -3083,6 +3203,11 @@ class Play(Movement):
         # Track how long since we last saw an enemy
         last_enemy_seen = self.time_since_detections.get('enemy', 0)
         self._no_enemy_duration = now - last_enemy_seen
+
+        opening_move = self._get_brawl_ball_opening_move(player_position, now) if self._is_brawl_ball_mode() else ""
+        if opening_move:
+            self.last_decision_reason = f"BRAWL BALL OPENING: {opening_move}"
+            return opening_move
 
         # --- RECORD VISITED ZONE (for intelligent patrol) ---
         self._visited_zones.append((player_position[0], player_position[1], now))
@@ -4535,6 +4660,7 @@ class Play(Movement):
         # --- LOAD PLAYSTYLE CONFIG ---
         playstyle = brawler_info.get('playstyle', 'fighter')
         style = PLAYSTYLE_CONFIG.get(playstyle, PLAYSTYLE_CONFIG["fighter"])
+        self._battle_state()["active_role"] = self._playstyle_name(brawler)
         range_mult = style["range_mult"]
         hp_retreat_threshold = style["hp_retreat"]
         approach_factor = style["approach_factor"]
@@ -4596,6 +4722,7 @@ class Play(Movement):
 
         if not self.is_there_enemy(enemy_data):
             self._has_enemy_target = False
+            self._set_battle_strategy("brawlball_opening" if self._get_brawl_ball_opening_move(player_pos, time.time()) else "no_target")
             # TARGETED bush-check: fire TOWARD the nearest bush within attack range
             # Only do this if we RECENTLY saw an enemy (within 2s), have ammo, and didn't just kill them
             now = time.time()
@@ -4626,6 +4753,7 @@ class Play(Movement):
 
         # --- THREAT-SCORED TARGETING (picks best target, not just closest) ---
         self._has_enemy_target = True
+        self._set_battle_strategy("brawlball_duel" if self._is_brawl_ball_mode() else "duel")
         target_result = self.find_best_target(enemy_data, player_pos, walls, "attack", attack_range)
         enemy_coords, enemy_distance = target_result
         if enemy_coords is None:

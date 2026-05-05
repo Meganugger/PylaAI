@@ -103,6 +103,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
+            if hasattr(self.Stage_manager, "set_control_events"):
+                self.Stage_manager.set_control_events(self._stop_event, self._pause_event)
             # Expose for external access (e.g., brawler scanner)
             import sys
             main_module = sys.modules.get('__main__')
@@ -215,12 +217,22 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._live_stats_push_interval = 0.25
             self._roster_push_interval = 2.0
             self._last_battle_watchdog_log_at = 0.0
+            self._stop_logged = False
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
             self.Stage_manager.Trophy_observer.win_streak = self.Stage_manager._coerce_int(active.get('win_streak'), 0)
             self.Stage_manager.Trophy_observer.current_trophies = self.Stage_manager._coerce_int(active.get('trophies'), 0)
             self.Stage_manager.Trophy_observer.current_wins = self.Stage_manager._coerce_int(active.get('wins'), 0)
+
+        def _release_active_inputs(self, reason=""):
+            try:
+                if hasattr(self.window_controller, "release_all_inputs"):
+                    self.window_controller.release_all_inputs(reason)
+                else:
+                    self.window_controller.keys_up(list("wasd"))
+            except Exception as exc:
+                print(f"[BOT][WARN] could not release active inputs: {exc}")
 
         @staticmethod
         def _start_easyocr_warmup():
@@ -792,6 +804,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         session_matches = current_match_counter
                     active_dashboard.update_live(
                         start_time=self.start_time,
+                        bot_control_state=(
+                            "stopping" if self._stop_event.is_set()
+                            else "paused" if self._pause_event.is_set()
+                            else "running"
+                        ),
+                        bot_paused=bool(self._pause_event.is_set()),
                         ips=self.current_ips,
                         target_ips=self.target_ips,
                         state=self.state,
@@ -836,6 +854,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         farm_mode=str(getattr(self.Stage_manager, "smart_trophy_farm", False)).lower() in ("yes", "true", "1"),
                         farm_remaining=len(self.Stage_manager.brawlers_pick_data),
                         battle_logic=battle_state.get("active_logic_name", ""),
+                        battle_role=battle_state.get("active_role", ""),
+                        battle_strategy=battle_state.get("active_strategy", ""),
                         battle_fallback=bool(battle_state.get("fallback_active", False)),
                         battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
                         battle_last_action=battle_state.get("last_action_at", 0.0),
@@ -855,18 +875,23 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             while True:
                 # stop / Pause controls
                 if self._stop_event.is_set():
+                    if not self._stop_logged:
+                        print("[BOT] stop requested")
+                        self._stop_logged = True
                     cprint("Bot stopped by user", "#FF4444")
-                    self.window_controller.keys_up(list("wasd"))
+                    self._release_active_inputs("bot stopping")
                     break
 
                 if self._pause_event.is_set():
                     if not self._was_paused:
-                        self.window_controller.keys_up(list("wasd"))
+                        print("[BOT] paused; releasing active inputs")
+                        self._release_active_inputs("pause requested")
                         cprint("Bot paused (F8 or button)", "#FFD700")
                         self._was_paused = True
-                    time.sleep(0.3)
+                    time.sleep(0.05)
                     continue
                 elif self._was_paused:
+                    print("[BOT] resumed")
                     cprint("Bot resumed", "#00DC64")
                     self._was_paused = False
 
@@ -1245,6 +1270,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                         battle_state = {}
                                 _active_dashboard.update_live(
                                     start_time=self.start_time,
+                                    bot_control_state=(
+                                        "stopping" if self._stop_event.is_set()
+                                        else "paused" if self._pause_event.is_set()
+                                        else "running"
+                                    ),
+                                    bot_paused=bool(self._pause_event.is_set()),
                                     ips=self.current_ips,
                                     state=self.state or 'starting',
                                     brawler=bname,
@@ -1319,6 +1350,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                                     rl_damage_taken=int(rl_summary.get('damage_taken', 0) or 0),
                                     rl_hit_rate=float(rl_summary.get('hit_rate', -1) or -1),
                                     battle_logic=battle_state.get("active_logic_name", ""),
+                                    battle_role=battle_state.get("active_role", ""),
+                                    battle_strategy=battle_state.get("active_strategy", ""),
                                     battle_fallback=bool(battle_state.get("fallback_active", False)),
                                     battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
                                     battle_last_action=battle_state.get("last_action_at", 0.0),
@@ -1412,7 +1445,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
     # clean shutdown
     cprint("Cleaning up...", "#888888")
     try:
-        main.window_controller.keys_up(list("wasd"))
+        main._release_active_inputs("bot stopping")
     except Exception:
         pass
     try:
@@ -1420,6 +1453,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
         main.window_controller.close()
     except Exception:
         pass
+    print("[BOT] stopped")
     cprint("Bot shutdown complete.", "#00DC64")
 
 

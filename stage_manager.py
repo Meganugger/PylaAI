@@ -220,6 +220,38 @@ class StageManager:
         self.push_all_needs_selection = False
         self._last_push_all_refresh_at = 0.0
         self._push_all_refresh_interval = float(self.bot_config.get("push_all_api_refresh_interval", 8.0))
+        self._stop_event = None
+        self._pause_event = None
+        self._last_control_log_at = 0.0
+
+    def set_control_events(self, stop_event=None, pause_event=None):
+        self._stop_event = stop_event
+        self._pause_event = pause_event
+
+    def _stop_requested(self):
+        stop_event = getattr(self, "_stop_event", None)
+        return bool(stop_event is not None and stop_event.is_set())
+
+    def _pause_requested(self):
+        pause_event = getattr(self, "_pause_event", None)
+        return bool(pause_event is not None and pause_event.is_set())
+
+    def _automation_suspended(self, context="automation"):
+        if not (self._stop_requested() or self._pause_requested()):
+            return False
+        now = time.time()
+        state = "stop" if self._stop_requested() else "pause"
+        if now - getattr(self, "_last_control_log_at", 0.0) >= 0.75:
+            print(f"[BOT] {state} requested; suppressing {context}")
+            self._last_control_log_at = now
+        try:
+            if hasattr(self.window_controller, "release_all_inputs"):
+                self.window_controller.release_all_inputs(f"{state} requested")
+            else:
+                self.window_controller.keys_up(list("wasd"))
+        except Exception as exc:
+            print(f"[BOT][WARN] could not release inputs while suppressing {context}: {exc}")
+        return True
 
     def _is_easyocr_ready(self):
         try:
@@ -476,6 +508,9 @@ class StageManager:
         return True
 
     def _try_press_lobby_start(self, prefix="[RESULT]"):
+        if self._automation_suspended("lobby automation"):
+            print("[BOT] stopping lobby automation" if self._stop_requested() else "[BOT] lobby automation paused")
+            return False
         now = time.time()
         self._note_lobby_visible(now)
         lobby_visible_for = now - self._lobby_visible_since
@@ -507,6 +542,8 @@ class StageManager:
             self._delay_lobby_start(1.0, "waiting for confirmed lobby play button")
             return False
 
+        if self._automation_suspended("lobby start press"):
+            return False
         self.window_controller.keys_up(list("wasd"))
         self.window_controller.press_key("Q")
         self._last_start_press_at = now
@@ -1481,7 +1518,7 @@ class StageManager:
 
         if value >= push_current_brawler_till:
             # smart Trophy Farm: use intelligent rotation
-            if self.smart_trophy_farm:
+            if getattr(self, "smart_trophy_farm", False):
                 has_next = self._pick_next_farm_brawler()
                 if not has_next:
                     print("[FARM] All brawlers reached target! Bot stopping.")
@@ -1861,7 +1898,7 @@ class StageManager:
                             self.window_controller.keys_up(list("wasd"))
                             self.window_controller.close()
                             sys.exit(0)
-                        elif self.smart_trophy_farm:
+                        elif getattr(self, "smart_trophy_farm", False):
                             # Rotate NOW so the next lobby visit just selects the right brawler
                             # instead of playing one extra match above the target.
                             print(f"[FARM] Target reached in end_game — rotating brawler immediately.")
@@ -1873,7 +1910,7 @@ class StageManager:
                                 save_brawler_data(self.brawlers_pick_data)
                                 self._pending_brawler_switch = True
                                 print(f"[FARM] Queued switch to {self.brawlers_pick_data[0]['brawler'].title()} for next lobby.")
-                    elif (self.smart_trophy_farm and self.dynamic_rotation_enabled
+                    elif (getattr(self, "smart_trophy_farm", False) and getattr(self, "dynamic_rotation_enabled", False)
                             and len(self.brawlers_pick_data) > 1):
                         # Dynamic rotation: periodically switch to the brawler with the
                         # fewest trophies so the farm stays balanced and dynamic.
@@ -2009,6 +2046,9 @@ class StageManager:
             print(f"[VERIFY] Lobby trophy verification error: {e}")
 
     def end_game(self, frame=None, known_result=None):
+        if self._automation_suspended("post-match automation"):
+            print("[BOT] stopping farm queue" if self._stop_requested() else "[BOT] post-match automation paused")
+            return
         screenshot = frame if frame is not None else self.window_controller.screenshot()
         now = time.time()
         known_result_is_valid = known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}
@@ -2118,7 +2158,7 @@ class StageManager:
                         self.window_controller.keys_up(list("wasd"))
                         self.window_controller.close()
                         sys.exit(0)
-                    elif self.smart_trophy_farm:
+                    elif getattr(self, "smart_trophy_farm", False):
                         print("[FARM] Target reached in end_game - rotating brawler immediately.")
                         has_next = self._pick_next_farm_brawler()
                         if has_next:
@@ -2128,7 +2168,7 @@ class StageManager:
                             save_brawler_data(self.brawlers_pick_data)
                             self._pending_brawler_switch = True
                             print(f"[FARM] Queued switch to {self.brawlers_pick_data[0]['brawler'].title()} for next lobby.")
-                elif (self.smart_trophy_farm and self.dynamic_rotation_enabled
+                elif (getattr(self, "smart_trophy_farm", False) and getattr(self, "dynamic_rotation_enabled", False)
                         and len(self.brawlers_pick_data) > 1):
                     mc = self.Trophy_observer.match_counter
                     if mc > 0 and mc % self.dynamic_rotation_every == 0:
@@ -2195,6 +2235,8 @@ class StageManager:
                 return
 
             if should_play_again:
+                if self._automation_suspended("play again"):
+                    return
                 self.window_controller.press_play_again()
                 self._last_start_press_at = now
                 self._finish_play_again_prediction_sync()
@@ -2202,9 +2244,16 @@ class StageManager:
                     self._end_transition_hold_match_until or (now + self._post_play_again_match_hold_seconds),
                     now + self._post_play_again_match_hold_seconds,
                 )
-                print("[PLAY-AGAIN] Pressed R for Play Again")
+                print("[RESULT] play-again-on-win enabled; victory -> pressing Play Again")
             else:
+                if self._automation_suspended("post-match continue"):
+                    return
                 self.window_controller.press_key("Q")
+                if self.play_again_on_win and play_again_result and play_again_result != "victory":
+                    result_label = str(play_again_result or "non-victory")
+                    print(f"[RESULT] play-again-on-win enabled; {result_label} -> returning to lobby")
+                else:
+                    print("[RESULT] play-again disabled; returning to lobby")
                 if debug:
                     print("Game has ended, pressing Q")
             self._end_transition_continue_sent = True
@@ -2292,6 +2341,8 @@ class StageManager:
         self.window_controller.press_key("Q")
 
     def do_state(self, state, data=None):
+        if self._automation_suspended(f"state '{state}'"):
+            return
         known_result = None
         if isinstance(state, str) and state.startswith("end_"):
             known_result = state.split("_", 1)[1]

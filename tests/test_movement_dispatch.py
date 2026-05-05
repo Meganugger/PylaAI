@@ -41,6 +41,8 @@ def movement_controller(fail=False):
     wc.joystick_repress_seconds = 1.8
     wc.joystick_down_move_delay = 0.0
     wc.input_debug = False
+    wc.last_attack_pos = (None, None)
+    wc.attack_pointer_down = False
     return wc
 
 
@@ -70,6 +72,19 @@ class MovementDispatchTests(unittest.TestCase):
         self.assertFalse(result["ok"])
         self.assertTrue(result["attempted"])
         self.assertIn("touch backend offline", result["error"])
+
+    def test_release_all_inputs_releases_movement_and_held_attack_pointer(self):
+        wc = movement_controller()
+        wc.move_joystick_angle(270, radius=150)
+        wc.last_attack_pos = (1600.0, 870.0)
+        wc.attack_pointer_down = True
+
+        wc.release_all_inputs("test")
+
+        self.assertFalse(wc.are_we_moving)
+        self.assertFalse(wc.attack_pointer_down)
+        self.assertEqual(wc.scrcpy_client.control.calls[-2], (220, 720, scrcpy.ACTION_UP, 1))
+        self.assertEqual(wc.scrcpy_client.control.calls[-1], (1600, 870, scrcpy.ACTION_UP, 2))
 
 
 if __name__ == "__main__":
