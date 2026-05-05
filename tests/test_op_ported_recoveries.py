@@ -138,6 +138,52 @@ class OPPortedRecoveryTests(unittest.TestCase):
         self.assertEqual(manager.window_controller.pressed, ["R"])
         self.assertFalse(manager._awaiting_lobby_result_sync)
 
+    def make_end_manager(self, play_again_on_win):
+        manager = object.__new__(StageManager)
+        manager.window_controller = DummyWindow()
+        manager.brawlers_pick_data = [{"brawler": "darryl", "trophies": 463, "wins": 0, "win_streak": 2}]
+        manager.Trophy_observer = DummyTrophyObserver(475)
+        manager.play_again_on_win = play_again_on_win
+        manager._awaiting_lobby_result_sync = True
+        manager._result_applied_for_active_match = True
+        manager._match_in_progress = False
+        manager._pending_verified_result = None
+        manager._api_lobby_sync_attempts = 0
+        manager._last_api_lobby_sync_attempt_at = 0.0
+        manager._lobby_sync_started_at = 0.0
+        manager._end_transition_started_at = 0.0
+        manager._end_transition_last_action_at = 0.0
+        manager._end_transition_last_result = None
+        manager._end_transition_hold_match_until = 0.0
+        manager._end_transition_action_interval = 0.75
+        manager._end_transition_hold_seconds = 10.0
+        manager._post_play_again_match_hold_seconds = 2.0
+        manager._end_transition_timeout = 12.0
+        manager._end_transition_continue_sent = False
+        manager._end_transition_continue_sent_at = 0.0
+        manager._end_transition_continue_result = None
+        manager._last_start_press_at = 0.0
+        manager._commit_active_brawler_progress = lambda queue_milestone=True: True
+        return manager
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_play_again_on_win_enabled_returns_to_lobby_after_defeat(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=True)
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="defeat")
+
+        self.assertEqual(manager.window_controller.pressed, ["Q"])
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_play_again_disabled_returns_to_lobby_after_victory(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=False)
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="victory")
+
+        self.assertEqual(manager.window_controller.pressed, ["Q"])
+
     def test_committed_result_does_not_need_post_match_ocr_warmup(self):
         manager = object.__new__(StageManager)
         manager._awaiting_lobby_result_sync = True
