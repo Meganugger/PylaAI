@@ -67,6 +67,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self.Time_management = TimeManagement()
             self.lobby_automator = LobbyAutomation(self.window_controller)
             self.Stage_manager = StageManager(data, self.lobby_automator, self.window_controller)
+            if hasattr(self.Stage_manager, "set_control_events"):
+                self.Stage_manager.set_control_events(self._stop_event, self._pause_event)
             _set_active_stage_manager_instance(self.Stage_manager)
             self._reward_context_states = {
                 "reward_claim",
@@ -147,12 +149,37 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             self._live_stats_push_interval = 0.25
             self._roster_push_interval = 2.0
             self._last_battle_watchdog_log_at = 0.0
+            self._pause_logged = False
+            self._stop_logged = False
 
         def initialize_stage_manager(self):
             active = data[0] if data else {}
             self.Stage_manager.Trophy_observer.win_streak = self.Stage_manager._coerce_int(active.get('win_streak'), 0)
             self.Stage_manager.Trophy_observer.current_trophies = self.Stage_manager._coerce_int(active.get('trophies'), 0)
             self.Stage_manager.Trophy_observer.current_wins = self.Stage_manager._coerce_int(active.get('wins'), 0)
+
+        def _release_active_inputs(self, reason=""):
+            try:
+                if hasattr(self.window_controller, "release_all_inputs"):
+                    self.window_controller.release_all_inputs(reason)
+                else:
+                    self.window_controller.keys_up(list("wasd"))
+            except Exception as exc:
+                print(f"[BOT][WARN] could not release active inputs: {exc}")
+
+        def _wait_while_paused(self):
+            if not self._pause_logged:
+                print("[BOT] paused; releasing active inputs")
+                self._pause_logged = True
+            self._release_active_inputs("pause requested")
+            self._push_runtime_dashboard(force=True)
+            while self._pause_event.is_set() and not self._stop_event.is_set():
+                time.sleep(0.05)
+            if self._stop_event.is_set():
+                print("[BOT] stop requested while paused; stopping fully")
+                return
+            self._pause_logged = False
+            print("[BOT] resumed")
 
         @staticmethod
         def _start_easyocr_warmup():
@@ -384,6 +411,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             return True
 
         def manage_time_tasks(self, frame):
+            if self._stop_event.is_set() or self._pause_event.is_set():
+                return
             now = time.time()
             runtime_state = str(getattr(self.Play, "_runtime_state", "") or "")
             post_match_context = self._post_match_context_active(now, runtime_state)
@@ -507,6 +536,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         self.restart_brawl_stars()
 
             if self.Time_management.idle_check():
+                if self._stop_event.is_set() or self._pause_event.is_set():
+                    return
                 #print("check for idle!")
                 self.lobby_automator.check_for_idle(frame)
 
@@ -674,6 +705,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                     rl_has_brawler_params = adaptive_live.get("has_brawler_params", False)
                     active_dashboard.update_live(
                         start_time=self.start_time,
+                        bot_control_state=(
+                            "stopping" if self._stop_event.is_set()
+                            else "paused" if self._pause_event.is_set()
+                            else "running"
+                        ),
+                        bot_paused=bool(self._pause_event.is_set()),
                         ips=self.current_ips,
                         target_ips=self.target_ips,
                         state=self.current_state,
@@ -738,6 +775,8 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                         adaptive_brawler=adaptive_live.get("brawler", ""),
                         adaptive_brawler_matches=adaptive_live.get("brawler_matches", 0),
                         battle_logic=battle_state.get("active_logic_name", ""),
+                        battle_role=battle_state.get("active_role", ""),
+                        battle_strategy=battle_state.get("active_strategy", ""),
                         battle_fallback=bool(battle_state.get("fallback_active", False)),
                         battle_last_tick=battle_state.get("last_battle_tick_at", 0.0),
                         battle_last_action=battle_state.get("last_action_at", 0.0),
@@ -755,13 +794,12 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
             c = 0
             while True:
                 if self._stop_event.is_set():
+                    if not self._stop_logged:
+                        print("[BOT] stop requested")
+                        self._stop_logged = True
                     break
                 if self._pause_event.is_set():
-                    try:
-                        self.window_controller.keys_up(list("wasd"))
-                    except Exception:
-                        pass
-                    time.sleep(0.1)
+                    self._wait_while_paused()
                     continue
                 loop_started_at = time.perf_counter()
                 if self.max_ips:
@@ -953,13 +991,14 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 record_timing("runtime_loop", time.perf_counter() - loop_started_at, print_every=120)
 
             try:
-                self.window_controller.keys_up(list("wasd"))
+                self._release_active_inputs("bot stopping")
             except Exception:
                 pass
             try:
                 self.window_controller.close()
             except Exception:
                 pass
+            print("[BOT] stopped")
             _set_active_dashboard_instance(None)
             _set_active_stage_manager_instance(None)
 
