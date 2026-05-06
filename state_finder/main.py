@@ -323,9 +323,11 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "brawler_selection"
     if is_in_brawl_pass(image) or is_in_star_road(image):
         return "shop"
-    # Star drops are dismissed by the normal post-match continue flow. Surfacing
-    # them as a runtime state caused false positives during matches and lobby
-    # transitions.
+    # Star drops are surfaced only during explicit post-match reward probing.
+    # Surfacing them during normal match scans caused false positives, but
+    # hiding them during post-match recovery can deadlock the result flow.
+    if allow_reward_ocr and is_in_star_drop(image):
+        return "star_drop"
     if allow_reward_ocr and is_in_trophy_reward(image):
         return "trophy_reward"
     if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
@@ -461,10 +463,20 @@ def is_in_star_road(image):
 
 
 def is_in_star_drop(image):
+    return get_star_drop_type(image) is not None
+
+
+def get_star_drop_type(image):
+    """Return 'angelic', 'demonic', or 'standard' if a Starr Drop is detected."""
     for image_filename in images_with_star_drop:
         if is_template_in_region(image, path + image_filename, region_data['star_drop']):
-            return True
-    return False
+            lowered = image_filename.lower()
+            if "angelic" in lowered:
+                return "angelic"
+            if "demonic" in lowered:
+                return "demonic"
+            return "standard"
+    return None
 
 
 def get_state(screenshot, allow_reward_ocr=False):
