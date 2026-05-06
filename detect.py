@@ -1,5 +1,7 @@
 import ctypes.util
 import os
+from pathlib import Path
+import site
 import sys
 import time
 
@@ -17,25 +19,160 @@ configure_opencv_threads(cv2)
 
 _ONNX_PROVIDER_STATUS_LOGGED = False
 _CUDA_DEPENDENCY_WARNED = False
+_CUDA_MISSING_NVRTC_INFO_LOGGED = False
+_CUDA_PRELOAD_WARNED = False
+_CUDA_PRELOAD_LOGGED = False
+_CUDA_FAILURE_WARNED = False
 _CUDA_DEPENDENCY_NAMES = ("nvrtc64_120_0.dll",)
+_CUDA_DLL_DIRS_ADDED = set()
+_CUDA_DLL_DIRECTORY_HANDLES = []
+_NVIDIA_CUDA_WHEEL_PARTS = (
+    "cuda_runtime",
+    "cublas",
+    "cuda_nvrtc",
+    "cufft",
+    "cudnn",
+)
+
+
+def _config_truthy(key, default=False):
+    try:
+        value = load_toml_as_dict("cfg/general_config.toml").get(key, default)
+    except Exception:
+        value = default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in ("1", "yes", "true", "on")
+
+
+def _provider_name(provider):
+    if isinstance(provider, (tuple, list)) and provider:
+        return str(provider[0])
+    return str(provider)
+
+
+def cuda_missing_nvrtc_allowed():
+    return _config_truthy("onnx_allow_cuda_with_missing_nvrtc", True)
+
+
+def discover_nvidia_cuda_dll_directories(site_roots=None):
+    if os.name != "nt":
+        return []
+
+    roots = []
+    if site_roots is not None:
+        roots = [Path(root) for root in site_roots if root]
+    else:
+        try:
+            roots.extend(Path(root) for root in site.getsitepackages())
+        except Exception:
+            pass
+        try:
+            roots.append(Path(site.getusersitepackages()))
+        except Exception:
+            pass
+        roots.append(Path(sys.prefix) / "Lib" / "site-packages")
+
+    found = []
+    seen = set()
+    for root in roots:
+        nvidia_root = root / "nvidia"
+        if not nvidia_root.exists():
+            continue
+
+        candidates = []
+        for package_part in _NVIDIA_CUDA_WHEEL_PARTS:
+            package_root = nvidia_root / package_part
+            candidates.extend(
+                [
+                    package_root / "bin",
+                    package_root / "lib",
+                    package_root / "lib" / "x64",
+                ]
+            )
+        try:
+            candidates.extend(nvidia_root.glob("**/bin"))
+            candidates.extend(nvidia_root.glob("**/lib"))
+        except Exception:
+            pass
+
+        for candidate in candidates:
+            try:
+                resolved = candidate.resolve()
+            except Exception:
+                continue
+            key = str(resolved).lower()
+            if key in seen or not resolved.is_dir():
+                continue
+            try:
+                if not any(resolved.glob("*.dll")):
+                    continue
+            except Exception:
+                continue
+            seen.add(key)
+            found.append(str(resolved))
+
+    return found
+
+
+def add_cuda_dll_directories():
+    global _CUDA_PRELOAD_WARNED
+    if os.name != "nt":
+        return []
+
+    added = []
+    for directory in discover_nvidia_cuda_dll_directories():
+        key = directory.lower()
+        if key in _CUDA_DLL_DIRS_ADDED:
+            continue
+        try:
+            if hasattr(os, "add_dll_directory"):
+                handle = os.add_dll_directory(directory)
+                _CUDA_DLL_DIRECTORY_HANDLES.append(handle)
+            current_path_parts = os.environ.get("PATH", "").split(os.pathsep)
+            if key not in {part.lower() for part in current_path_parts if part}:
+                os.environ["PATH"] = directory + os.pathsep + os.environ.get("PATH", "")
+            _CUDA_DLL_DIRS_ADDED.add(key)
+            added.append(directory)
+            print(f"[ONNX] added CUDA DLL directory: {directory}")
+        except Exception as exc:
+            if not _CUDA_PRELOAD_WARNED:
+                print(f"[ONNX][WARN] CUDA DLL directory preload failed for {directory}: {exc}")
+                _CUDA_PRELOAD_WARNED = True
+
+    return added
 
 
 def preload_onnxruntime_gpu_dlls():
+    global _CUDA_PRELOAD_LOGGED, _CUDA_PRELOAD_WARNED
+    add_cuda_dll_directories()
+
     if not hasattr(ort, "preload_dlls"):
         return
 
     try:
         ort.preload_dlls(cuda=True, cudnn=True, msvc=True, directory="")
+        if not _CUDA_PRELOAD_LOGGED:
+            print("[ONNX] preloaded CUDA DLLs via onnxruntime.preload_dlls")
+            _CUDA_PRELOAD_LOGGED = True
         return
     except TypeError:
         pass
-    except Exception:
+    except Exception as exc:
+        if not _CUDA_PRELOAD_WARNED:
+            print(f"[ONNX][WARN] CUDA DLL preload unavailable: {exc}")
+            _CUDA_PRELOAD_WARNED = True
         return
 
     try:
-        ort.preload_dlls(directory="")
-    except Exception:
-        pass
+        ort.preload_dlls(cuda=True, cudnn=True, msvc=True)
+        if not _CUDA_PRELOAD_LOGGED:
+            print("[ONNX] preloaded CUDA DLLs via onnxruntime.preload_dlls")
+            _CUDA_PRELOAD_LOGGED = True
+    except Exception as exc:
+        if not _CUDA_PRELOAD_WARNED:
+            print(f"[ONNX][WARN] CUDA DLL preload unavailable: {exc}")
+            _CUDA_PRELOAD_WARNED = True
 
 
 def _dll_exists_on_path(dll_name):
@@ -64,14 +201,14 @@ def get_missing_cuda_runtime_dependencies():
     return [dll for dll in _CUDA_DEPENDENCY_NAMES if not _dll_exists_on_path(dll)]
 
 
-def build_onnx_providers(preferred_device, preferred_backend, available_providers=None):
-    """Build a provider list without selecting CUDA when its runtime DLLs are missing."""
+def build_onnx_provider_candidates(preferred_device, preferred_backend, available_providers=None):
+    """Return ordered provider attempts. CUDA is verified by session creation, not PATH scans."""
     preferred_device = str(preferred_device or "auto").lower()
     preferred_backend = str(preferred_backend or "auto").lower()
     available = list(available_providers if available_providers is not None else ort.get_available_providers())
-    providers = ["CPUExecutionProvider"]
-    selected = "CPUExecutionProvider"
+    candidates = [["CPUExecutionProvider"]]
     fallback_reason = ""
+    missing_cuda_deps = []
 
     if preferred_device in ("gpu", "auto"):
         if preferred_backend == "directml":
@@ -82,37 +219,72 @@ def build_onnx_providers(preferred_device, preferred_backend, available_provider
             provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
 
         missing_cuda_deps = get_missing_cuda_runtime_dependencies()
+        provider_candidates = []
         for provider_name in provider_order:
             if provider_name not in available:
                 continue
-            if provider_name == "CUDAExecutionProvider" and missing_cuda_deps:
+            if (
+                provider_name == "CUDAExecutionProvider"
+                and missing_cuda_deps
+                and not cuda_missing_nvrtc_allowed()
+            ):
                 fallback_reason = (
-                    f"CUDA runtime dependency {', '.join(missing_cuda_deps)} missing"
+                    f"CUDA runtime dependency {', '.join(missing_cuda_deps)} missing "
+                    "and onnx_allow_cuda_with_missing_nvrtc=false"
                 )
                 continue
-            selected = provider_name
-            providers = [provider_name, "CPUExecutionProvider"]
-            break
+            provider_chain = [provider_name]
+            if provider_name != "CPUExecutionProvider" and "CPUExecutionProvider" in available:
+                provider_chain.append("CPUExecutionProvider")
+            provider_candidates.append(provider_chain)
 
-        if selected == "CPUExecutionProvider" and "CUDAExecutionProvider" in available:
-            missing_cuda_deps = get_missing_cuda_runtime_dependencies()
-            if missing_cuda_deps:
-                fallback_reason = (
-                    f"CUDA runtime dependency {', '.join(missing_cuda_deps)} missing"
-                )
+        if provider_candidates:
+            candidates = provider_candidates
+            if "CPUExecutionProvider" in available and candidates[-1][0] != "CPUExecutionProvider":
+                candidates.append(["CPUExecutionProvider"])
 
-    return providers, selected, fallback_reason, available
+    selected = _provider_name(candidates[0][0])
+    return candidates, selected, fallback_reason, available, missing_cuda_deps
 
 
-def log_onnx_provider_status(model_path, selected_provider, available_providers=None, fallback_reason=""):
-    global _ONNX_PROVIDER_STATUS_LOGGED, _CUDA_DEPENDENCY_WARNED
+def build_onnx_providers(preferred_device, preferred_backend, available_providers=None):
+    candidates, selected, fallback_reason, available, _missing = build_onnx_provider_candidates(
+        preferred_device,
+        preferred_backend,
+        available_providers=available_providers,
+    )
+    return candidates[0], selected, fallback_reason, available
+
+
+
+def log_onnx_provider_status(
+    model_path,
+    selected_provider,
+    available_providers=None,
+    fallback_reason="",
+    preferred_backend="",
+    missing_cuda_deps=None,
+):
+    global _ONNX_PROVIDER_STATUS_LOGGED, _CUDA_DEPENDENCY_WARNED, _CUDA_MISSING_NVRTC_INFO_LOGGED
     available = available_providers if available_providers is not None else ort.get_available_providers()
     model_name = os.path.basename(model_path)
     if fallback_reason and not _CUDA_DEPENDENCY_WARNED:
         print(f"[ONNX][WARN] {fallback_reason}; falling back to {selected_provider}.")
-        print("Install a matching CUDA runtime or switch preferred_backend to directml/cpu to remove this warning.")
         _CUDA_DEPENDENCY_WARNED = True
+    if (
+        selected_provider == "CUDAExecutionProvider"
+        and missing_cuda_deps
+        and cuda_missing_nvrtc_allowed()
+        and not _CUDA_MISSING_NVRTC_INFO_LOGGED
+    ):
+        print(
+            "[ONNX][INFO] nvrtc64_120_0.dll was not found by PATH scan, "
+            "but CUDA session is active; continuing with CUDA."
+        )
+        _CUDA_MISSING_NVRTC_INFO_LOGGED = True
     if not _ONNX_PROVIDER_STATUS_LOGGED:
+        if preferred_backend:
+            print(f"[ONNX] preferred backend: {preferred_backend}")
         if selected_provider == "CUDAExecutionProvider":
             print("[ONNX] CUDA provider active")
         elif selected_provider == "DmlExecutionProvider":
@@ -133,13 +305,29 @@ class Detect:
         self.ignore_classes = ignore_classes if ignore_classes else []
         self.input_size = input_size
         self.model, self.device = self.load_model()
+        self._configure_model_io()
+        try:
+            self._warmup()
+        except Exception as exc:
+            global _CUDA_FAILURE_WARNED
+            if self.device != "CUDAExecutionProvider":
+                raise
+            if not _CUDA_FAILURE_WARNED:
+                print(f"[ONNX][WARN] CUDA provider failed during session creation/warmup; falling back: {exc}")
+                _CUDA_FAILURE_WARNED = True
+            self.model, self.device = self.load_model(
+                skip_providers={"CUDAExecutionProvider"},
+            )
+            self._configure_model_io()
+            self._warmup()
+
+    def _configure_model_io(self):
         self.input_name = self.model.get_inputs()[0].name
         self.output_names = [output.name for output in self.model.get_outputs()]
         self._padded_bgr = None
         self._input_blob = None
         self._normalization_scale = np.float32(1.0 / 255.0)
         self._use_iobinding = self.device == "CUDAExecutionProvider" and hasattr(self.model, "io_binding")
-        self._warmup()
 
     def _allocate_preprocess_buffers(self):
         padded_shape = (self.input_size[0], self.input_size[1], 3)
@@ -164,32 +352,63 @@ class Detect:
             else:
                 self.model.run(self.output_names, {self.input_name: self._input_blob})
 
-    def load_model(self):
+    def load_model(self, skip_providers=None, previous_error=None):
+        global _CUDA_FAILURE_WARNED
+        skip_providers = set(skip_providers or ())
         available_providers = ort.get_available_providers()
         if (
             self.preferred_device in ("gpu", "auto")
             and "CUDAExecutionProvider" in available_providers
-            and not get_missing_cuda_runtime_dependencies()
         ):
             preload_onnxruntime_gpu_dlls()
-        providers, selected_provider, fallback_reason, available_providers = build_onnx_providers(
+        candidates, selected_provider, fallback_reason, available_providers, missing_cuda_deps = build_onnx_provider_candidates(
             self.preferred_device,
             self.preferred_backend,
             available_providers=available_providers,
         )
-        so = ort.SessionOptions()
-        so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
-        configure_onnx_session_options(ort, so)
-        model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
-        active_provider = model.get_providers()[0]
-        log_onnx_provider_status(
-            self.model_path,
-            active_provider,
-            available_providers=available_providers,
-            fallback_reason=fallback_reason if active_provider != "CUDAExecutionProvider" else "",
-        )
 
-        return model, active_provider
+        filtered_candidates = [
+            providers for providers in candidates if _provider_name(providers[0]) not in skip_providers
+        ]
+        if not filtered_candidates:
+            filtered_candidates = [["CPUExecutionProvider"]]
+
+        if previous_error is not None and not _CUDA_FAILURE_WARNED:
+            print(f"[ONNX][WARN] CUDA provider failed during session creation/warmup; falling back: {previous_error}")
+            _CUDA_FAILURE_WARNED = True
+
+        last_error = None
+        for providers in filtered_candidates:
+            provider_name = _provider_name(providers[0])
+            print(f"[ONNX] trying provider: {provider_name}")
+            so = ort.SessionOptions()
+            so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
+            configure_onnx_session_options(ort, so)
+            try:
+                model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
+            except Exception as exc:
+                last_error = exc
+                if provider_name == "CUDAExecutionProvider" and not _CUDA_FAILURE_WARNED:
+                    print(f"[ONNX][WARN] CUDA provider failed during session creation/warmup; falling back: {exc}")
+                    _CUDA_FAILURE_WARNED = True
+                continue
+
+            active_provider = model.get_providers()[0]
+            active_fallback_reason = ""
+            if active_provider != "CUDAExecutionProvider":
+                active_fallback_reason = fallback_reason
+            log_onnx_provider_status(
+                self.model_path,
+                active_provider,
+                available_providers=available_providers,
+                fallback_reason=active_fallback_reason,
+                preferred_backend=self.preferred_backend,
+                missing_cuda_deps=missing_cuda_deps,
+            )
+
+            return model, active_provider
+
+        raise RuntimeError(f"Unable to create ONNX Runtime session for {self.model_path}: {last_error}")
 
     @staticmethod
     def _ensure_bgr_image(img):
