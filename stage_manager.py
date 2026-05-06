@@ -111,6 +111,9 @@ class StageManager:
         self._end_transition_hold_seconds = float(self.bot_config.get("post_match_dismiss_hold_seconds", 10.0))
         self._post_play_again_match_hold_seconds = float(self.bot_config.get("post_play_again_match_hold_seconds", 2.0))
         self._end_transition_timeout = 12.0
+        self._post_match_action_guard_reset_seconds = float(
+            self.bot_config.get("post_match_action_guard_reset_seconds", 4.0)
+        )
         self._end_transition_continue_sent = False
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
@@ -253,6 +256,38 @@ class StageManager:
         self._end_transition_continue_sent = False
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
+
+    def _reset_post_match_action_guard(self, reason):
+        if self._end_transition_continue_sent:
+            print(f"[RESULT] post-match action guard reset reason={reason}")
+        self._end_transition_continue_sent = False
+        self._end_transition_continue_sent_at = 0.0
+        self._end_transition_continue_result = None
+
+    def _probe_post_match_reward_state(self, screenshot, now=None):
+        now = now if now is not None else time.time()
+        if not self.is_post_match_resolution_pending(now) and not self.should_hold_match_probe(now):
+            return ""
+        try:
+            drop_type = get_star_drop_type(to_bgr_array(screenshot))
+        except Exception as exc:
+            if debug:
+                print(f"[REWARD][WARN] starr drop probe failed: {exc}")
+            drop_type = None
+        if drop_type:
+            print("[REWARD] starr drop detected")
+            return "star_drop"
+        ocr_ready = getattr(self, "_is_easyocr_ready", lambda: False)
+        allow_reward_ocr = bool(ocr_ready())
+        try:
+            probed = get_state(screenshot, allow_reward_ocr=allow_reward_ocr)
+        except Exception as exc:
+            if debug:
+                print(f"[REWARD][WARN] reward state probe failed: {exc}")
+            return ""
+        if probed in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward"}:
+            return probed
+        return ""
 
     def _reset_lobby_result_sync_state(self):
         self._awaiting_lobby_result_sync = False
@@ -1201,17 +1236,18 @@ class StageManager:
         screenshot = self.window_controller.screenshot()
         star_drop_type = get_star_drop_type(to_bgr_array(screenshot))
         if star_drop_type in ("angelic", "demonic"):
-            print(f"{star_drop_type.capitalize()} star drop detected; forcing long press.")
+            print(f"[REWARD] starr drop detected type={star_drop_type}; opening with long press")
             self.window_controller.press_key("Q", 10)
             return
 
         if star_drop_type == "standard":
-            print("Standard star drop detected; fast tapping.")
+            print("[REWARD] starr drop detected type=standard; opening with fast taps")
             for _ in range(5):
                 self.window_controller.press_key("Q")
                 time.sleep(0.08)
             return
 
+        print("[REWARD] starr drop unconfirmed; pressing continue")
         if self.long_press_star_drop == "yes":
             self.window_controller.press_continue(hold_seconds=10, include_fallback_clicks=False)
         else:
@@ -1325,6 +1361,7 @@ class StageManager:
         screenshot = frame if frame is not None else self.window_controller.screenshot()
         now = time.time()
         known_result_is_valid = known_result in {"victory", "defeat", "draw", "1st", "2nd", "3rd", "4th"}
+        reward_state = self._probe_post_match_reward_state(screenshot, now)
         probed_state = get_state(
             screenshot,
             allow_reward_ocr=(
@@ -1333,7 +1370,10 @@ class StageManager:
                 and self._is_easyocr_ready()
             ),
         )
-        current_state = f"end_{known_result}" if known_result_is_valid else probed_state
+        current_state = reward_state or (f"end_{known_result}" if known_result_is_valid else probed_state)
+        if reward_state:
+            self._reset_post_match_action_guard("reward_detected")
+            print("[RESULT] waiting for reward flow before lobby queue")
         print(f"[RESULT] end_game entered known_result={known_result} current_state={current_state}")
 
         state_result = None
@@ -1404,13 +1444,21 @@ class StageManager:
             return
 
         if current_state in {"reward_claim", "trophy_reward"}:
+            print("[REWARD] claim/proceed clicked")
             self.claim_reward(screenshot)
+            self._reset_post_match_action_guard("reward_detected")
         elif current_state == "player_title_reward":
+            print("[REWARD] claim/proceed clicked")
             self.handle_player_title_reward(screenshot)
+            self._reset_post_match_action_guard("reward_detected")
         elif current_state == "prestige_reward":
+            print("[REWARD] claim/proceed clicked")
             self.handle_prestige_reward(screenshot)
+            self._reset_post_match_action_guard("reward_detected")
         elif current_state == "star_drop":
+            print("[REWARD] opening starr drop")
             self.click_star_drop()
+            self._reset_post_match_action_guard("reward_detected")
         else:
             play_again_result = (
                 found_game_result
@@ -1430,10 +1478,24 @@ class StageManager:
                 and (now - self._end_transition_continue_sent_at) < retry_delay
             )
             if forced_only_after_continue or retry_too_soon:
-                if debug and forced_only_after_continue:
-                    print(f"[RESULT] post-match action already sent; waiting on state '{probed_state}'")
-                return
-            if self._end_transition_continue_sent and not self._is_endish_state(probed_state):
+                if (
+                    self._end_transition_continue_sent
+                    and (now - self._end_transition_continue_sent_at) >= self._post_match_action_guard_reset_seconds
+                ):
+                    print("[RESULT] post-match sync timeout; re-probing reward/proceed/lobby")
+                    self._reset_post_match_action_guard("timeout")
+                else:
+                    if debug and forced_only_after_continue:
+                        print(f"[RESULT] post-match action already sent; waiting on state '{probed_state}'")
+                    return
+            if (
+                self._end_transition_continue_sent
+                and not self._is_endish_state(probed_state)
+                and (now - self._end_transition_continue_sent_at) >= self._post_match_action_guard_reset_seconds
+            ):
+                print("[RESULT] post-match sync timeout; re-probing reward/proceed/lobby")
+                self._reset_post_match_action_guard("timeout")
+            elif self._end_transition_continue_sent and not self._is_endish_state(probed_state):
                 return
 
             if should_play_again:
