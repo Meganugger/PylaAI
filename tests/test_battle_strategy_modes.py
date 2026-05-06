@@ -1,4 +1,5 @@
 import unittest
+import time
 from unittest.mock import patch
 
 from play import Play
@@ -64,6 +65,25 @@ class BattleStrategyModeTests(unittest.TestCase):
             second = play._get_showdown_roam_move((960, 540), {})
 
         self.assertEqual(first, second)
+
+    def test_movement_watchdog_initializes_missing_timestamp(self):
+        play = object.__new__(Play)
+        play._last_movement_refresh_at = 0.0
+        play._last_movement_watchdog_log_at = 0.0
+
+        silence = play._movement_silence_seconds()
+
+        self.assertEqual(silence, 0.0)
+        self.assertGreater(play._last_movement_refresh_at, 0.0)
+
+    def test_movement_watchdog_uses_recent_refresh(self):
+        play = object.__new__(Play)
+        play._last_movement_refresh_at = time.monotonic()
+        play._last_movement_watchdog_log_at = 0.0
+
+        silence = play._movement_silence_seconds()
+
+        self.assertLess(silence, 0.1)
 
 
 if __name__ == "__main__":
