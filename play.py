@@ -159,10 +159,19 @@ class Movement:
         self._brawl_ball_opening_seconds = float(bot_config.get("brawl_ball_opening_seconds", 6.0))
         self._brawl_ball_opening_lock_seconds = float(bot_config.get("brawl_ball_opening_lock_seconds", 4.5))
         self._brawl_ball_opening_hold_seconds = float(bot_config.get("brawl_ball_opening_hold_seconds", 1.4))
+        self._brawl_ball_spawn_escape_seconds = float(bot_config.get("brawl_ball_spawn_escape_seconds", 8.0))
+        self._brawl_ball_spawn_escape_min_seconds = float(bot_config.get("brawl_ball_spawn_escape_min_seconds", 5.8))
+        self._brawl_ball_spawn_escape_nudge_after = float(bot_config.get("brawl_ball_spawn_escape_nudge_after", 6.2))
+        self._brawl_ball_spawn_escape_nudge_interval = float(bot_config.get("brawl_ball_spawn_escape_nudge_interval", 1.8))
         self._brawl_ball_opening_angle = None
         self._brawl_ball_opening_angle_until = 0.0
         self._brawl_ball_opening_move = ""
         self._brawl_ball_opening_move_until = 0.0
+        self._brawl_ball_spawn_escape_active = False
+        self._brawl_ball_spawn_escape_complete = False
+        self._brawl_ball_spawn_escape_started_at = 0.0
+        self._brawl_ball_spawn_escape_last_nudge_at = 0.0
+        self._last_brawl_ball_spawn_escape_log_at = 0.0
         self._last_brawl_ball_opening_log_at = 0.0
         self._last_brawl_ball_opening_override_log_at = 0.0
         self._last_brawl_ball_objective_log_at = 0.0
@@ -195,7 +204,18 @@ class Movement:
         self.time_since_hypercharge_used = 0
         self.GADGET_USE_COOLDOWN = 1.0        # seconds between gadget uses (fast!)
         self.SUPER_USE_COOLDOWN = 0.8         # seconds between super uses (fast!)
-        self.HYPERCHARGE_USE_COOLDOWN = 3.0   # seconds between hypercharge uses
+        self.HYPERCHARGE_USE_COOLDOWN = float(bot_config.get("hypercharge_cooldown", 2.5))   # seconds between hypercharge uses
+        self.hypercharge_cooldown = self.HYPERCHARGE_USE_COOLDOWN
+        self.last_hypercharge_time = 0.0
+        self._ability_skip_log_at = {}
+        self._action_budget = {
+            "tick_started_at": 0.0,
+            "movement_sent": False,
+            "attack_sent": False,
+            "ability_sent": False,
+            "ability_name": "",
+        }
+        self._last_battle_perf_log_at = 0.0
         # All 8 directions for movement fallback
         self.ALL_DIRECTIONS = ['W', 'A', 'S', 'D', 'WA', 'WD', 'SA', 'SD']
         # Debug window state
@@ -1967,6 +1987,22 @@ class Movement:
     def _angle_difference(first_angle, second_angle):
         return abs((float(first_angle) - float(second_angle) + 180.0) % 360.0 - 180.0)
 
+    @staticmethod
+    def angle_to_vector(angle_degrees):
+        angle_rad = math.radians(float(angle_degrees) % 360.0)
+        return math.cos(angle_rad), math.sin(angle_rad)
+
+    def blend_angles(self, primary_angle, secondary_angle, secondary_weight):
+        primary_weight = max(0.0, 1.0 - float(secondary_weight))
+        secondary_weight = max(0.0, float(secondary_weight))
+        ax, ay = self.angle_to_vector(primary_angle)
+        bx, by = self.angle_to_vector(secondary_angle)
+        dx = ax * primary_weight + bx * secondary_weight
+        dy = ay * primary_weight + by * secondary_weight
+        if math.hypot(dx, dy) < 0.01:
+            return float(primary_angle) % 360.0
+        return self.angle_from_direction(dx, dy)
+
     def _uses_analog_movement(self):
         mode_name = str(
             getattr(self, "game_mode_name", getattr(self, "selected_gamemode", "")) or ""
@@ -2040,6 +2076,10 @@ class Movement:
     def attack(self, touch_up=True, touch_down=True):
         if not self._can_issue_live_input():
             return False
+        if touch_up and touch_down and self._action_used_this_tick("attack"):
+            if debug:
+                print("[BATTLE] attack skipped reason=action_budget")
+            return False
         attack_cooldown = float(getattr(self, "attack_cooldown", 0.0) or 0.0)
         if touch_up and touch_down and attack_cooldown > 0:
             current_time = time.time()
@@ -2050,49 +2090,127 @@ class Movement:
         if dispatched is False:
             print("[INPUT][ERROR] attack dispatch was not attempted")
             return False
+        if touch_up and touch_down:
+            self._mark_action_used("attack")
         self.is_regenerating = False
         self._record_battle_input("attack", "primary attack")
         return True
 
-    def use_hypercharge(self):
-        now = time.time()
-        if now - self.time_since_hypercharge_used < self.HYPERCHARGE_USE_COOLDOWN:
+    def _begin_action_tick(self, current_time):
+        self._action_budget = {
+            "tick_started_at": current_time,
+            "movement_sent": False,
+            "attack_sent": False,
+            "ability_sent": False,
+            "ability_name": "",
+        }
+
+    def _action_used_this_tick(self, action):
+        budget = getattr(self, "_action_budget", {}) or {}
+        if not budget.get("tick_started_at"):
             return False
-        print("Using hypercharge")
-        self.window_controller.press_key("H")
-        self.time_since_hypercharge_used = now
-        self._record_battle_input("hypercharge", "ready", now)
+        return bool(budget.get(f"{action}_sent"))
+
+    def _mark_action_used(self, action, ability_name=""):
+        budget = getattr(self, "_action_budget", None)
+        if not isinstance(budget, dict) or not budget.get("tick_started_at"):
+            return
+        budget[f"{action}_sent"] = True
+        if action == "ability":
+            budget["ability_name"] = str(ability_name or "")
+
+    def _log_battle_tick_perf(self, tick_started_perf, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        if current_time - getattr(self, "_last_battle_perf_log_at", 0.0) < 2.0:
+            return
+        budget = getattr(self, "_action_budget", {}) or {}
+        tick_ms = (time.perf_counter() - tick_started_perf) * 1000.0
+        print(
+            "[BATTLE][PERF] "
+            f"tick_ms={tick_ms:.1f} "
+            f"movement_sent={bool(budget.get('movement_sent'))} "
+            f"attack_sent={bool(budget.get('attack_sent'))} "
+            f"ability_sent={bool(budget.get('ability_sent'))}"
+        )
+        self._last_battle_perf_log_at = current_time
+
+    def _log_ability_skip(self, ability_name, reason, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        key = f"{ability_name}:{reason}"
+        if not isinstance(getattr(self, "_ability_skip_log_at", None), dict):
+            self._ability_skip_log_at = {}
+        if current_time - self._ability_skip_log_at.get(key, 0.0) >= 1.5:
+            print(f"[BATTLE] skipping {ability_name} reason={reason}")
+            self._ability_skip_log_at[key] = current_time
+
+    def _use_ability(self, ability_name, key, cooldown, last_attr, reason="ready_and_engaged", before_dispatch=None, after_success=None):
+        current_time = time.time()
+        if not self._can_issue_live_input() or not getattr(self, "_allow_skill_inputs", False):
+            self._log_ability_skip(ability_name, "not_allowed", current_time)
+            return False
+        if self._action_used_this_tick("ability"):
+            self._log_ability_skip(ability_name, "action_budget", current_time)
+            return False
+        last_used = float(getattr(self, last_attr, 0.0) or 0.0)
+        if cooldown > 0 and current_time - last_used < cooldown:
+            self._log_ability_skip(ability_name, "cooldown", current_time)
+            return False
+        if before_dispatch:
+            before_dispatch()
+        dispatched = self.window_controller.press_key(key)
+        if dispatched is False:
+            print(f"[INPUT][ERROR] {ability_name} dispatch was not attempted")
+            return False
+        setattr(self, last_attr, current_time)
+        self._mark_action_used("ability", ability_name)
+        if after_success:
+            after_success()
+        print(f"[BATTLE] using {ability_name} reason={reason}")
+        self._record_battle_input(ability_name, reason, current_time)
         return True
 
-    def use_gadget(self):
-        now = time.time()
-        if now - self.time_since_gadget_used < self.GADGET_USE_COOLDOWN:
-            return False  # still on cooldown
-        print("Using gadget")
-        self.window_controller.press_key("G")
-        self.time_since_gadget_used = now
-        self._record_battle_input("gadget", "ready", now)
-        return True
+    def use_hypercharge(self, reason="ready_and_engaged"):
+        return self._use_ability(
+            "hypercharge",
+            "H",
+            float(getattr(self, "HYPERCHARGE_USE_COOLDOWN", 2.5) or 0.0),
+            "time_since_hypercharge_used",
+            reason=reason,
+        )
 
-    def use_super(self):
-        now = time.time()
-        if now - self.time_since_super_used < self.SUPER_USE_COOLDOWN:
-            return False
-        print("Using super")
-        if getattr(self, "time_since_holding_attack", None) is not None:
-            try:
-                self.window_controller.press_key("M", touch_up=True, touch_down=False)
-            except Exception as exc:
-                print(f"Could not release held attack before super: {exc}")
-            self.time_since_holding_attack = None
-        # Snapshot walls before super (for wall destruction detection)
-        self._pre_super_walls = list(self.last_walls_data) if self.last_walls_data else None
-        self._force_wall_refresh = True  # Force fresh tile scan after super
-        self.window_controller.press_key("E")
-        self.time_since_super_used = now
-        self._super_ready_seen_at = 0.0
-        self._record_battle_input("super", "ready", now)
-        return True
+    def use_gadget(self, reason="ready_and_engaged"):
+        return self._use_ability(
+            "gadget",
+            "G",
+            float(getattr(self, "GADGET_USE_COOLDOWN", 1.0) or 0.0),
+            "time_since_gadget_used",
+            reason=reason,
+        )
+
+    def use_super(self, reason="close_range_confirmed"):
+        def before_dispatch():
+            if getattr(self, "time_since_holding_attack", None) is not None:
+                try:
+                    self.window_controller.press_key("M", touch_up=True, touch_down=False)
+                except Exception as exc:
+                    print(f"Could not release held attack before super: {exc}")
+                self.time_since_holding_attack = None
+            last_walls = getattr(self, "last_walls_data", None)
+            self._pre_super_walls = list(last_walls) if last_walls else None
+            self._force_wall_refresh = True
+
+        def after_success():
+            self._super_ready_seen_at = 0.0
+
+        return self._use_ability(
+            "super",
+            "E",
+            float(getattr(self, "SUPER_USE_COOLDOWN", 1.0) or 0.0),
+            "time_since_super_used",
+            reason=reason,
+            before_dispatch=before_dispatch,
+            after_success=after_success,
+        )
 
     @staticmethod
     def get_random_attack_key():
@@ -2784,11 +2902,16 @@ class Play(Movement):
             self._reset_movement_watchdog()
         elif result:
             self._reset_movement_watchdog()
+        self._mark_action_used("movement")
         self._record_battle_input("movement", detail, current_time)
         return True
 
     def _dispatch_movement_angle(self, angle, detail=None, current_time=None, radius=None):
         current_time = current_time if current_time is not None else time.time()
+        if self._action_used_this_tick("movement"):
+            if debug:
+                print(f"[INPUT] movement skipped reason=already_sent_this_tick detail={detail or angle}")
+            return False
         radius = self._analog_movement_radius if radius is None else radius
         result = self.window_controller.move_joystick_angle(float(angle), radius=radius)
         label = detail or f"angle {float(angle):.0f}"
@@ -2796,6 +2919,10 @@ class Play(Movement):
 
     def _dispatch_movement_keys(self, keys_to_key_down, keys_to_key_up=None, detail=None, current_time=None):
         current_time = current_time if current_time is not None else time.time()
+        if self._action_used_this_tick("movement"):
+            if debug:
+                print(f"[INPUT] movement skipped reason=already_sent_this_tick detail={detail or keys_to_key_down}")
+            return False
         result = True
         if keys_to_key_down:
             result = self.window_controller.keys_down(keys_to_key_down)
@@ -2854,6 +2981,11 @@ class Play(Movement):
         self._brawl_ball_opening_angle_until = 0.0
         self._brawl_ball_opening_move = ""
         self._brawl_ball_opening_move_until = 0.0
+        self._brawl_ball_spawn_escape_active = False
+        self._brawl_ball_spawn_escape_complete = False
+        self._brawl_ball_spawn_escape_started_at = current_time
+        self._brawl_ball_spawn_escape_last_nudge_at = 0.0
+        self._last_brawl_ball_spawn_escape_log_at = 0.0
         self._last_brawl_ball_opening_log_at = 0.0
         self._last_brawl_ball_opening_override_log_at = 0.0
         self._last_brawl_ball_objective_log_at = 0.0
@@ -3153,11 +3285,99 @@ class Play(Movement):
             return None
         return max(0.0, current_time - started_at)
 
+    def _is_inside_own_brawl_ball_spawn(self, player_pos):
+        if not player_pos:
+            return True
+        width = max(1.0, float(getattr(self.window_controller, "width", brawl_stars_width) or brawl_stars_width))
+        height = max(1.0, float(getattr(self.window_controller, "height", brawl_stars_height) or brawl_stars_height))
+        try:
+            x_pos = float(player_pos[0])
+            y_pos = float(player_pos[1])
+        except (TypeError, ValueError, IndexError):
+            return True
+        center_margin = width * 0.23
+        own_goal_y = height * 0.60
+        return y_pos >= own_goal_y and abs(x_pos - (width * 0.5)) <= center_margin
+
+    def _get_brawl_ball_spawn_escape_angle(self, player_pos=None, current_time=None, candidate_angle=None, reason="inside_own_goal"):
+        if not self._is_brawl_ball_mode():
+            return None
+        current_time = current_time if current_time is not None else time.time()
+        elapsed = self._brawl_ball_opening_elapsed(current_time)
+        if elapsed is None:
+            return None
+
+        max_seconds = max(
+            float(getattr(self, "_brawl_ball_spawn_escape_seconds", 8.0) or 8.0),
+            float(getattr(self, "_brawl_ball_opening_seconds", 6.0) or 6.0),
+        )
+        min_seconds = max(0.0, float(getattr(self, "_brawl_ball_spawn_escape_min_seconds", 5.8) or 5.8))
+        inside_spawn = self._is_inside_own_brawl_ball_spawn(player_pos)
+        missing_self = player_pos is None
+
+        if getattr(self, "_brawl_ball_spawn_escape_complete", False):
+            return None
+        if elapsed > max_seconds and (not inside_spawn or missing_self):
+            self._brawl_ball_spawn_escape_complete = True
+            self._brawl_ball_spawn_escape_active = False
+            print("[BATTLE] spawn-box escape complete")
+            return None
+
+        active = elapsed <= min_seconds or inside_spawn or missing_self
+        if not active:
+            self._brawl_ball_spawn_escape_complete = True
+            self._brawl_ball_spawn_escape_active = False
+            print("[BATTLE] spawn-box escape complete")
+            return None
+
+        if not getattr(self, "_brawl_ball_spawn_escape_active", False):
+            self._brawl_ball_spawn_escape_started_at = current_time
+        self._brawl_ball_spawn_escape_active = True
+
+        if candidate_angle is not None:
+            try:
+                candidate_delta = self._angle_difference(float(candidate_angle), 270.0)
+            except (TypeError, ValueError):
+                candidate_delta = 180.0
+            if candidate_delta > 28.0 and current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 0.8:
+                print(f"[BATTLE] spawn-box escape locked; rejecting angle={float(candidate_angle):.0f} reason=still_inside_spawn")
+                self._last_brawl_ball_spawn_escape_log_at = current_time
+
+        nudge_after = float(getattr(self, "_brawl_ball_spawn_escape_nudge_after", 6.2) or 6.2)
+        nudge_interval = float(getattr(self, "_brawl_ball_spawn_escape_nudge_interval", 1.8) or 1.8)
+        angle = 270.0
+        if elapsed >= nudge_after and current_time - getattr(self, "_brawl_ball_spawn_escape_last_nudge_at", 0.0) >= nudge_interval:
+            width = max(1.0, float(getattr(self.window_controller, "width", brawl_stars_width) or brawl_stars_width))
+            x_pos = width * 0.5
+            if player_pos:
+                try:
+                    x_pos = float(player_pos[0])
+                except (TypeError, ValueError, IndexError):
+                    pass
+            angle = 285.0 if x_pos < width * 0.5 else 255.0
+            self._brawl_ball_spawn_escape_last_nudge_at = current_time
+            print(f"[BATTLE] spawn-box escape nudge angle={angle:.0f} reason=blocked")
+            if elapsed >= nudge_after + nudge_interval:
+                print("[BATTLE] spawn-loop detected; forcing escape route")
+        elif current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
+            print(f"[BATTLE] spawn-box escape active angle=270 reason={reason}")
+            self._last_brawl_ball_spawn_escape_log_at = current_time
+
+        self._brawl_ball_opening_angle = float(angle)
+        self._brawl_ball_opening_angle_until = current_time + float(
+            getattr(self, "_brawl_ball_opening_hold_seconds", 1.4) or 1.4
+        )
+        self._set_battle_strategy("brawlball_spawn_escape")
+        return float(angle)
+
     def _get_brawl_ball_opening_angle(self, player_pos=None, current_time=None):
         if not self._is_brawl_ball_mode():
             return None
         current_time = current_time if current_time is not None else time.time()
         elapsed = self._brawl_ball_opening_elapsed(current_time)
+        spawn_escape_angle = self._get_brawl_ball_spawn_escape_angle(player_pos, current_time)
+        if spawn_escape_angle is not None:
+            return spawn_escape_angle
         if elapsed is None or elapsed > float(getattr(self, "_brawl_ball_opening_seconds", 0.0) or 0.0):
             if getattr(self, "_brawl_ball_opening_angle", None) is not None:
                 self._brawl_ball_opening_angle = None
@@ -4894,11 +5114,25 @@ class Play(Movement):
                 target_hittable = self.is_enemy_hittable(player_pos, enemy_coords, walls, "attack")
             except Exception:
                 target_hittable = False
+            enemy_angle = self.angle_from_direction(enemy_coords[0] - player_pos[0], enemy_coords[1] - player_pos[1])
+            spawn_escape_angle = self._get_brawl_ball_spawn_escape_angle(
+                player_pos,
+                now,
+                candidate_angle=enemy_angle,
+                reason="still_inside_spawn",
+            )
             high_confidence_override = (
                 bool(target_hittable)
-                and enemy_distance <= min(attack_range * 0.75, safe_range * 1.20)
+                and enemy_distance <= min(220.0, attack_range * 0.65, safe_range * 1.05)
             )
-            if not high_confidence_override:
+            if spawn_escape_angle is not None and not high_confidence_override:
+                self._log_brawl_ball_opening_override(False, "still_inside_spawn", now)
+                opening_move = self._get_brawl_ball_opening_move(player_pos, now)
+                if opening_move:
+                    self.last_decision_reason = "BRAWL BALL SPAWN ESCAPE LOCK"
+                    self._set_battle_strategy("brawlball_spawn_escape")
+                    return opening_move
+            elif not high_confidence_override:
                 self._log_brawl_ball_opening_override(False, "low_confidence/noisy", now)
                 opening_move = self._get_brawl_ball_opening_move(player_pos, now)
                 if opening_move:
@@ -5875,6 +6109,8 @@ class Play(Movement):
 
     def main(self, frame, brawler):
         current_time = time.time()
+        tick_started_perf = time.perf_counter()
+        self._begin_action_tick(current_time)
         self._current_frame = frame  # Store for BT subsystems
         brawler = self.resolve_brawler_name(brawler)
         self.current_brawler = brawler
@@ -6757,6 +6993,7 @@ class Play(Movement):
 
         # --- Update transparent visual tracking overlay ---
         self._update_visual_overlay(data, movement, brawler)
+        self._log_battle_tick_perf(tick_started_perf, current_time)
 
     def _update_visual_overlay(self, data, movement, brawler):
         """Push latest game data to the transparent visual overlay."""

@@ -78,7 +78,7 @@ class BrawlBallAndFarmTests(unittest.TestCase):
         angle = movement._get_brawl_ball_opening_angle(None, time.time() + 0.1)
 
         self.assertEqual(round(angle), 270)
-        self.assertEqual(movement._battle_runtime["active_strategy"], "brawlball_opening")
+        self.assertEqual(movement._battle_runtime["active_strategy"], "brawlball_spawn_escape")
 
     def test_farm_candidates_show_roster_without_scan_data(self):
         dashboard = object.__new__(Dashboard)
