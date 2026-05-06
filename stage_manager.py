@@ -54,6 +54,7 @@ class StageManager:
             'popup': self.close_pop_up,
             'reward_claim': self.claim_reward,
             'trophy_reward': self.claim_reward,
+            'reward_unlock': self.claim_reward,
             'prestige_reward': self.handle_prestige_reward,
             'player_title_reward': self.handle_player_title_reward,
             'match': lambda: 0,
@@ -225,7 +226,7 @@ class StageManager:
     def _is_endish_state(state):
         return isinstance(state, str) and (
             state.startswith("end")
-            or state in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward", "star_drop"}
+            or state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward", "star_drop"}
         )
 
     def _begin_end_transition(self, result=None, now=None):
@@ -285,7 +286,7 @@ class StageManager:
             if debug:
                 print(f"[REWARD][WARN] reward state probe failed: {exc}")
             return ""
-        if probed in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward"}:
+        if probed in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward"}:
             return probed
         return ""
 
@@ -1443,7 +1444,7 @@ class StageManager:
         if (now - self._end_transition_last_action_at) < self._end_transition_action_interval:
             return
 
-        if current_state in {"reward_claim", "trophy_reward"}:
+        if current_state in {"reward_claim", "trophy_reward", "reward_unlock"}:
             print("[REWARD] claim/proceed clicked")
             self.claim_reward(screenshot)
             self._reset_post_match_action_guard("reward_detected")

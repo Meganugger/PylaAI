@@ -156,6 +156,12 @@ class TrophyObserverHistoryTests(unittest.TestCase):
         self.assertEqual(set(payload.keys()), {"darryl"})
         self.assertEqual(payload["darryl"]["wins"], 2)
 
+    def test_trio_showdown_first_place_starts_at_eleven_trophies(self):
+        observer = make_observer()
+        observer.current_trophies = 0
+
+        self.assertEqual(observer._showdown_delta_for("1st", trophies=0), 11)
+
 
 if __name__ == "__main__":
     unittest.main()

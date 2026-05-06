@@ -56,6 +56,13 @@ def make_play():
     play._target_confirmation_max_age = 0.55
     play._ability_target_confirmation_max_age = 0.35
     play._brawl_ball_no_fire_spawn_seconds = 2.2
+    play._brawl_ball_spawn_escape_active = False
+    play._authoritative_movement_angle = None
+    play._authoritative_movement_source = ""
+    play._authoritative_movement_at = 0.0
+    play._brawl_ball_lane_angle = 270.0
+    play._brawl_ball_lane_angle_until = 0.0
+    play._last_watchdog_skip_log_at = 0.0
     play.selected_gamemode = "knockout"
     play.game_mode = 3
     play._battle_tick_id = 0
@@ -207,6 +214,61 @@ class BattleActionPacingTests(unittest.TestCase):
         play._active_tick_no_action_refresh_seconds = 0.1
 
         self.assertTrue(play._ensure_active_tick_has_action(70.0, {"enemy": [], "teammate": [], "wall": []}))
+
+        self.assertTrue(play._action_budget["movement_sent"])
+        self.assertTrue(play._action_budget["watchdog_sent"])
+        self.assertEqual(play.window_controller.moves[-1][0], 270.0)
+
+    def test_target_gate_rejects_low_confidence_attack(self):
+        play = make_play()
+        play._begin_action_tick(72.0)
+        play._target_gate = {
+            "allow_attack": True,
+            "allow_ability": False,
+            "target_confirmed": True,
+            "target_confidence": 0.72,
+            "target_age": 0.0,
+            "target_source": "real_detection",
+            "updated_at": 72.0,
+        }
+
+        with patch("play.time.time", return_value=72.0):
+            self.assertFalse(play.attack())
+
+        self.assertEqual(play.window_controller.keys, [])
+        self.assertFalse(play._action_budget["attack_sent"])
+
+    def test_no_fire_lane_push_suppresses_attack_and_ability_without_confirmed_target(self):
+        play = make_play()
+        play.selected_gamemode = "brawlball"
+        play._begin_action_tick(74.0)
+        play._set_authoritative_movement_angle(270.0, "brawlball_lane_push", 74.0)
+        play._target_gate = {
+            "allow_attack": True,
+            "allow_ability": True,
+            "target_confirmed": False,
+            "target_confidence": 0.0,
+            "target_age": 0.0,
+            "target_source": "none",
+            "updated_at": 74.0,
+        }
+
+        with patch("play.time.time", return_value=74.0):
+            self.assertFalse(play.attack())
+            self.assertFalse(play.use_super())
+            self.assertFalse(play.use_hypercharge())
+
+        self.assertEqual(play.window_controller.keys, [])
+
+    def test_authoritative_watchdog_counts_movement(self):
+        play = make_play()
+        play.selected_gamemode = "brawlball"
+        play._begin_action_tick(76.0)
+        play._last_movement_refresh_at = time.monotonic() - 1.0
+        play._set_authoritative_movement_angle(270.0, "brawlball_lane_push", 76.0)
+        play._active_tick_no_action_refresh_seconds = 0.1
+
+        self.assertTrue(play._ensure_active_tick_has_action(76.0, {"enemy": [], "teammate": [], "player": []}))
 
         self.assertTrue(play._action_budget["movement_sent"])
         self.assertTrue(play._action_budget["watchdog_sent"])
