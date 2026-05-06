@@ -146,6 +146,7 @@ class StageManager:
             'lobby': self.start_game,
             'star_drop': self.click_star_drop,
             'reward_claim': self.claim_reward,
+            'reward_unlock': self.claim_reward,
             'trophy_reward': self.dismiss_trophy_reward,
             'player_title_reward': self.handle_player_title_reward,
             'prestige_reward': self.handle_prestige_reward,
@@ -323,7 +324,7 @@ class StageManager:
     def _is_endish_state(state):
         return isinstance(state, str) and (
             state.startswith("end")
-            or state in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward", "star_drop"}
+            or state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward", "star_drop"}
         )
 
     def _begin_end_transition(self, result=None, now=None):
@@ -382,7 +383,7 @@ class StageManager:
             if debug:
                 print(f"[REWARD][WARN] reward state probe failed: {exc}")
             return ""
-        if probed in {"reward_claim", "trophy_reward", "player_title_reward", "prestige_reward"}:
+        if probed in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward"}:
             return probed
         return ""
 
@@ -1868,11 +1869,11 @@ class StageManager:
         while (
             (
                 str(current_state).startswith("end")
-                or current_state in {"reward_claim", "trophy_reward", "star_drop"}
+                or current_state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward", "star_drop"}
             )
             and end_attempts < max_end_attempts
         ):
-            if current_state in {"reward_claim", "trophy_reward"}:
+            if current_state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward"}:
                 self.states[current_state](screenshot)
                 time.sleep(0.2)
                 screenshot = self.window_controller.screenshot()
@@ -2115,11 +2116,11 @@ class StageManager:
         while (
             (
                 str(current_state).startswith("end")
-                or current_state in {"reward_claim", "trophy_reward", "player_title_reward", "star_drop"}
+                or current_state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward", "star_drop"}
             )
             and end_attempts < max_end_attempts
         ):
-            if current_state in {"reward_claim", "trophy_reward", "player_title_reward"}:
+            if current_state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward"}:
                 print("[REWARD] claim/proceed clicked")
                 self.states[current_state](screenshot)
                 self._reset_post_match_action_guard("reward_detected")
