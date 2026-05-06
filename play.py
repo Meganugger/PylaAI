@@ -244,9 +244,33 @@ class Movement:
         self._brawl_ball_lane_nudge_until = 0.0
         self._brawl_ball_lane_nudge_side = 1
         self._last_brawl_ball_lane_log_at = 0.0
+        self._brawl_ball_spawn_escape_uncertain_seconds = float(bot_config.get("brawl_ball_spawn_escape_uncertain_seconds", 10.0))
+        self._brawl_ball_spawn_escape_extended_seconds = float(bot_config.get("brawl_ball_spawn_escape_extended_seconds", 14.0))
         self._corner_escape_active = False
         self._corner_escape_until = 0.0
         self._last_corner_escape_log_at = 0.0
+        self._authoritative_movement_angle = None
+        self._authoritative_movement_source = ""
+        self._authoritative_movement_at = 0.0
+        self._wall_blocked_threshold_seconds = float(bot_config.get("wall_blocked_escape_seconds", 0.7))
+        self._wall_blocked_tick_threshold = int(bot_config.get("wall_blocked_escape_ticks", 2))
+        self._wall_escape_nudge_seconds = float(bot_config.get("wall_escape_nudge_seconds", 0.45))
+        self._wall_escape_return_seconds = float(bot_config.get("wall_escape_return_seconds", 0.65))
+        self._wall_escape_state = {
+            "active": False,
+            "source": "",
+            "angle": None,
+            "started_at": 0.0,
+            "last_seen_at": 0.0,
+            "count": 0,
+            "nudge_until": 0.0,
+            "return_until": 0.0,
+            "nudge_angle": None,
+            "return_angle": None,
+            "side": 1,
+            "return_logged": False,
+        }
+        self._last_watchdog_skip_log_at = 0.0
         self._battle_tick_id = 0
         self._target_gate = self._default_target_gate(time.time())
         self._last_target_gate_log_at = 0.0
@@ -529,7 +553,10 @@ class Movement:
                 print("[BATTLE] attack skipped reason=action_budget")
             return False
         if touch_down and not self._target_gate_allows("attack"):
-            self._log_target_gate_skip("attack", "stale_or_missing_target")
+            self._log_target_gate_skip(
+                "attack",
+                str(getattr(self, "_last_target_gate_block_reason", "") or "stale_or_missing_target"),
+            )
             return False
         if touch_up and touch_down and self.attack_cooldown > 0:
             current_time = time.time()
@@ -616,7 +643,11 @@ class Movement:
             self._log_ability_skip(ability_name, "not_allowed", current_time)
             return False
         if not self._target_gate_allows("ability"):
-            skip_reason = "no_confirmed_engagement" if ability_name == "hypercharge" else "target_not_confirmed"
+            gate_reason = str(getattr(self, "_last_target_gate_block_reason", "") or "")
+            if ability_name == "hypercharge":
+                skip_reason = "no_fire_or_no_confirmed_engagement" if "no_fire" in gate_reason else "no_confirmed_engagement"
+            else:
+                skip_reason = "no_fire_or_target_not_confirmed" if "no_fire" in gate_reason else "target_not_confirmed"
             self._log_ability_skip(ability_name, skip_reason, current_time)
             return False
         if self._action_used_this_tick("ability"):
@@ -726,8 +757,18 @@ class Movement:
         if not isinstance(gate, dict):
             gate = self._default_target_gate()
             self._target_gate = gate
+        no_fire_reason = self._target_gate_no_fire_reason(action, gate)
+        if no_fire_reason:
+            self._last_target_gate_block_reason = no_fire_reason
+            return False
         key = "allow_ability" if action == "ability" else "allow_attack"
         if not gate.get(key):
+            self._last_target_gate_block_reason = str(gate.get("reason") or "stale_or_missing_target")
+            return False
+        confidence = float(gate.get("target_confidence", 0.0) or 0.0)
+        min_confidence = 0.90 if action == "ability" else 0.80
+        if confidence < min_confidence:
+            self._last_target_gate_block_reason = "target_not_confirmed" if action == "ability" else "stale_or_missing_target"
             return False
         max_age = (
             float(getattr(self, "_ability_target_confirmation_max_age", 0.35) or 0.35)
@@ -737,10 +778,36 @@ class Movement:
         target_age = float(gate.get("target_age", 999.0) or 0.0)
         updated_at = float(gate.get("updated_at", 0.0) or 0.0)
         wall_age = max(0.0, time.time() - updated_at) if updated_at > 0 else 999.0
-        return target_age <= max_age and wall_age <= max_age
+        allowed = target_age <= max_age and wall_age <= max_age
+        if not allowed:
+            self._last_target_gate_block_reason = "stale_or_missing_target"
+        return allowed
+
+    def _target_gate_no_fire_reason(self, action, gate=None):
+        gate = gate if isinstance(gate, dict) else getattr(self, "_target_gate", {}) or {}
+        current_time = time.time()
+        if self._is_no_fire_spawn_window_active(current_time):
+            return "no_fire_match_start" if action == "attack" else "no_fire_or_target_not_confirmed"
+        source = str(
+            getattr(self, "_authoritative_movement_source", "")
+            or getattr(self, "_committed_analog_reason", "")
+            or (getattr(self, "_battle_runtime", {}) or {}).get("active_strategy", "")
+            or ""
+        )
+        if source in {"spawn_escape_no_vision", "brawlball_spawn_escape", "brawlball_opening"}:
+            return "no_fire_match_start" if action == "attack" else "no_fire_or_target_not_confirmed"
+        if source in {"brawlball_lane_push", "wall_escape", "corner_escape"}:
+            confirmed = bool(gate.get("target_confirmed"))
+            confidence = float(gate.get("target_confidence", 0.0) or 0.0)
+            min_confidence = 0.90 if action == "ability" else 0.80
+            if not confirmed or confidence < min_confidence:
+                return "no_confirmed_target_or_no_fire_state" if action == "attack" else "no_fire_or_target_not_confirmed"
+        return ""
 
     def _log_target_gate_skip(self, action, reason, current_time=None):
         current_time = current_time if current_time is not None else time.time()
+        if action == "attack" and reason in {"stale_or_missing_target", "no_fire_match_start"}:
+            reason = "no_confirmed_target_or_no_fire_state"
         key = f"{action}:{reason}"
         if not isinstance(getattr(self, "_ability_skip_log_at", None), dict):
             self._ability_skip_log_at = {}
@@ -1865,6 +1932,14 @@ class Play(Movement):
         self._last_brawl_ball_spawn_escape_log_at = 0.0
         self._last_brawl_ball_opening_log_at = 0.0
         self._last_brawl_ball_opening_override_log_at = 0.0
+        self._brawl_ball_lane_angle = 270.0
+        self._brawl_ball_lane_angle_until = 0.0
+        self._corner_escape_active = False
+        self._corner_escape_until = 0.0
+        self._authoritative_movement_angle = None
+        self._authoritative_movement_source = ""
+        self._authoritative_movement_at = 0.0
+        self._reset_wall_escape_state(current_time)
         self._last_confirmed_match_time = current_time
         self._last_match_evidence_time = current_time
         self._last_valid_player_seen_at = 0.0
@@ -2003,7 +2078,7 @@ class Play(Movement):
             if self._is_brawl_ball_mode(self.selected_gamemode):
                 brawl_ball_move = self._get_brawl_ball_roam_movement(player_position, wall_context)
                 if brawl_ball_move is not None:
-                    return self._plan_analog_reason(brawl_ball_move, "search")
+                    return brawl_ball_move
                 desired_angle = self.angle_from_direction(
                     self.window_controller.width * 0.50 - player_position[0],
                     self.window_controller.height * 0.50 - player_position[1],
@@ -2687,6 +2762,157 @@ class Play(Movement):
         hold_times = getattr(self, "_analog_goal_hold_times", {}) or {}
         self._committed_analog_until = current_time + hold_times.get("spawn_escape_no_vision", 1.4)
         self._planned_analog_reason = None
+        self._set_authoritative_movement_angle(270.0, "spawn_escape_no_vision", current_time)
+
+    def _set_authoritative_movement_angle(self, angle, source, current_time=None):
+        if not isinstance(angle, (float, int)):
+            return None
+        current_time = current_time if current_time is not None else time.time()
+        self._authoritative_movement_angle = float(angle) % 360.0
+        self._authoritative_movement_source = str(source or "")
+        self._authoritative_movement_at = current_time
+        return self._authoritative_movement_angle
+
+    def _authoritative_watchdog_angle(self, data=None, current_time=None):
+        current_time = current_time if current_time is not None else time.time()
+        status = self._brawlball_no_vision_spawn_status(data, current_time)
+        if status:
+            angle = float(status.get("angle", 270.0) or 270.0)
+            if self._angle_difference(angle, 270.0) > 35.0:
+                print(f"[INPUT] movement watchdog rejected stale angle={angle:.0f} source=spawn_escape")
+                angle = 270.0
+            return angle, "spawn_escape_no_vision"
+
+        source = str(getattr(self, "_authoritative_movement_source", "") or "")
+        angle = getattr(self, "_authoritative_movement_angle", None)
+        if isinstance(angle, (float, int)) and source in {
+            "brawlball_lane_push",
+            "wall_escape",
+            "corner_escape",
+            "spawn_escape_no_vision",
+        }:
+            return float(angle) % 360.0, source
+
+        if self._is_brawl_ball_mode(getattr(self, "selected_gamemode", "")):
+            stale = getattr(self, "last_movement", None)
+            if isinstance(stale, (float, int)) and self._angle_difference(float(stale), 270.0) > 45.0:
+                print(f"[INPUT] movement watchdog rejected stale angle={float(stale):.0f} source={source or 'last_movement'}")
+            player_pos = self._player_position_from_data(data)
+            lane_angle = self._get_brawl_ball_lane_push_angle(player_pos, current_time, (data or {}).get("wall") or [])
+            return float(lane_angle), "brawlball_lane_push"
+
+        if isinstance(angle, (float, int)):
+            return float(angle) % 360.0, source or "last_movement"
+        stale = getattr(self, "last_movement", None)
+        if isinstance(stale, (float, int)):
+            return float(stale) % 360.0, "last_movement"
+        return (270.0 if getattr(self, "game_mode", 3) == 3 else 0.0), "fallback"
+
+    def _wall_escape_base_angle(self, source):
+        if source == "spawn_escape_no_vision":
+            return 270.0
+        if source == "corner_escape":
+            angle = getattr(self, "_authoritative_movement_angle", None)
+            return float(angle) if isinstance(angle, (float, int)) else 270.0
+        return float(getattr(self, "_brawl_ball_lane_angle", 270.0) or 270.0)
+
+    def _reset_wall_escape_state(self, current_time=None, log_complete=False):
+        if log_complete and getattr(self, "_wall_escape_state", {}).get("active"):
+            print("[BATTLE] wall escape complete")
+        self._wall_escape_state = {
+            "active": False,
+            "source": "",
+            "angle": None,
+            "started_at": 0.0,
+            "last_seen_at": current_time or 0.0,
+            "count": 0,
+            "nudge_until": 0.0,
+            "return_until": 0.0,
+            "nudge_angle": None,
+            "return_angle": None,
+            "side": int((getattr(self, "_wall_escape_state", {}) or {}).get("side", 1) or 1),
+            "return_logged": False,
+        }
+
+    def _wall_blocked_escape_angle(self, angle, source, player_pos, wall_context, current_time=None):
+        if not isinstance(angle, (float, int)) or player_pos is None or wall_context is None:
+            return None
+        current_time = current_time if current_time is not None else time.time()
+        source = str(source or getattr(self, "_committed_analog_reason", "") or "movement")
+        state = getattr(self, "_wall_escape_state", {}) or {}
+        if state.get("active"):
+            if current_time < float(state.get("nudge_until", 0.0) or 0.0):
+                return self._plan_analog_reason(float(state.get("nudge_angle", angle)), "wall_escape")
+            if current_time < float(state.get("return_until", 0.0) or 0.0):
+                return_angle = float(state.get("return_angle", self._wall_escape_base_angle(source)))
+                if not state.get("return_logged"):
+                    print(f"[BATTLE] wall escape return angle={return_angle:.0f} reason=lane_recovery")
+                    state["return_logged"] = True
+                self._set_authoritative_movement_angle(return_angle, "wall_escape", current_time)
+                return self._plan_analog_reason(return_angle, "wall_escape")
+
+        try:
+            blocked = bool(
+                wall_context.get("rectangles")
+                and self._is_path_blocked_angle(player_pos, float(angle), wall_context)
+            )
+        except Exception:
+            blocked = False
+        if not blocked:
+            if state.get("active"):
+                self._reset_wall_escape_state(current_time, log_complete=True)
+            return None
+
+        same_block = (
+            state.get("angle") is not None
+            and self._angle_difference(float(state.get("angle")), float(angle)) <= 24.0
+            and str(state.get("source") or "") == source
+        )
+        if not same_block:
+            state = {
+                **state,
+                "active": False,
+                "source": source,
+                "angle": float(angle),
+                "started_at": current_time,
+                "last_seen_at": current_time,
+                "count": 1,
+                "return_logged": False,
+            }
+            self._wall_escape_state = state
+            return None
+
+        state["count"] = int(state.get("count", 0) or 0) + 1
+        state["last_seen_at"] = current_time
+        self._wall_escape_state = state
+        duration = current_time - float(state.get("started_at", current_time) or current_time)
+        if duration < float(getattr(self, "_wall_blocked_threshold_seconds", 0.7) or 0.7) and state["count"] < int(getattr(self, "_wall_blocked_tick_threshold", 2) or 2):
+            return None
+
+        side = -int(state.get("side", 1) or 1)
+        state["side"] = side
+        base_angle = self._wall_escape_base_angle(source)
+        nudge_angle = (base_angle + (22.0 * side)) % 360.0
+        state.update({
+            "active": True,
+            "nudge_angle": nudge_angle,
+            "return_angle": base_angle,
+            "nudge_until": current_time + float(getattr(self, "_wall_escape_nudge_seconds", 0.45) or 0.45),
+            "return_until": current_time
+            + float(getattr(self, "_wall_escape_nudge_seconds", 0.45) or 0.45)
+            + float(getattr(self, "_wall_escape_return_seconds", 0.65) or 0.65),
+            "started_at": current_time,
+            "count": 0,
+            "return_logged": False,
+        })
+        self._wall_escape_state = state
+        print(f"[BATTLE] wall-blocked detected angle={float(angle):.0f} source={source} duration={duration:.2f}")
+        if source == "spawn_escape_no_vision":
+            print("[BATTLE] spawn escape blocked; using deterministic nudge")
+        print(f"[BATTLE] wall escape nudge angle={nudge_angle:.0f} reason=blocked_forward")
+        self._set_authoritative_movement_angle(nudge_angle, "wall_escape", current_time)
+        self._set_battle_strategy("wall_escape")
+        return self._plan_analog_reason(nudge_angle, "wall_escape")
 
     def _brawlball_no_vision_spawn_status(self, data=None, current_time=None):
         if not self._is_brawl_ball_mode(getattr(self, "selected_gamemode", "")):
@@ -2704,12 +2930,28 @@ class Play(Movement):
         reliable_self = self._player_source_is_reliable(data) and player_pos is not None
         inside_spawn = self._is_inside_own_brawl_ball_spawn(player_pos)
         min_seconds = float(getattr(self, "_brawl_ball_spawn_escape_min_seconds", 5.8) or 5.8)
+        uncertain_seconds = max(
+            min_seconds,
+            float(getattr(self, "_brawl_ball_spawn_escape_uncertain_seconds", 10.0) or 10.0),
+        )
+        extended_seconds = max(
+            uncertain_seconds + 1.0,
+            float(getattr(self, "_brawl_ball_spawn_escape_extended_seconds", 14.0) or 14.0),
+        )
 
         if reliable_self and not inside_spawn and elapsed >= min_seconds:
             if not getattr(self, "_brawl_ball_spawn_escape_complete", False):
                 print("[BATTLE] spawn-box escape complete reason=reliable_outside_spawn")
             self._brawl_ball_spawn_escape_complete = True
             self._brawl_ball_spawn_escape_active = False
+            return None
+        if not reliable_self and elapsed >= extended_seconds:
+            if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
+                print("[BATTLE] spawn escape fallback to lane push reason=extended_unknown")
+                self._last_brawl_ball_spawn_escape_log_at = current_time
+            self._brawl_ball_spawn_escape_complete = True
+            self._brawl_ball_spawn_escape_active = False
+            self._set_authoritative_movement_angle(270.0, "brawlball_lane_push", current_time)
             return None
 
         if reliable_self and inside_spawn:
@@ -2718,6 +2960,11 @@ class Play(Movement):
             reason = "no_reliable_exit_detection"
         else:
             reason = "opening_window"
+        if elapsed > uncertain_seconds and not reliable_self:
+            reason = "self_unknown_timeout"
+            if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
+                print("[BATTLE] spawn escape uncertain reason=self_unknown_timeout")
+                self._last_brawl_ball_spawn_escape_log_at = current_time
         if elapsed > min_seconds and not reliable_self:
             if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
                 print("[BATTLE] spawn-box escape extended reason=no_vision_still_inside")
@@ -2749,6 +2996,7 @@ class Play(Movement):
         self._clear_spawn_stale_movement(current_time)
         if angle != 270.0:
             self.last_movement = angle
+        self._set_authoritative_movement_angle(angle, "spawn_escape_no_vision", current_time)
         self._set_battle_strategy("brawlball_spawn_escape")
         self._set_battle_skip_reason(
             f"spawn-box escape active; {status.get('reason', 'inside_spawn_no_vision')}",
@@ -2783,6 +3031,14 @@ class Play(Movement):
         min_seconds = max(0.0, float(getattr(self, "_brawl_ball_spawn_escape_min_seconds", 5.8) or 5.8))
         inside_spawn = self._is_inside_own_brawl_ball_spawn(player_pos)
         missing_self = player_pos is None
+        uncertain_seconds = max(
+            min_seconds,
+            float(getattr(self, "_brawl_ball_spawn_escape_uncertain_seconds", 10.0) or 10.0),
+        )
+        extended_seconds = max(
+            uncertain_seconds + 1.0,
+            float(getattr(self, "_brawl_ball_spawn_escape_extended_seconds", 14.0) or 14.0),
+        )
 
         if getattr(self, "_brawl_ball_spawn_escape_complete", False):
             return None
@@ -2791,6 +3047,18 @@ class Play(Movement):
             self._brawl_ball_spawn_escape_active = False
             print("[BATTLE] spawn-box escape complete reason=reliable_outside_spawn")
             return None
+        if elapsed >= extended_seconds and missing_self:
+            if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
+                print("[BATTLE] spawn escape fallback to lane push reason=extended_unknown")
+                self._last_brawl_ball_spawn_escape_log_at = current_time
+            self._brawl_ball_spawn_escape_complete = True
+            self._brawl_ball_spawn_escape_active = False
+            self._set_authoritative_movement_angle(270.0, "brawlball_lane_push", current_time)
+            return None
+        if elapsed >= uncertain_seconds and missing_self:
+            if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
+                print("[BATTLE] spawn escape uncertain reason=self_unknown_timeout")
+                self._last_brawl_ball_spawn_escape_log_at = current_time
         if elapsed > max_seconds and missing_self:
             if current_time - getattr(self, "_last_brawl_ball_spawn_escape_log_at", 0.0) >= 1.0:
                 print("[BATTLE] spawn-box escape extended reason=no_vision_still_inside")
@@ -2965,9 +3233,10 @@ class Play(Movement):
         self._corner_escape_until = current_time + 2.2
         if current_time - getattr(self, "_last_corner_escape_log_at", 0.0) >= 1.0:
             print(f"[BATTLE] corner-stuck detected region={region}")
-            print(f"[BATTLE] corner escape active angle={angle:.0f} reason={region}_no_target")
+            print(f"[BATTLE] corner escape active angle={angle:.0f} reason=bottom_corner_no_target")
             self._last_corner_escape_log_at = current_time
         self._set_battle_strategy("corner_escape")
+        self._set_authoritative_movement_angle(angle, "corner_escape", current_time)
         return self._plan_analog_reason(angle, "corner_escape")
 
     def _get_brawl_ball_lane_push_angle(self, player_pos, current_time=None, wall_context=None):
@@ -3000,6 +3269,7 @@ class Play(Movement):
             print(f"[BATTLE] brawlball no-target lane angle={desired:.0f} reason=objective_push")
             self._last_brawl_ball_lane_log_at = current_time
         self._set_battle_strategy("brawlball_objective")
+        self._set_authoritative_movement_angle(desired, "brawlball_lane_push", current_time)
         return self._plan_analog_reason(desired, "brawlball_lane_push")
 
     def _get_brawl_ball_roam_movement(self, player_pos, wall_context):
@@ -3382,9 +3652,17 @@ class Play(Movement):
         )
         if movement_silence > self.minimum_movement_delay or watchdog_due:
             if watchdog_due and current_time - getattr(self, "_last_movement_watchdog_log_at", 0.0) >= 0.8:
-                last_angle = movement if isinstance(movement, (float, int)) else getattr(self, "last_movement", movement)
+                auth_angle, auth_source = self._authoritative_watchdog_angle(data, current_time)
+                last_angle = auth_angle if isinstance(auth_angle, (float, int)) else movement if isinstance(movement, (float, int)) else getattr(self, "last_movement", movement)
                 print(f"[INPUT][WARN] movement silent for {movement_silence:.2f}s while active; refreshing last angle={last_angle}")
                 self._last_movement_watchdog_log_at = current_time
+            if watchdog_due:
+                auth_angle, auth_source = self._authoritative_watchdog_angle(data, current_time)
+                if isinstance(auth_angle, (float, int)):
+                    if isinstance(movement, (float, int)) and self._angle_difference(float(movement), float(auth_angle)) > 20.0:
+                        print(f"[INPUT] movement watchdog using authoritative angle={float(auth_angle):.0f} source={auth_source}")
+                    movement = float(auth_angle)
+                    self._planned_analog_reason = auth_source
             if isinstance(movement, (float, int)):
                 movement = self._stabilize_analog_angle(movement, current_time)
                 movement = self._debounce_angle(movement)
@@ -3399,6 +3677,21 @@ class Play(Movement):
                         movement = self.semicircle_escape_step(current_time) or movement
                     else:
                         movement = self.unstuck_angle_if_needed(movement, current_time, player_pos, wall_context)
+                movement_reason = str(getattr(self, "_committed_analog_reason", "") or getattr(self, "_authoritative_movement_source", "") or "")
+                if (
+                    self._is_brawl_ball_mode(getattr(self, "selected_gamemode", ""))
+                    and not (data.get("enemy") or [])
+                    and movement_reason not in {"spawn_escape_no_vision", "brawlball_lane_push", "wall_escape", "corner_escape", "brawlball_opening"}
+                ):
+                    print(f"[BATTLE] brawlball no-target rejected generic_safe angle={float(movement):.0f} reason=lane_lock")
+                    movement = self._get_brawl_ball_lane_push_angle(player_pos, current_time, wall_context)
+                    movement = self._stabilize_analog_angle(movement, current_time)
+                    movement_reason = str(getattr(self, "_committed_analog_reason", "") or "brawlball_lane_push")
+                wall_escape = self._wall_blocked_escape_angle(movement, movement_reason, player_pos, wall_context, current_time)
+                if wall_escape is not None:
+                    movement = wall_escape
+                elif movement_reason in {"spawn_escape_no_vision", "brawlball_lane_push", "corner_escape", "wall_escape"}:
+                    self._set_authoritative_movement_angle(float(movement), movement_reason, current_time)
             else:
                 self._planned_analog_reason = None
                 movement = self.unstuck_movement_if_needed(movement, current_time, player_pos)
@@ -3422,6 +3715,21 @@ class Play(Movement):
                         f"brawlball lane push; no confirmed target ({movement})",
                         current_time=current_time,
                     )
+                elif movement_reason == "wall_escape":
+                    self._set_battle_skip_reason(
+                        f"wall escape; no confirmed target ({movement})",
+                        current_time=current_time,
+                    )
+                elif movement_reason == "corner_escape":
+                    self._set_battle_skip_reason(
+                        f"corner escape; no confirmed target ({movement})",
+                        current_time=current_time,
+                    )
+                elif movement_reason == "brawlball_opening":
+                    self._set_battle_skip_reason(
+                        f"brawlball opening route; no confirmed target ({movement})",
+                        current_time=current_time,
+                    )
                 else:
                     self._set_battle_skip_reason(
                         f"no target found; moving safely ({movement})",
@@ -3434,7 +3742,10 @@ class Play(Movement):
                     self._last_battle_skip_log_at = current_time
             self.do_movement(movement)
             if watchdog_due and isinstance(movement, (float, int)):
+                source = str(getattr(self, "_committed_analog_reason", "") or getattr(self, "_authoritative_movement_source", "") or "")
                 print(f"[INPUT] movement watchdog refresh angle={float(movement):.0f}")
+                if source:
+                    print(f"[INPUT] movement watchdog using authoritative angle={float(movement):.0f} source={source}")
             self.time_since_movement = current_time
         return movement
 
@@ -3448,9 +3759,6 @@ class Play(Movement):
         if str(getattr(self, "_runtime_state", "") or "") != "match":
             return False
         budget = getattr(self, "_action_budget", {}) or {}
-        if current_time - getattr(self, "_last_no_action_tick_log_at", 0.0) >= 0.8:
-            print(f"[BATTLE][WARN] active match tick sent no action reason={reason}")
-            self._last_no_action_tick_log_at = current_time
         if self._brawlball_no_vision_spawn_status(data, current_time):
             sent = self._force_brawlball_no_vision_spawn_escape(data, current_time, source="watchdog")
             budget["watchdog_sent"] = bool(sent)
@@ -3460,14 +3768,11 @@ class Play(Movement):
 
         silence = self._movement_silence_seconds()
         if silence < float(getattr(self, "_active_tick_no_action_refresh_seconds", 0.32) or 0.32):
+            if current_time - getattr(self, "_last_watchdog_skip_log_at", 0.0) >= 1.5:
+                print("[INPUT] movement watchdog skipped reason=recent_authoritative_movement")
+                self._last_watchdog_skip_log_at = current_time
             return False
-        angle = getattr(self, "last_movement", None)
-        if not isinstance(angle, (float, int)):
-            if self._is_brawl_ball_mode(getattr(self, "selected_gamemode", "")):
-                player_pos = self._player_position_from_data(data)
-                angle = self._get_brawl_ball_lane_push_angle(player_pos, current_time, (data or {}).get("wall") or [])
-            else:
-                angle = 270.0 if getattr(self, "game_mode", 3) == 3 else 0.0
+        angle, source = self._authoritative_watchdog_angle(data, current_time)
         sent = self._dispatch_movement_angle(
             float(angle),
             detail=f"watchdog angle {float(angle):.0f}",
@@ -3476,7 +3781,11 @@ class Play(Movement):
         )
         budget["watchdog_sent"] = bool(sent)
         if sent:
+            print(f"[INPUT] movement watchdog using authoritative angle={float(angle):.0f} source={source}")
             print(f"[INPUT] movement watchdog refresh angle={float(angle):.0f}")
+        elif current_time - getattr(self, "_last_no_action_tick_log_at", 0.0) >= 0.8:
+            print(f"[BATTLE][WARN] active match tick sent no action reason={reason}")
+            self._last_no_action_tick_log_at = current_time
         return bool(sent)
 
     def _add_strafe_angle(self, angle, current_time, style):
@@ -3813,8 +4122,8 @@ class Play(Movement):
                     opening_elapsed = self._brawl_ball_opening_elapsed(current_time)
                     opening_active = opening_elapsed is not None and opening_elapsed <= self._brawl_ball_opening_seconds
                     self._set_battle_strategy("brawlball_opening" if opening_active else "brawlball_objective")
-                    return search_move if opening_active else self._plan_analog_reason(search_move, "search")
-                return self.no_enemy_movement(player_data, wall_context)
+                    return search_move
+                return self._get_brawl_ball_lane_push_angle(player_pos, current_time, wall_context)
 
             teammate_target = self._get_teammate_centroid()
             team_regroup_target = teammate_target
@@ -3860,6 +4169,9 @@ class Play(Movement):
         )
         if enemy_coords is None:
             self._battle_runtime["last_attack_decision"] = "target scan returned no confident target"
+            if self._is_brawl_ball_mode(self.selected_gamemode):
+                self._set_battle_strategy("brawlball_objective")
+                return self._get_brawl_ball_lane_push_angle(player_pos, current_time, wall_context)
             self._set_battle_strategy("fallback")
             return self.no_enemy_movement(player_data, wall_context)
         direction_x = enemy_coords[0] - player_pos[0]
