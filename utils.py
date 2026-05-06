@@ -147,6 +147,7 @@ _CONFIG_DEFAULTS = {
         "super_debug": "yes",
         "cpu_or_gpu": "auto",
         "preferred_backend": "auto",
+        "onnx_allow_cuda_with_missing_nvrtc": True,
         "max_ips": "auto",
         "pyla_version": "1.0.0+strongestbotfull",
         "long_press_star_drop": "yes",

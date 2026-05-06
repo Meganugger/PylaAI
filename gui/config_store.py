@@ -58,6 +58,7 @@ CONFIG_SPECS = {
             "input_debug": "yes",
             "preferred_backend": "auto",
             "cpu_or_gpu": "auto",
+            "onnx_allow_cuda_with_missing_nvrtc": True,
             "long_press_star_drop": "no",
             "trophies_multiplier": 1,
             "run_for_minutes": 600,
