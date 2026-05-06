@@ -6,12 +6,13 @@ from difflib import SequenceMatcher
 import numpy as np
 import requests
 
-from utils import load_brawl_stars_api_config, load_toml_as_dict, save_dict_as_toml, api_base_url, reader
+from utils import load_brawl_stars_api_config, load_brawlers_info, load_toml_as_dict, save_dict_as_toml, api_base_url, reader
 
 
 class TrophyObserver:
     _showdown_place_index = {"1st": 0, "2nd": 1, "3rd": 2, "4th": 3}
     _match_history_keys = ("defeat", "victory", "draw")
+    _invalid_history_sections = frozenset(_match_history_keys)
 
     def __init__(self, brawler_list):
         self.history_file = "./cfg/match_history.toml"
@@ -19,6 +20,8 @@ class TrophyObserver:
         self.current_wins = None
         self._history_migration_warnings = set()
         self._api_send_failure_logged_at = 0.0
+        self.known_brawlers = self._load_known_brawler_names(brawler_list)
+        self._last_valid_history_brawler = next(iter(sorted(self.known_brawlers)), "") if self.known_brawlers else ""
         self.match_history = self.load_history(brawler_list)
         total_history = self.match_history.get("total", {}) if isinstance(self.match_history.get("total"), dict) else {}
         self.match_history["total"] = {
@@ -161,6 +164,44 @@ class TrophyObserver:
     def default_match_history_entry(cls):
         return {key: 0 for key in cls._match_history_keys}
 
+    @staticmethod
+    def _normalize_history_key(value):
+        return str(value or "").strip().lower()
+
+    @classmethod
+    def _is_invalid_history_section(cls, value):
+        return cls._normalize_history_key(value) in cls._invalid_history_sections
+
+    def _load_known_brawler_names(self, brawler_list):
+        known = {self._normalize_history_key(brawler) for brawler in (brawler_list or []) if str(brawler).strip()}
+        try:
+            known.update(self._normalize_history_key(name) for name in load_brawlers_info().keys())
+        except Exception as exc:
+            print(f"[TROPHY][WARN] could not load brawler list for history validation: {exc}")
+        return {name for name in known if name and not self._is_invalid_history_section(name) and name != "total"}
+
+    def _is_valid_brawler_history_key(self, value):
+        key = self._normalize_history_key(value)
+        if not key or key == "total" or self._is_invalid_history_section(key):
+            return False
+        return not self.known_brawlers or key in self.known_brawlers
+
+    def _resolve_history_brawler_key(self, value):
+        key = self._normalize_history_key(value)
+        if self._is_valid_brawler_history_key(key):
+            self._last_valid_history_brawler = key
+            return key
+        fallback = self._normalize_history_key(getattr(self, "_active_match_brawler", ""))
+        if self._is_valid_brawler_history_key(fallback):
+            print(f"[TROPHY][WARN] invalid brawler key for result history: {key or 'unknown'}; using current resolved brawler/fallback")
+            return fallback
+        fallback = self._normalize_history_key(getattr(self, "_last_valid_history_brawler", ""))
+        if self._is_valid_brawler_history_key(fallback):
+            print(f"[TROPHY][WARN] invalid brawler key for result history: {key or 'unknown'}; using current resolved brawler/fallback")
+            return fallback
+        print(f"[TROPHY][WARN] invalid brawler key for result history: {key or 'unknown'}; updating total only")
+        return ""
+
     def _warn_history_migration(self, source, brawler, message):
         warning_key = (str(source), str(brawler), str(message))
         if warning_key in getattr(self, "_history_migration_warnings", set()):
@@ -210,8 +251,22 @@ class TrophyObserver:
         source_data = history if isinstance(history, dict) else {}
         lower_source_data = {}
         for raw_brawler, entry in source_data.items():
-            key = str(raw_brawler).lower()
+            key = self._normalize_history_key(raw_brawler)
             if not key.strip():
+                continue
+            if self._is_invalid_history_section(key):
+                self._warn_history_migration(
+                    "match_history",
+                    key,
+                    f"removing invalid result-name history section: {key}",
+                )
+                continue
+            if key != "total" and self.known_brawlers and key not in self.known_brawlers:
+                self._warn_history_migration(
+                    "match_history",
+                    key,
+                    f"removing unknown brawler history section: {key}",
+                )
                 continue
             if key not in lower_source_data:
                 lower_source_data[key] = entry
@@ -235,11 +290,15 @@ class TrophyObserver:
                 key,
                 f"merged duplicate mixed-case match_history entries for {key}",
             )
-        expected_brawlers = {str(brawler).lower() for brawler in (brawler_list or []) if str(brawler).strip()}
+        expected_brawlers = {
+            self._normalize_history_key(brawler)
+            for brawler in (brawler_list or [])
+            if self._is_valid_brawler_history_key(brawler)
+        }
         expected_brawlers.update(key for key in lower_source_data.keys() if key.strip())
 
         for brawler in sorted(expected_brawlers):
-            if brawler == "total":
+            if brawler == "total" or not self._is_valid_brawler_history_key(brawler):
                 continue
             normalized[brawler] = self.normalize_match_history_entry(
                 lower_source_data.get(brawler, self.default_match_history_entry()),
@@ -253,6 +312,8 @@ class TrophyObserver:
             brawler="total",
             source="match_history",
         )
+        if set(normalized.keys()) != set(source_data.keys()):
+            print("[TROPHY] match history schema normalized")
         return normalized
 
     def normalize_sent_match_history(self, history=None):
@@ -261,9 +322,16 @@ class TrophyObserver:
         if not isinstance(source_data, dict):
             source_data = {}
         for brawler, entry in source_data.items():
-            if str(brawler).lower() == "total":
+            if self._normalize_history_key(brawler) == "total":
                 continue
-            key = str(brawler).lower()
+            key = self._normalize_history_key(brawler)
+            if not self._is_valid_brawler_history_key(key):
+                self._warn_history_migration(
+                    "sent_match_history",
+                    key,
+                    f"removing invalid sent_match_history entry: {key or 'unknown'}",
+                )
+                continue
             normalized[key] = self.normalize_match_history_entry(
                 entry,
                 brawler=key,
@@ -274,9 +342,9 @@ class TrophyObserver:
         return normalized
 
     def _ensure_match_history_entry(self, brawler):
-        key = str(brawler or "").lower()
+        key = self._resolve_history_brawler_key(brawler)
         if not key:
-            key = "unknown"
+            return ""
         self.match_history[key] = self.normalize_match_history_entry(
             self.match_history.get(key, self.default_match_history_entry()),
             brawler=key,
@@ -293,9 +361,9 @@ class TrophyObserver:
         return key
 
     def _ensure_sent_match_history_entry(self, brawler):
-        key = str(brawler or "").lower()
+        key = self._resolve_history_brawler_key(brawler)
         if not key:
-            key = "unknown"
+            return self.default_match_history_entry()
         self.sent_match_history[key] = self.normalize_match_history_entry(
             self.sent_match_history.get(key, self.default_match_history_entry()),
             brawler=key,
@@ -819,13 +887,16 @@ class TrophyObserver:
         return self.normalize_match_history(loaded_data, brawler_list)
 
     def save_history(self):
+        self.match_history = self.normalize_match_history(self.match_history, self.known_brawlers)
         save_dict_as_toml(self.match_history, self.history_file)
 
     def add_trophies(self, game_result, current_brawler):
         key = self._ensure_match_history_entry(current_brawler)
-        self._ensure_sent_match_history_entry(key)
+        if key:
+            self._ensure_sent_match_history_entry(key)
 
-        self.begin_match(key)
+        if key:
+            self.begin_match(key)
 
         print(f"[RESULT] TrophyObserver.add_trophies({game_result}) win_streak={self.win_streak}")
         old = self._safe_int(self.current_trophies, 0)
@@ -845,7 +916,7 @@ class TrophyObserver:
                 f"[RESULT] showdown place {outcome['display_result']} -> "
                 f"delta {outcome['predicted_delta']:+d} ({outcome['bucket']})"
             )
-        match_start_trophies = self.get_active_match_start_trophies(current_brawler)
+        match_start_trophies = self.get_active_match_start_trophies(key or current_brawler)
         if match_start_trophies is None:
             match_start_trophies = old
         self._set_last_match_trophy_summary(
@@ -859,7 +930,8 @@ class TrophyObserver:
         )
         print(f"[RESULT] predicted trophies {old} -> {self.current_trophies}")
         print(f"[RESULT] current wins before increment: {self.current_wins}")
-        self.match_history[key][outcome["bucket"]] += 1
+        if key:
+            self.match_history[key][outcome["bucket"]] += 1
         self.match_history["total"][outcome["bucket"]] += 1
         self._last_game_result = outcome["bucket"]
 
@@ -869,7 +941,8 @@ class TrophyObserver:
 
         self.save_history()
         self.history_revision += 1
-        self._finalize_current_match(key, outcome["bucket"])
+        if key:
+            self._finalize_current_match(key, outcome["bucket"])
         return True
 
     def add_win(self, game_result):
