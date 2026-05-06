@@ -34,6 +34,8 @@ def make_play():
     play._brawl_ball_spawn_escape_min_seconds = 5.8
     play._brawl_ball_spawn_escape_nudge_after = 6.2
     play._brawl_ball_spawn_escape_nudge_interval = 1.8
+    play._brawl_ball_spawn_escape_uncertain_seconds = 10.0
+    play._brawl_ball_spawn_escape_extended_seconds = 14.0
     play._brawl_ball_opening_angle = None
     play._brawl_ball_opening_angle_until = 0.0
     play._brawl_ball_spawn_escape_active = False
@@ -54,6 +56,28 @@ def make_play():
     play._brawl_ball_lane_angle_until = 0.0
     play._corner_escape_active = False
     play._corner_escape_until = 0.0
+    play._authoritative_movement_angle = None
+    play._authoritative_movement_source = ""
+    play._authoritative_movement_at = 0.0
+    play._wall_blocked_threshold_seconds = 0.7
+    play._wall_blocked_tick_threshold = 2
+    play._wall_escape_nudge_seconds = 0.45
+    play._wall_escape_return_seconds = 0.65
+    play._wall_escape_state = {
+        "active": False,
+        "source": "",
+        "angle": None,
+        "started_at": 0.0,
+        "last_seen_at": 0.0,
+        "count": 0,
+        "nudge_until": 0.0,
+        "return_until": 0.0,
+        "nudge_angle": None,
+        "return_angle": None,
+        "side": 1,
+        "return_logged": False,
+    }
+    play._last_watchdog_skip_log_at = 0.0
     play._analog_goal_hold_times = {
         "brawlball_lane_push": 1.15,
         "spawn_escape_no_vision": 1.4,
@@ -171,6 +195,20 @@ class BattleStrategyModeTests(unittest.TestCase):
         self.assertTrue(play._brawl_ball_spawn_escape_active)
         self.assertFalse(play._brawl_ball_spawn_escape_complete)
 
+    def test_extended_unknown_spawn_escape_falls_back_to_lane_push(self):
+        play = make_play()
+        play._battle_runtime["match_started_at"] = 100.0
+
+        status = play._brawlball_no_vision_spawn_status(
+            {"enemy": [], "teammate": [], "player": [], "_player_source": "missing"},
+            current_time=116.0,
+        )
+
+        self.assertIsNone(status)
+        self.assertTrue(play._brawl_ball_spawn_escape_complete)
+        self.assertEqual(play._authoritative_movement_source, "brawlball_lane_push")
+        self.assertEqual(play._authoritative_movement_angle, 270.0)
+
     def test_watchdog_uses_spawn_escape_angle_not_stale_side_angle(self):
         play = make_play()
         play._battle_runtime["match_started_at"] = 100.0
@@ -194,6 +232,39 @@ class BattleStrategyModeTests(unittest.TestCase):
         self.assertEqual(round(angle), 270)
         self.assertEqual(play._battle_runtime["active_strategy"], "brawlball_objective")
 
+    def test_wall_blocked_lane_push_triggers_deterministic_nudge(self):
+        play = make_play()
+        play._is_path_blocked_angle = lambda _player, _angle, _wall: True
+        wall_context = {"rectangles": [[900, 300, 1000, 500]], "line_cache": {}}
+
+        self.assertIsNone(play._wall_blocked_escape_angle(270.0, "brawlball_lane_push", (960, 820), wall_context, 200.0))
+        nudge = play._wall_blocked_escape_angle(270.0, "brawlball_lane_push", (960, 820), wall_context, 200.8)
+
+        self.assertIsNotNone(nudge)
+        self.assertNotEqual(round(nudge), 270)
+        self.assertEqual(play._authoritative_movement_source, "wall_escape")
+
+    def test_wall_escape_returns_to_lane_after_nudge(self):
+        play = make_play()
+        play._is_path_blocked_angle = lambda _player, _angle, _wall: True
+        wall_context = {"rectangles": [[900, 300, 1000, 500]], "line_cache": {}}
+        play._wall_blocked_escape_angle(270.0, "spawn_escape_no_vision", (960, 820), wall_context, 200.0)
+        play._wall_blocked_escape_angle(270.0, "spawn_escape_no_vision", (960, 820), wall_context, 200.8)
+
+        returned = play._wall_blocked_escape_angle(270.0, "spawn_escape_no_vision", (960, 820), wall_context, 201.3)
+
+        self.assertEqual(round(returned), 270)
+
+    def test_watchdog_uses_lane_angle_not_stale_random_angle(self):
+        play = make_play()
+        play.last_movement = 297.0
+        play._set_authoritative_movement_angle(270.0, "brawlball_lane_push", 200.0)
+
+        angle, source = play._authoritative_watchdog_angle({"enemy": [], "teammate": [], "player": []}, 200.4)
+
+        self.assertEqual(round(angle), 270)
+        self.assertEqual(source, "brawlball_lane_push")
+
     def test_bottom_right_corner_escapes_toward_center_upfield(self):
         play = make_play()
 
@@ -201,6 +272,16 @@ class BattleStrategyModeTests(unittest.TestCase):
         dx, dy = play.angle_to_vector(angle)
 
         self.assertLess(dx, 0.0)
+        self.assertLess(dy, 0.0)
+        self.assertEqual(play._battle_runtime["active_strategy"], "corner_escape")
+
+    def test_bottom_left_corner_escapes_toward_center_upfield(self):
+        play = make_play()
+
+        angle = play._get_corner_escape_angle((40.0, 1010.0), current_time=200.0, no_target=True)
+        dx, dy = play.angle_to_vector(angle)
+
+        self.assertGreater(dx, 0.0)
         self.assertLess(dy, 0.0)
         self.assertEqual(play._battle_runtime["active_strategy"], "corner_escape")
 

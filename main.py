@@ -75,6 +75,7 @@ def pyla_main(data, external_stop_event=None, external_pause_event=None):
                 "trophy_reward",
                 "player_title_reward",
                 "prestige_reward",
+                "reward_unlock",
                 "star_drop",
             }
             self.states_requiring_frame_data = [
