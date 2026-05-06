@@ -210,6 +210,7 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"cuda"'
                 cpu_or_gpu = '"gpu"'
+                onnx_allow_cuda_with_missing_nvrtc = "true"
                 process_threads = "4"
                 opencv_threads = "2"
                 onnx_intra_threads = "2"
@@ -222,6 +223,7 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"directml"'
                 cpu_or_gpu = '"gpu"'
+                onnx_allow_cuda_with_missing_nvrtc = "true"
                 process_threads = "4"
                 opencv_threads = "2"
                 onnx_intra_threads = "3"
@@ -234,6 +236,7 @@ function Apply-BackendThreadPreset {
             @{
                 preferred_backend = '"cpu"'
                 cpu_or_gpu = '"cpu"'
+                onnx_allow_cuda_with_missing_nvrtc = "true"
                 process_threads = "6"
                 opencv_threads = "2"
                 onnx_intra_threads = "4"
@@ -265,6 +268,14 @@ function Test-InstalledRuntime {
     & $venvPython -c $testCode
     if ($LASTEXITCODE -ne 0) {
         throw "Installed runtime smoke test failed. Please check the Python environment and dependency pins."
+    }
+
+    if ($SelectedBackend -eq "cuda") {
+        Write-Host "Verifying ONNX Runtime CUDA provider availability..." -ForegroundColor Cyan
+        & $venvPython "tools\check_onnx_provider.py" --backend cuda
+        if ($LASTEXITCODE -ne 0) {
+            throw "CUDA was selected, but CUDAExecutionProvider is not available in ONNX Runtime."
+        }
     }
 }
 
