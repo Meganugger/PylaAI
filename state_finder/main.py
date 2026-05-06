@@ -331,6 +331,8 @@ def get_in_game_state(image, allow_reward_ocr=False):
         return "star_drop"
     if allow_reward_ocr and is_in_trophy_reward(image):
         return "trophy_reward"
+    if allow_reward_ocr and is_in_reward_unlock(image):
+        return "reward_unlock"
     if allow_reward_ocr and is_in_prestige_reward(image):
         return "prestige_reward"
     if is_in_player_title_reward(image, allow_ocr=allow_reward_ocr):
@@ -502,6 +504,36 @@ def _count_hsv_in_region(image, region, lower, upper):
     hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
     mask = cv2.inRange(hsv, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8))
     return int(cv2.countNonZero(mask))
+
+
+def _hsv_ratio_in_region(image, region, lower, upper):
+    current_height, current_width = image.shape[:2]
+    orig_x, orig_y, orig_width, orig_height = region
+    width_ratio = current_width / orig_screen_width
+    height_ratio = current_height / orig_screen_height
+    x = int(orig_x * width_ratio)
+    y = int(orig_y * height_ratio)
+    w = int(orig_width * width_ratio)
+    h = int(orig_height * height_ratio)
+    crop = image[y:y + h, x:x + w]
+    if crop.size == 0:
+        return 0.0
+    hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(hsv, np.array(lower, dtype=np.uint8), np.array(upper, dtype=np.uint8))
+    return float(cv2.countNonZero(mask)) / max(1, crop.shape[0] * crop.shape[1])
+
+
+def is_in_reward_unlock(image):
+    """Detect broad blue reward-unlock follow-up screens during reward OCR probes."""
+    if image is None or getattr(image, "size", 0) == 0:
+        return False
+    blue_ratio = _hsv_ratio_in_region(image, [0, 0, 1920, 1080], (92, 80, 85), (118, 255, 255))
+    if blue_ratio < 0.45:
+        return False
+    top_white = _hsv_ratio_in_region(image, [720, 120, 520, 150], (0, 0, 170), (179, 80, 255))
+    bottom_white = _hsv_ratio_in_region(image, [700, 610, 560, 170], (0, 0, 170), (179, 80, 255))
+    card_dark = _hsv_ratio_in_region(image, [720, 260, 520, 330], (0, 0, 0), (179, 255, 80))
+    return top_white >= 0.04 and bottom_white >= 0.03 and card_dark >= 0.02
 
 
 def is_in_prestige_reward(image):
