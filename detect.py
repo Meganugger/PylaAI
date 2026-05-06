@@ -1,4 +1,6 @@
+import ctypes.util
 import os
+import sys
 import time
 
 from runtime_threads import apply_process_thread_limits, configure_onnx_session_options, configure_opencv_threads
@@ -12,6 +14,10 @@ import onnxruntime as ort
 from utils import load_toml_as_dict, record_timing
 
 configure_opencv_threads(cv2)
+
+_ONNX_PROVIDER_STATUS_LOGGED = False
+_CUDA_DEPENDENCY_WARNED = False
+_CUDA_DEPENDENCY_NAMES = ("nvrtc64_120_0.dll",)
 
 
 def preload_onnxruntime_gpu_dlls():
@@ -30,6 +36,92 @@ def preload_onnxruntime_gpu_dlls():
         ort.preload_dlls(directory="")
     except Exception:
         pass
+
+
+def _dll_exists_on_path(dll_name):
+    if os.name != "nt":
+        return True
+    if ctypes.util.find_library(dll_name):
+        return True
+    search_dirs = [
+        os.getcwd(),
+        os.path.dirname(os.path.abspath(__file__)),
+        os.path.dirname(sys.executable),
+    ]
+    search_dirs.extend(str(part) for part in os.environ.get("PATH", "").split(os.pathsep) if part)
+    for directory in search_dirs:
+        try:
+            if os.path.exists(os.path.join(directory, dll_name)):
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def get_missing_cuda_runtime_dependencies():
+    if os.name != "nt":
+        return []
+    return [dll for dll in _CUDA_DEPENDENCY_NAMES if not _dll_exists_on_path(dll)]
+
+
+def build_onnx_providers(preferred_device, preferred_backend, available_providers=None):
+    """Build a provider list without selecting CUDA when its runtime DLLs are missing."""
+    preferred_device = str(preferred_device or "auto").lower()
+    preferred_backend = str(preferred_backend or "auto").lower()
+    available = list(available_providers if available_providers is not None else ort.get_available_providers())
+    providers = ["CPUExecutionProvider"]
+    selected = "CPUExecutionProvider"
+    fallback_reason = ""
+
+    if preferred_device in ("gpu", "auto"):
+        if preferred_backend == "directml":
+            provider_order = ["DmlExecutionProvider", "CUDAExecutionProvider", "AzureExecutionProvider"]
+        elif preferred_backend == "cuda":
+            provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
+        else:
+            provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
+
+        missing_cuda_deps = get_missing_cuda_runtime_dependencies()
+        for provider_name in provider_order:
+            if provider_name not in available:
+                continue
+            if provider_name == "CUDAExecutionProvider" and missing_cuda_deps:
+                fallback_reason = (
+                    f"CUDA runtime dependency {', '.join(missing_cuda_deps)} missing"
+                )
+                continue
+            selected = provider_name
+            providers = [provider_name, "CPUExecutionProvider"]
+            break
+
+        if selected == "CPUExecutionProvider" and "CUDAExecutionProvider" in available:
+            missing_cuda_deps = get_missing_cuda_runtime_dependencies()
+            if missing_cuda_deps:
+                fallback_reason = (
+                    f"CUDA runtime dependency {', '.join(missing_cuda_deps)} missing"
+                )
+
+    return providers, selected, fallback_reason, available
+
+
+def log_onnx_provider_status(model_path, selected_provider, available_providers=None, fallback_reason=""):
+    global _ONNX_PROVIDER_STATUS_LOGGED, _CUDA_DEPENDENCY_WARNED
+    available = available_providers if available_providers is not None else ort.get_available_providers()
+    model_name = os.path.basename(model_path)
+    if fallback_reason and not _CUDA_DEPENDENCY_WARNED:
+        print(f"[ONNX][WARN] {fallback_reason}; falling back to {selected_provider}.")
+        print("Install a matching CUDA runtime or switch preferred_backend to directml/cpu to remove this warning.")
+        _CUDA_DEPENDENCY_WARNED = True
+    if not _ONNX_PROVIDER_STATUS_LOGGED:
+        if selected_provider == "CUDAExecutionProvider":
+            print("[ONNX] CUDA provider active")
+        elif selected_provider == "DmlExecutionProvider":
+            print("[ONNX] DirectML provider active")
+        else:
+            print(f"[ONNX] provider active: {selected_provider}")
+        print(f"[ONNX] available providers: {', '.join(available)}")
+        _ONNX_PROVIDER_STATUS_LOGGED = True
+    print(f"ONNX Runtime provider for {model_name}: {selected_provider}")
 
 class Detect:
     def __init__(self, model_path, ignore_classes=None, classes=None, input_size=(640, 640)):
@@ -74,43 +166,28 @@ class Detect:
 
     def load_model(self):
         available_providers = ort.get_available_providers()
-        providers = ["CPUExecutionProvider"]
-        if self.preferred_device in ("gpu", "auto"):
-            if self.preferred_backend == "directml":
-                provider_order = ["DmlExecutionProvider", "CUDAExecutionProvider", "AzureExecutionProvider"]
-            elif self.preferred_backend == "cuda":
-                provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
-            else:
-                provider_order = ["CUDAExecutionProvider", "DmlExecutionProvider", "AzureExecutionProvider"]
-
-            if "CUDAExecutionProvider" in available_providers and "CUDAExecutionProvider" in provider_order:
-                preload_onnxruntime_gpu_dlls()
-
-            for provider_name in provider_order:
-                if provider_name not in available_providers:
-                    continue
-
-                providers = [provider_name, "CPUExecutionProvider"]
-                if provider_name == "CUDAExecutionProvider":
-                    print("Using CUDA GPU")
-                    if self.preferred_backend == "directml":
-                        print("DirectML was requested but unavailable; falling back to CUDA.")
-                elif provider_name == "DmlExecutionProvider":
-                    print("Using DirectML GPU")
-                    if self.preferred_backend == "cuda":
-                        print("CUDA was requested but unavailable; falling back to DirectML.")
-                else:
-                    print(f"Using {provider_name}")
-                break
-            else:
-                print("Using CPU as no GPU provider found")
-
+        if (
+            self.preferred_device in ("gpu", "auto")
+            and "CUDAExecutionProvider" in available_providers
+            and not get_missing_cuda_runtime_dependencies()
+        ):
+            preload_onnxruntime_gpu_dlls()
+        providers, selected_provider, fallback_reason, available_providers = build_onnx_providers(
+            self.preferred_device,
+            self.preferred_backend,
+            available_providers=available_providers,
+        )
         so = ort.SessionOptions()
         so.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
         configure_onnx_session_options(ort, so)
         model = ort.InferenceSession(self.model_path, sess_options=so, providers=providers)
         active_provider = model.get_providers()[0]
-        print(f"ONNX Runtime provider for {os.path.basename(self.model_path)}: {active_provider}")
+        log_onnx_provider_status(
+            self.model_path,
+            active_provider,
+            available_providers=available_providers,
+            fallback_reason=fallback_reason if active_provider != "CUDAExecutionProvider" else "",
+        )
 
         return model, active_provider
 

@@ -125,6 +125,7 @@ class OPPortedRecoveryTests(unittest.TestCase):
         manager._end_transition_hold_seconds = 10.0
         manager._post_play_again_match_hold_seconds = 2.0
         manager._end_transition_timeout = 12.0
+        manager._post_match_action_guard_reset_seconds = 4.0
         manager._end_transition_continue_sent = False
         manager._end_transition_continue_sent_at = 0.0
         manager._end_transition_continue_result = None
@@ -165,6 +166,35 @@ class OPPortedRecoveryTests(unittest.TestCase):
         manager._last_start_press_at = 0.0
         manager._commit_active_brawler_progress = lambda queue_milestone=True: True
         return manager
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_starr_drop_reward_resets_post_match_action_guard(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=True)
+        manager._end_transition_continue_sent = True
+        manager._end_transition_continue_sent_at = time.time()
+        manager._probe_post_match_reward_state = lambda _screenshot, _now=None: "star_drop"
+        opened = []
+        manager.click_star_drop = lambda: opened.append("star_drop")
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="defeat")
+
+        self.assertEqual(opened, ["star_drop"])
+        self.assertFalse(manager._end_transition_continue_sent)
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_post_match_action_guard_timeout_allows_safe_retry(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=True)
+        manager._end_transition_continue_sent = True
+        manager._end_transition_continue_sent_at = time.time() - 10.0
+        manager._post_match_action_guard_reset_seconds = 0.1
+        manager._probe_post_match_reward_state = lambda _screenshot, _now=None: ""
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="defeat")
+
+        self.assertEqual(manager.window_controller.pressed, ["Q"])
+        self.assertTrue(manager._end_transition_continue_sent)
 
     @patch("stage_manager.save_brawler_data")
     @patch("stage_manager.get_state", return_value="match")

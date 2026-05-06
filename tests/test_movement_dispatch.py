@@ -65,6 +65,27 @@ class MovementDispatchTests(unittest.TestCase):
         self.assertEqual(wc.scrcpy_client.control.calls[1], (220, 720, scrcpy.ACTION_MOVE, 1))
         self.assertTrue(wc.are_we_moving)
 
+    def test_movement_refreshes_same_angle_after_refresh_interval(self):
+        wc = movement_controller()
+        wc.move_joystick_angle(270, radius=150)
+        wc.last_joystick_move_time -= 1.0
+
+        result = wc.move_joystick_angle(270, radius=150)
+
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["attempted"])
+        self.assertEqual(wc.scrcpy_client.control.calls[-1], (220, 720, scrcpy.ACTION_MOVE, 1))
+
+    def test_attack_click_does_not_release_held_movement_pointer(self):
+        wc = movement_controller()
+        wc.move_joystick_angle(270, radius=150)
+
+        wc.click(1600, 870)
+
+        self.assertTrue(wc.are_we_moving)
+        self.assertEqual(wc.scrcpy_client.control.calls[-2], (1600, 870, scrcpy.ACTION_DOWN, 2))
+        self.assertEqual(wc.scrcpy_client.control.calls[-1], (1600, 870, scrcpy.ACTION_UP, 2))
+
     def test_movement_reports_backend_failure_without_claiming_success(self):
         wc = movement_controller(fail=True)
         result = wc.move_joystick_angle(90, radius=150)
