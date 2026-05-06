@@ -128,6 +128,7 @@ The CUDA install path is pinned to the CUDA 12.4 runtime packages plus cuDNN 9.2
 - `nvidia-cudnn-cu12==9.20.*`
 
 This avoids accidentally pulling newer CUDA runtime packages such as 12.9/13.x-adjacent tooling. For the supported PylaAI setup, you do not need to manually copy cuDNN files into a system CUDA folder.
+At runtime PylaAI preloads DLL directories from those installed NVIDIA wheels before creating ONNX Runtime sessions. A missing `nvrtc64_120_0.dll` PATH scan warning is not treated as fatal by itself; CUDA is used when `CUDAExecutionProvider` is available and session creation succeeds.
 
 CPU-only fallback:
 
@@ -162,7 +163,7 @@ Recommended launcher flow:
 - `scripts\\setup.bat`: manual install/repair launcher
 - `scripts\\start.bat`: legacy direct launcher with fewer checks
 
-`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `scripts\\setup.bat` if the local runtime is broken.
+`Run PylaAI.bat` performs a quick Python/ONNX startup check first and routes you back through `scripts\\setup.bat` if the local runtime is broken. CUDA setup also runs `tools\\check_onnx_provider.py --backend cuda` so it reports whether `CUDAExecutionProvider` is actually available after install.
 
 Manual fallback from the repository root:
 

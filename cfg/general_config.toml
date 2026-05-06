@@ -3,6 +3,7 @@ discord_id = ""
 super_debug = "yes"
 cpu_or_gpu = "auto"
 preferred_backend = "auto"
+onnx_allow_cuda_with_missing_nvrtc = true
 max_ips = 60
 target_ips = 60
 performance_profile = "balanced"

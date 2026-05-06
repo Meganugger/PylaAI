@@ -230,6 +230,7 @@ class Movement:
         self._committed_analog_until = 0.0
         self._movement_watchdog_seconds = float(bot_config.get("movement_watchdog_seconds", 0.65))
         self._last_movement_watchdog_log_at = 0.0
+        self._last_movement_refresh_at = time.monotonic()
         general_config = load_toml_as_dict("cfg/general_config.toml")
         self.wall_stuck_enabled = str(bot_config.get("wall_stuck_enabled", "yes")).lower() in ("yes", "true", "1")
         self.wall_stuck_debug = str(general_config.get("wall_stuck_debug", "no")).lower() in ("yes", "true", "1")
@@ -1267,6 +1268,27 @@ class Play(Movement):
             print(f"[BATTLE] input dispatched: {message}")
             self._last_battle_input_log_at = current_time
 
+    def _movement_clock(self):
+        return time.monotonic()
+
+    def _reset_movement_watchdog(self):
+        self._last_movement_refresh_at = self._movement_clock()
+
+    def _movement_silence_seconds(self):
+        now = self._movement_clock()
+        last_refresh = getattr(self, "_last_movement_refresh_at", None)
+        if not isinstance(last_refresh, (float, int)) or last_refresh <= 0:
+            self._last_movement_refresh_at = now
+            return 0.0
+        silence = now - float(last_refresh)
+        if silence < 0 or silence > 30.0:
+            self._last_movement_refresh_at = now
+            if time.time() - getattr(self, "_last_movement_watchdog_log_at", 0.0) >= 5.0:
+                print("[INPUT][WARN] movement watchdog timestamp reset")
+                self._last_movement_watchdog_log_at = time.time()
+            return 0.0
+        return silence
+
     def _record_movement_result(self, result, detail, current_time=None):
         current_time = current_time if current_time is not None else time.time()
         if isinstance(result, dict):
@@ -1280,6 +1302,9 @@ class Play(Movement):
                 return False
             if not result.get("attempted", True):
                 return True
+            self._reset_movement_watchdog()
+        elif result:
+            self._reset_movement_watchdog()
         self._record_battle_input("movement", detail, current_time)
         return True
 
@@ -1588,7 +1613,8 @@ class Play(Movement):
         self.keys_hold = []
         self.last_movement = ''
         self.last_movement_time = current_time
-        self.time_since_movement = 0.0
+        self.time_since_movement = current_time
+        self._reset_movement_watchdog()
         self.time_since_different_movement = current_time
         self.time_since_player_last_found = current_time
         self.time_since_last_proceeding = current_time
@@ -2833,7 +2859,7 @@ class Play(Movement):
             brawler=brawler
         )
         current_time = time.time()
-        movement_silence = current_time - self.time_since_movement
+        movement_silence = self._movement_silence_seconds()
         watchdog_due = (
             str(getattr(self, "_runtime_state", "") or "") == "match"
             and movement_silence > max(
@@ -2884,7 +2910,7 @@ class Play(Movement):
             self.do_movement(movement)
             if watchdog_due and isinstance(movement, (float, int)):
                 print(f"[INPUT] movement watchdog refresh angle={float(movement):.0f}")
-            self.time_since_movement = time.time()
+            self.time_since_movement = current_time
         return movement
 
     def _add_strafe_angle(self, angle, current_time, style):
