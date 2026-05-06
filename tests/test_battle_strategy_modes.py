@@ -23,8 +23,17 @@ def make_play():
     play._brawl_ball_opening_seconds = 6.0
     play._brawl_ball_opening_lock_seconds = 4.5
     play._brawl_ball_opening_hold_seconds = 1.4
+    play._brawl_ball_spawn_escape_seconds = 8.0
+    play._brawl_ball_spawn_escape_min_seconds = 5.8
+    play._brawl_ball_spawn_escape_nudge_after = 6.2
+    play._brawl_ball_spawn_escape_nudge_interval = 1.8
     play._brawl_ball_opening_angle = None
     play._brawl_ball_opening_angle_until = 0.0
+    play._brawl_ball_spawn_escape_active = False
+    play._brawl_ball_spawn_escape_complete = False
+    play._brawl_ball_spawn_escape_started_at = 0.0
+    play._brawl_ball_spawn_escape_last_nudge_at = 0.0
+    play._last_brawl_ball_spawn_escape_log_at = 0.0
     play._last_brawl_ball_opening_log_at = 0.0
     play._last_brawl_ball_opening_override_log_at = 0.0
     play._last_angle_smoothing_log_at = 0.0
@@ -41,12 +50,46 @@ class BattleStrategyModeTests(unittest.TestCase):
         angle = play._get_brawl_ball_opening_angle(player_pos=(1600, 900), current_time=101.0)
 
         self.assertEqual(angle, 270.0)
-        self.assertEqual(play._battle_runtime["active_strategy"], "brawlball_opening")
+        self.assertEqual(play._battle_runtime["active_strategy"], "brawlball_spawn_escape")
 
     def test_brawl_ball_opening_finishes_after_window(self):
         play = make_play()
 
         self.assertIsNone(play._get_brawl_ball_opening_angle(player_pos=(1600, 900), current_time=107.0))
+
+    def test_spawn_escape_inside_own_spawn_returns_vertical(self):
+        play = make_play()
+
+        angle = play._get_brawl_ball_spawn_escape_angle(player_pos=(960, 820), current_time=103.0)
+
+        self.assertEqual(angle, 270.0)
+        self.assertEqual(play._battle_runtime["active_strategy"], "brawlball_spawn_escape")
+
+    def test_spawn_escape_rejects_noisy_side_candidate(self):
+        play = make_play()
+
+        angle = play._get_brawl_ball_spawn_escape_angle(
+            player_pos=(960, 820),
+            current_time=103.0,
+            candidate_angle=150,
+        )
+
+        self.assertEqual(angle, 270.0)
+
+    def test_spawn_escape_uses_deterministic_nudge_then_returns_vertical(self):
+        play = make_play()
+
+        nudge = play._get_brawl_ball_spawn_escape_angle(player_pos=(760, 820), current_time=106.3)
+        vertical = play._get_brawl_ball_spawn_escape_angle(player_pos=(760, 820), current_time=106.7)
+
+        self.assertEqual(nudge, 285.0)
+        self.assertEqual(vertical, 270.0)
+
+    def test_spawn_escape_completes_after_leaving_spawn(self):
+        play = make_play()
+
+        self.assertIsNone(play._get_brawl_ball_spawn_escape_angle(player_pos=(960, 520), current_time=109.0))
+        self.assertTrue(play._brawl_ball_spawn_escape_complete)
 
     def test_role_desired_range_labels_are_distinct(self):
         self.assertEqual(Play._role_desired_range_label("tank"), "close")
