@@ -22,8 +22,9 @@ def make_observer(history=None):
         return {}
 
     with patch("trophy_observer.load_toml_as_dict", side_effect=fake_load_toml):
-        with patch.object(TrophyObserver, "save_history", lambda self: None):
-            observer = TrophyObserver(["darryl"])
+        with patch("trophy_observer.load_brawlers_info", return_value={"darryl": {}, "shelly": {}}):
+            with patch.object(TrophyObserver, "save_history", lambda self: None):
+                observer = TrophyObserver(["darryl"])
     observer.save_history = lambda: None
     observer.current_trophies = 500
     observer.current_wins = 0
@@ -98,6 +99,62 @@ class TrophyObserverHistoryTests(unittest.TestCase):
         self.assertEqual(observer.match_history["darryl"]["victory"], 1)
         self.assertEqual(observer.match_history["total"]["victory"], 1)
         self.assertEqual(observer.last_match_bucket, "victory")
+
+    def test_corrupted_result_name_sections_are_removed(self):
+        observer = make_observer({
+            "darryl": {"victory": 2, "defeat": 1, "draw": 0},
+            "victory": {"victory": 9, "defeat": 0, "draw": 0},
+            "defeat": {"victory": 0, "defeat": 9, "draw": 0},
+            "draw": {"victory": 0, "defeat": 0, "draw": 9},
+            "total": {"victory": 2, "defeat": 1, "draw": 0},
+        })
+
+        self.assertNotIn("victory", observer.match_history)
+        self.assertNotIn("defeat", observer.match_history)
+        self.assertNotIn("draw", observer.match_history)
+        self.assertEqual(observer.match_history["darryl"], {"victory": 2, "defeat": 1, "draw": 0})
+        self.assertEqual(observer.match_history["total"], {"victory": 2, "defeat": 1, "draw": 0})
+
+    def test_add_trophies_never_creates_result_named_brawler_section(self):
+        observer = make_observer()
+
+        self.assertTrue(observer.add_trophies("victory", "darryl"))
+        self.assertTrue(observer.add_trophies("defeat", "darryl"))
+
+        self.assertEqual(observer.match_history["darryl"]["victory"], 1)
+        self.assertEqual(observer.match_history["darryl"]["defeat"], 1)
+        self.assertEqual(observer.match_history["total"]["victory"], 1)
+        self.assertEqual(observer.match_history["total"]["defeat"], 1)
+        self.assertNotIn("victory", observer.match_history)
+        self.assertNotIn("defeat", observer.match_history)
+
+    def test_invalid_current_brawler_result_name_falls_back_to_resolved_brawler(self):
+        observer = make_observer()
+        observer._active_match_brawler = "darryl"
+
+        self.assertTrue(observer.add_trophies("victory", "victory"))
+
+        self.assertEqual(observer.match_history["darryl"]["victory"], 1)
+        self.assertEqual(observer.match_history["total"]["victory"], 1)
+        self.assertNotIn("victory", observer.match_history)
+
+    def test_api_delta_ignores_invalid_result_name_sections(self):
+        observer = make_observer()
+        observer.match_history = {
+            "darryl": {"victory": 3, "defeat": 0, "draw": 0},
+            "victory": {"victory": 10, "defeat": 0, "draw": 0},
+            "total": {"victory": 13, "defeat": 0, "draw": 0},
+        }
+        observer.sent_match_history = {"darryl": {"victory": 1, "defeat": 0, "draw": 0}}
+        response = Mock(status_code=200)
+
+        with patch("trophy_observer.api_base_url", "example.test"):
+            with patch("trophy_observer.requests.post", return_value=response) as post:
+                self.assertTrue(observer.send_results_to_api())
+
+        payload = post.call_args.kwargs["json"]
+        self.assertEqual(set(payload.keys()), {"darryl"})
+        self.assertEqual(payload["darryl"]["wins"], 2)
 
 
 if __name__ == "__main__":
