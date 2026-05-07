@@ -1,6 +1,7 @@
 # Coords of btns the bot tries to press.
 [lobby]
 select_btn = [150, 950]
+brawler_btn = [128, 500]
 trophy_observer = [20, 10, 650, 200]
 brawl_stars_icon = [960, 540]
 [template_matching]

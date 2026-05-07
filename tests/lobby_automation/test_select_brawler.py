@@ -35,6 +35,28 @@ class TestLobbyAutomation(unittest.TestCase):
         
         self.assert_click_within_tolerance(expected_scaled_x, expected_scaled_y, TOLERANCE)
 
+    def test_open_brawler_menu_recovers_when_shop_opens(self):
+        """A wrong lobby click into Shop should press back and retry the safe Brawlers button."""
+        self.mock_window_controller.screenshot.return_value = Image.new("RGB", (1920, 1080))
+        self.mock_window_controller.android_back.return_value = True
+        mock_get_state = MagicMock(side_effect=["shop", "lobby", "brawler_selection"])
+
+        with patch.dict(LobbyAutomation._open_brawler_menu.__globals__, {"get_state": mock_get_state}):
+            opened = self.lobby._open_brawler_menu(
+                "alli",
+                self.mock_window_controller.screenshot.return_value,
+                "lobby",
+                False,
+            )
+
+        self.assertTrue(opened)
+        self.assertTrue(self.mock_window_controller.android_back.called)
+        safe_clicks = [
+            call for call in self.mock_window_controller.click.call_args_list
+            if len(call.args) >= 2 and call.args[0] == 128 and call.args[1] == 500
+        ]
+        self.assertGreaterEqual(len(safe_clicks), 2)
+
     def assert_click_within_tolerance(self, expected_x, expected_y, tolerance=50):
         """Helper method to check if any click was within tolerance of expected coordinates"""
         self.assertTrue(
