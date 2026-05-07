@@ -25,6 +25,7 @@ class LobbyAutomation:
         self.window_controller = window_controller
         self.brawler_menu_template = None
         self._last_idle_debug_time = 0.0
+        self._last_shop_recovery_time = 0.0
 
     def check_for_idle(self, frame):
         wr = self.window_controller.width_ratio
@@ -46,6 +47,10 @@ class LobbyAutomation:
     @staticmethod
     def _can_select_brawler_in_state(state):
         return state in {"lobby", "brawler_selection"}
+
+    @staticmethod
+    def _is_recoverable_selection_state(state):
+        return state in {"shop", "profile", "settings", "news"}
 
     @staticmethod
     def _coerce_scalar(value, default=0.0):
@@ -84,9 +89,89 @@ class LobbyAutomation:
         for attempt in range(8):
             self._scroll_brawler_menu(direction="up", attempt=attempt)
 
+    def _click_lobby_brawlers_button(self):
+        lobby_cfg = self.coords_cfg.get("lobby", {}) if isinstance(self.coords_cfg, dict) else {}
+        x, y = lobby_cfg.get("brawler_btn", [128, 500])
+        self.window_controller.click(x, y, already_include_ratio=False)
+
+    def _recover_from_wrong_selection_state(self, state, brawler, debug_enabled=False):
+        if not self._is_recoverable_selection_state(state):
+            return False
+        now = time.time()
+        if now - self._last_shop_recovery_time >= 1.0:
+            print(
+                f"WARNING: Brawler selection for '{brawler}' landed on '{state}'. "
+                "Returning to lobby before retrying."
+            )
+            self._last_shop_recovery_time = now
+        self.press_back()
+        deadline = time.time() + 3.0
+        while time.time() < deadline:
+            time.sleep(0.35)
+            try:
+                current_state = get_state(self.window_controller.screenshot())
+            except Exception:
+                return False
+            if current_state == "lobby":
+                return True
+            if current_state == "brawler_selection":
+                return True
+            if current_state == state:
+                self.press_back()
+        if debug_enabled:
+            print(f"Could not recover from '{state}' while selecting {brawler}.")
+        return False
+
+    def _wait_for_brawler_selection_or_lobby(self, brawler, timeout=2.0, debug_enabled=False):
+        deadline = time.time() + timeout
+        last_state = None
+        while time.time() < deadline:
+            screenshot = self.window_controller.screenshot()
+            state = get_state(screenshot)
+            last_state = state
+            if state == "brawler_selection":
+                return True, state, screenshot
+            if state == "lobby":
+                time.sleep(0.2)
+                continue
+            if self._recover_from_wrong_selection_state(state, brawler, debug_enabled):
+                return False, "lobby", self.window_controller.screenshot()
+            if not self._can_select_brawler_in_state(state):
+                return False, state, screenshot
+            time.sleep(0.25)
+        return False, last_state or "unknown", self.window_controller.screenshot()
+
     def _open_brawler_menu(self, brawler, current_frame, current_state, debug_enabled):
         if current_state == "brawler_selection":
             return True
+
+        if self._recover_from_wrong_selection_state(current_state, brawler, debug_enabled):
+            current_frame = self.window_controller.screenshot()
+            current_state = get_state(current_frame)
+
+        if current_state == "lobby":
+            # Prefer the known lobby Brawlers button over full-screen template
+            # matching. The previous full-screen search could click Shop.
+            for attempt in range(2):
+                self._click_lobby_brawlers_button()
+                time.sleep(0.65)
+                opened, state, frame = self._wait_for_brawler_selection_or_lobby(
+                    brawler,
+                    timeout=2.2,
+                    debug_enabled=debug_enabled,
+                )
+                if opened:
+                    return True
+                current_state = state
+                current_frame = frame
+                if current_state == "lobby":
+                    continue
+                if not self._can_select_brawler_in_state(current_state):
+                    print(
+                        f"WARNING: Aborting brawler selection for '{brawler}' because "
+                        f"the state changed to '{current_state}'."
+                    )
+                    return False
 
         if self.brawler_menu_template is None:
             self.brawler_menu_template = load_image(
@@ -109,6 +194,10 @@ class LobbyAutomation:
                     state = get_state(screenshot)
                     if state == "brawler_selection":
                         return True
+                    if self._recover_from_wrong_selection_state(state, brawler, debug_enabled):
+                        current_frame = self.window_controller.screenshot()
+                        current_state = get_state(current_frame)
+                        break
                     if not self._can_select_brawler_in_state(state):
                         print(
                             f"WARNING: Aborting brawler selection for '{brawler}' because "
@@ -124,6 +213,10 @@ class LobbyAutomation:
             time.sleep(0.5)
             current_frame = self.window_controller.screenshot()
             current_state = get_state(current_frame)
+            if self._recover_from_wrong_selection_state(current_state, brawler, debug_enabled):
+                current_frame = self.window_controller.screenshot()
+                current_state = get_state(current_frame)
+                continue
             if not self._can_select_brawler_in_state(current_state):
                 print(
                     f"WARNING: Aborting brawler selection for '{brawler}' because "
@@ -186,6 +279,9 @@ class LobbyAutomation:
         target_key = self.normalize_ocr_name(brawler)
         current_frame = self.window_controller.screenshot()
         current_state = get_state(current_frame)
+        if self._recover_from_wrong_selection_state(current_state, brawler, debug_enabled):
+            current_frame = self.window_controller.screenshot()
+            current_state = get_state(current_frame)
         if not self._can_select_brawler_in_state(current_state):
             print(
                 f"WARNING: Skipping brawler selection for '{brawler}' because "
@@ -207,6 +303,8 @@ class LobbyAutomation:
             for i in range(70):
                 screenshot = self.window_controller.screenshot()
                 current_state = get_state(screenshot)
+                if self._recover_from_wrong_selection_state(current_state, brawler, debug_enabled):
+                    return False
                 if not self._can_select_brawler_in_state(current_state):
                     print(
                         f"WARNING: Aborting brawler selection for '{brawler}' because "
@@ -243,6 +341,8 @@ class LobbyAutomation:
                             if debug_enabled:
                                 print("Selected brawler ", brawler)
                             return brawler
+                        if self._recover_from_wrong_selection_state(confirm_state, brawler, debug_enabled):
+                            return False
                         if not self._can_select_brawler_in_state(confirm_state):
                             print(
                                 f"WARNING: Could not confirm selection for '{brawler}' because "

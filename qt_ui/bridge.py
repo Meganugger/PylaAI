@@ -117,6 +117,13 @@ class QtBridge(QObject):
             return 5
         return 3
 
+    @staticmethod
+    def _normalize_showdown_team_behavior(value):
+        normalized = str(value or "follow").strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {"border", "safe_border", "solo", "safe_solo"}:
+            return "border"
+        return "follow"
+
     def _load_bot_config(self):
         config = load_config("bot")
         config.setdefault("gamemode", "knockout")
@@ -129,6 +136,9 @@ class QtBridge(QObject):
         config.setdefault("quest_farm_enabled", "no")
         config.setdefault("quest_farm_mode", "games")
         config.setdefault("quest_farm_excluded", [])
+        config.setdefault("showdown_team_behavior", "follow")
+        config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(config.get("showdown_team_behavior"))
+        config.setdefault("battle_debug_verbose", "no")
         return config
 
     def _load_general_config(self):
@@ -1114,6 +1124,9 @@ class QtBridge(QObject):
         matching = next((mode for mode in GAMEMODES if mode["value"] == gamemode), None)
         if matching:
             self.bot_config["gamemode_type"] = self._gamemode_type_for(gamemode)
+        self.bot_config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(
+            payload.get("showdown_team_behavior", self.bot_config.get("showdown_team_behavior", "follow"))
+        )
 
         save_dict_as_toml(self.general_config, "cfg/general_config.toml")
         save_dict_as_toml(self.bot_config, "cfg/bot_config.toml")
@@ -1206,9 +1219,14 @@ class QtBridge(QObject):
             "seconds_to_hold_attack_after_reaching_max",
             "play_again_on_win",
             "bot_uses_gadgets",
+            "showdown_team_behavior",
+            "battle_debug_verbose",
         ):
             if key in bot:
                 self.bot_config[key] = bot[key]
+        self.bot_config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(
+            self.bot_config.get("showdown_team_behavior", "follow")
+        )
 
         for key, default in (
             ("minimum_movement_delay", 0.08),

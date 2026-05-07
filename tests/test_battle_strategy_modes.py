@@ -51,7 +51,30 @@ def make_play():
     play._last_no_action_tick_log_at = 0.0
     play._showdown_roam_spin_angle = 270.0
     play._showdown_roam_angle_until = 0.0
-    play._showdown_roam_hold_seconds = 1.25
+    play._showdown_roam_hold_seconds = 2.2
+    play._showdown_roam_target_index = 0
+    play._showdown_team_behavior = "follow"
+    play._showdown_border_target_index = 0
+    play._showdown_border_angle_until = 0.0
+    play._showdown_border_hold_seconds = 2.4
+    play._showdown_trio_grouping_enabled = True
+    play._showdown_teammate_spacing_distance = 180.0
+    play._showdown_teammate_orbit_distance = 520.0
+    play._showdown_teammate_hysteresis = 0.2
+    play._showdown_teammate_lock_duration = 0.55
+    play._showdown_orbit_switch_interval = 1.8
+    play._showdown_orbit_side = 1
+    play._showdown_orbit_until = 0.0
+    play._showdown_locked_teammate = None
+    play._showdown_locked_teammate_distance = float("inf")
+    play._showdown_teammate_lock_until = 0.0
+    play._showdown_regroup_active = False
+    play._showdown_enemy_chase_timeout = 2.0
+    play._last_enemy_seen_at = 0.0
+    play._last_known_enemies = []
+    play._teammate_positions = []
+    play._showdown_fog_cached_angle = None
+    play.current_frame = None
     play._brawl_ball_lane_angle = 270.0
     play._brawl_ball_lane_angle_until = 0.0
     play._corner_escape_active = False
@@ -82,12 +105,19 @@ def make_play():
         "brawlball_lane_push": 1.15,
         "spawn_escape_no_vision": 1.4,
         "corner_escape": 0.85,
+        "showdown_roam": 0.65,
+        "showdown_border": 0.75,
+        "showdown_wall_escape": 0.50,
     }
     play._analog_goal_priorities = {
         "brawlball_lane_push": 3,
         "corner_escape": 7,
         "spawn_escape_no_vision": 8,
+        "showdown_roam": 1,
+        "showdown_border": 2,
+        "showdown_wall_escape": 5,
     }
+    play._battle_debug_verbose = False
     play._committed_analog_reason = ""
     play._committed_analog_until = 0.0
     play._planned_analog_reason = None
@@ -302,6 +332,60 @@ class BattleStrategyModeTests(unittest.TestCase):
             second = play._get_showdown_roam_move((960, 540), {})
 
         self.assertEqual(first, second)
+
+    def test_showdown_follow_mode_prefers_teammate_regroup(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._showdown_team_behavior = "follow"
+        play._teammate_positions = [(960.0, 300.0)]
+        play._find_best_angle = lambda _player, angle, _wall: angle
+
+        movement = play.no_enemy_movement([930.0, 780.0, 990.0, 840.0], {"rectangles": [], "line_cache": {}})
+
+        self.assertEqual(play._battle_runtime["active_strategy"], "showdown_regroup")
+        self.assertEqual(play._planned_analog_reason, "team_follow")
+        self.assertLess(play.angle_to_vector(movement)[1], 0.0)
+
+    def test_showdown_border_mode_ignores_teammates(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._showdown_team_behavior = "border"
+        play._teammate_positions = [(960.0, 300.0)]
+        play._find_best_angle = lambda _player, angle, _wall: angle
+
+        movement = play.no_enemy_movement([930.0, 780.0, 990.0, 840.0], {"rectangles": [], "line_cache": {}})
+
+        self.assertEqual(play._battle_runtime["active_strategy"], "showdown_border")
+        self.assertEqual(play._planned_analog_reason, "showdown_border")
+        self.assertIsInstance(movement, float)
+
+    def test_showdown_wall_escape_does_not_return_brawlball_lane_angle(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._is_path_blocked_angle = lambda _player, _angle, _wall: True
+        play._find_best_angle = lambda _player, angle, _wall: angle
+        wall_context = {"rectangles": [[900, 300, 1000, 500]], "line_cache": {}}
+
+        self.assertIsNone(play._wall_blocked_escape_angle(270.0, "showdown_roam", (960, 820), wall_context, 200.0))
+        nudge = play._wall_blocked_escape_angle(270.0, "showdown_roam", (960, 820), wall_context, 200.8)
+
+        self.assertIsNotNone(nudge)
+        self.assertEqual(play._authoritative_movement_source, "showdown_wall_escape")
+        self.assertNotEqual(play._battle_runtime["active_strategy"], "wall_escape")
+
+    def test_showdown_watchdog_rejects_stale_brawlball_lane_source(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._set_authoritative_movement_angle(270.0, "brawlball_lane_push", 200.0)
+
+        angle, source = play._authoritative_watchdog_angle({"enemy": [], "teammate": [], "player": []}, 201.0)
+
+        self.assertEqual(source, "showdown_roam")
+        self.assertNotEqual(source, "brawlball_lane_push")
 
     def test_movement_watchdog_initializes_missing_timestamp(self):
         play = object.__new__(Play)
