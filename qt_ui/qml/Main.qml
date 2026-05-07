@@ -407,7 +407,10 @@ ApplicationWindow {
         let gamemodeValue = "knockout"
         if (modeBox.currentIndex >= 0 && modeBox.currentIndex < gamemodeModel.count)
             gamemodeValue = gamemodeModel.get(modeBox.currentIndex).value
-        backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue})
+        let showdownBehaviorValue = "follow"
+        if (showdownBehaviorBox.currentIndex >= 0 && showdownBehaviorBox.currentIndex < showdownBehaviorModel.count)
+            showdownBehaviorValue = showdownBehaviorModel.get(showdownBehaviorBox.currentIndex).value
+        backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue, "showdown_team_behavior": showdownBehaviorValue})
     }
     function saveBrawler() {
         preserveBrawlerScroll()
@@ -420,7 +423,7 @@ ApplicationWindow {
     function saveSettings() {
         backend.saveSettings({
             "general": {"max_ips": maxIps.text, "target_ips": targetIpsField.text, "scrcpy_max_fps": scrcpyFpsField.text, "scrcpy_max_width": scrcpyWidthField.text, "scrcpy_bitrate": scrcpyBitrateField.text, "joystick_refresh_seconds": joystickRefreshField.text, "joystick_repress_seconds": joystickRepressField.text, "joystick_down_move_delay": joystickDelayField.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "input_debug": yesNo(inputDebugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase(), "instance_count": instanceCountField.text},
-            "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked)},
+            "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked), "showdown_team_behavior": showdownBehaviorBox.currentIndex >= 0 && showdownBehaviorBox.currentIndex < showdownBehaviorModel.count ? showdownBehaviorModel.get(showdownBehaviorBox.currentIndex).value : "follow", "battle_debug_verbose": yesNo(battleVerboseBox.checked)},
             "time": {"state_check": stateCheck.text, "no_detections": noDetect.text, "idle": idleField.text, "gadget": gadgetField.text, "hypercharge": hyperField.text, "super": superField.text, "wall_detection": wallField.text, "no_detection_proceed": noProceed.text, "check_if_brawl_stars_crashed": crashCheck.text},
             "login": {"key": pylaKey.text}
         })
@@ -502,6 +505,10 @@ ApplicationWindow {
         let idx = 0
         for (let i = 0; i < gamemodeModel.count; ++i) if (gamemodeModel.get(i).value === gm) idx = i
         modeBox.currentIndex = idx
+        let showdownBehavior = String(bot.showdown_team_behavior || "follow")
+        let showdownIdx = 0
+        for (let s = 0; s < showdownBehaviorModel.count; ++s) if (showdownBehaviorModel.get(s).value === showdownBehavior) showdownIdx = s
+        showdownBehaviorBox.currentIndex = showdownIdx
         maxIps.text = String(general.max_ips || "auto")
         backendBox.currentIndex = Math.max(0, ["auto","cpu","gpu"].indexOf(String(general.cpu_or_gpu || "auto").toLowerCase()))
         debugBox.checked = boolFrom(general.super_debug)
@@ -526,6 +533,7 @@ ApplicationWindow {
         joystickRepressField.text = String(general.joystick_repress_seconds || 1.8)
         joystickDelayField.text = String(general.joystick_down_move_delay || 0.012)
         inputDebugBox.checked = boolFrom(general.input_debug)
+        battleVerboseBox.checked = boolFrom(bot.battle_debug_verbose)
         pylaKey.text = String(loginState.key || "")
         minMove.text = String(bot.minimum_movement_delay || 0.08)
         unstuckDelay.text = String(bot.unstuck_movement_delay || 1.5)
@@ -575,6 +583,11 @@ ApplicationWindow {
     ListModel { id: gamemodeModel }
     ListModel { id: emulatorModel }
     ListModel { id: performanceProfileModel }
+    ListModel {
+        id: showdownBehaviorModel
+        ListElement { label: "Team Follow"; value: "follow" }
+        ListElement { label: "Safe Border"; value: "border" }
+    }
     ListModel {
         id: farmStrategyModel
         ListElement { label: "Lowest trophies first"; value: "lowest_first" }
@@ -1183,11 +1196,12 @@ ApplicationWindow {
                                         CardTitle { text: "Launch Grid" }
                                         GridLayout {
                                             width: parent.width
-                                            columns: 4
+                                            columns: width >= 1180 ? 5 : 3
                                             columnSpacing: 14
                                             rowSpacing: 12
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Map Orientation" } AppComboBox { id: orientationBox; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Gamemode" } AppComboBox { id: modeBox; Layout.fillWidth: true; model: gamemodeModel; textRole: "label" } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Showdown behavior" } AppComboBox { id: showdownBehaviorBox; Layout.fillWidth: true; model: showdownBehaviorModel; textRole: "label"; enabled: modeBox.currentIndex >= 0 && modeBox.currentIndex < gamemodeModel.count && gamemodeModel.get(modeBox.currentIndex).value === "showdown"; opacity: enabled ? 1.0 : 0.55 } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: emulatorBox; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: timerField; Layout.fillWidth: true } }
                                         }
@@ -2375,7 +2389,7 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Auto Push" } AppTextField { id: autoPushField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: settingsEmulator; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Orientation" } AppComboBox { id: settingsOrientation; Layout.fillWidth: true; model: ["Vertical","Horizontal"] } }
-                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } AppCheckBox { id: inputDebugBox; text: "Input logs" } } } }
+                                            ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Debug" } Item { Layout.fillWidth: true; implicitHeight: root.fieldHeight; RowLayout { anchors.fill: parent; anchors.verticalCenter: parent.verticalCenter; AppCheckBox { id: debugBox; text: "Super debug" } AppCheckBox { id: inputDebugBox; text: "Input logs" } AppCheckBox { id: battleVerboseBox; text: "Battle verbose" } } } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Joystick Refresh" } AppTextField { id: joystickRefreshField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Joystick Repress" } AppTextField { id: joystickRepressField; Layout.fillWidth: true } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Down-Move Delay" } AppTextField { id: joystickDelayField; Layout.fillWidth: true } }
