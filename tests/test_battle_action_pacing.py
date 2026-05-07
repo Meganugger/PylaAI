@@ -63,6 +63,7 @@ def make_play():
     play._brawl_ball_lane_angle = 270.0
     play._brawl_ball_lane_angle_until = 0.0
     play._last_watchdog_skip_log_at = 0.0
+    play._battle_debug_verbose = False
     play.selected_gamemode = "knockout"
     play.game_mode = 3
     play._battle_tick_id = 0
