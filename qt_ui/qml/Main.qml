@@ -1093,15 +1093,23 @@ ApplicationWindow {
                     Layout.fillHeight: true
                     currentIndex: pageIndex
 
-                    ScrollView {
-                        id: controlCenterScroll
-                        clip: true
-                        contentWidth: availableWidth
-                        Component.onCompleted: stabilizeScroll(controlCenterScroll)
-                        ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                        Item {
-                            width: controlCenterScroll.availableWidth
-                            implicitHeight: controlCenterColumn.implicitHeight
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        spacing: 12
+
+                        ScrollView {
+                            id: controlCenterScroll
+                            Layout.fillWidth: true
+                            Layout.fillHeight: true
+                            clip: true
+                            contentWidth: availableWidth
+                            Component.onCompleted: stabilizeScroll(controlCenterScroll)
+                            ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
+                            ScrollBar.vertical.policy: ScrollBar.AsNeeded
+                            Item {
+                                width: controlCenterScroll.availableWidth
+                                height: controlCenterColumn.implicitHeight + 4
                             Column {
                                 id: controlCenterColumn
                                 anchors.horizontalCenter: parent.horizontalCenter
@@ -1109,14 +1117,16 @@ ApplicationWindow {
                                 spacing: root.cardGap
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: 250
+                                    implicitHeight: Math.max(210, launchGrid.implicitHeight + 120)
                                     ColumnLayout {
+                                        id: launchGridColumn
                                         anchors.fill: parent
                                         anchors.margins: 22
                                         spacing: 18
                                         SectionEyebrow { text: "RUN SETUP" }
                                         CardTitle { text: "Launch Grid" }
                                         GridLayout {
+                                            id: launchGrid
                                             width: parent.width
                                             columns: width >= 1180 ? 5 : 3
                                             columnSpacing: 14
@@ -1127,18 +1137,11 @@ ApplicationWindow {
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Emulator" } AppComboBox { id: emulatorBox; Layout.fillWidth: true; model: emulatorModel; textRole: "label" } }
                                             ColumnLayout { Layout.fillWidth: true; spacing: 6; AppLabel { text: "Run Minutes" } AppTextField { id: timerField; Layout.fillWidth: true } }
                                         }
-                                        RowLayout {
-                                            spacing: 12
-                                            AppButton { text: "Save Controls"; onClicked: saveControl() }
-                                            AccentButton { text: "Start Bot"; enabled: !botIsRunningLike(); onClicked: backend.startBot() }
-                                            AppButton { text: botIsPaused() ? "Resume Bot" : "Pause Bot"; enabled: botControlState() === "running" || botIsPaused(); onClicked: botIsPaused() ? backend.resumeBot() : backend.pauseBot() }
-                                            DestructiveButton { text: "Stop Bot"; enabled: botIsRunningLike(); onClicked: backend.stopBot() }
-                                        }
                                     }
                                 }
                                 AppCard {
                                     width: parent.width
-                                    implicitHeight: Math.max(210, 70 + (roster.length * 96))
+                                    implicitHeight: roster.length ? Math.min(300, 112 + Math.min(roster.length, 3) * 78) : 150
                                     ColumnLayout {
                                         anchors.fill: parent
                                         anchors.margins: 22
@@ -1146,11 +1149,18 @@ ApplicationWindow {
                                         SectionEyebrow { text: "ACTIVE QUEUE" }
                                         CardTitle { text: "Selected Roster" }
                                         Label { visible: !roster.length; text: "No brawlers queued yet. Add them from the Brawlers page."; color: root.textDim; font.pixelSize: 14 }
-                                        Repeater {
+                                        ListView {
+                                            Layout.fillWidth: true
+                                            Layout.fillHeight: true
+                                            visible: roster.length > 0
+                                            clip: true
+                                            spacing: 8
+                                            boundsBehavior: Flickable.StopAtBounds
+                                            ScrollBar.vertical: ScrollBar { policy: roster.length > 3 ? ScrollBar.AsNeeded : ScrollBar.AlwaysOff }
                                             model: roster
                                             delegate: Rectangle {
-                                                width: parent.width
-                                                height: 86
+                                                width: ListView.view.width
+                                                height: 70
                                                 radius: 16
                                                 color: root.panelAlt
                                                 border.color: root.border
@@ -1160,9 +1170,9 @@ ApplicationWindow {
                                                     anchors.margins: 14
                                                     spacing: 14
                                                     Rectangle {
-                                                        Layout.preferredWidth: 56
-                                                        Layout.preferredHeight: 56
-                                                        radius: 14
+                                                        Layout.preferredWidth: 48
+                                                        Layout.preferredHeight: 48
+                                                        radius: 12
                                                         color: "#0C0F14"
                                                         border.color: root.border
                                                         border.width: 1
@@ -1187,6 +1197,26 @@ ApplicationWindow {
                                             }
                                         }
                                     }
+                                }
+                            }
+                        }
+                        }
+
+                        AppCard {
+                            Layout.fillWidth: true
+                            implicitHeight: 76
+                            ColumnLayout {
+                                anchors.fill: parent
+                                anchors.margins: 14
+                                RowLayout {
+                                    Layout.fillWidth: true
+                                    Layout.alignment: Qt.AlignVCenter
+                                    spacing: 12
+                                    Item { Layout.fillWidth: true }
+                                    AppButton { text: "Save Controls"; onClicked: saveControl() }
+                                    AccentButton { text: "Start Bot"; enabled: !botIsRunningLike(); onClicked: backend.startBot() }
+                                    AppButton { text: botIsPaused() ? "Resume Bot" : "Pause Bot"; enabled: botControlState() === "running" || botIsPaused(); onClicked: botIsPaused() ? backend.resumeBot() : backend.pauseBot() }
+                                    DestructiveButton { text: "Stop Bot"; enabled: botIsRunningLike(); onClicked: backend.stopBot() }
                                 }
                             }
                         }
