@@ -219,6 +219,9 @@ class StageManager:
         self._end_transition_continue_sent = False
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
+        # Phase 4: commitment flag
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
         self._consecutive_lobby_start_fails = 0
         self.push_all_needs_selection = False
@@ -371,6 +374,8 @@ class StageManager:
         self._end_transition_last_result = None
         self._end_transition_hold_match_until = 0.0
         self._end_transition_continue_sent = False
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
 
@@ -378,6 +383,8 @@ class StageManager:
         if self._end_transition_continue_sent:
             print(f"[RESULT] post-match action guard reset reason={reason}")
         self._end_transition_continue_sent = False
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
 

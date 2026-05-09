@@ -299,6 +299,10 @@ class LobbyAutomation:
         brawler = str(brawler or "").strip().lower()
         if not brawler:
             return False
+        # Phase 5: hard timeout on the entire selection attempt
+        selection_deadline = time.time() + float(
+            load_toml_as_dict("cfg/general_config.toml").get("brawler_selection_timeout", 15.0)
+        )
         general_config = load_toml_as_dict("cfg/general_config.toml")
         debug_enabled = self._startup_debug_enabled()
         try:
@@ -341,6 +345,11 @@ class LobbyAutomation:
             seen_signatures = set()
             stagnant_scrolls = 0
             for i in range(70):
+                # Phase 5: hard timeout guard
+                if time.time() > selection_deadline:
+                    print(f"WARNING: Brawler selection for '{brawler}' timed out after 15s. "
+                          "Backing out to retry.")
+                    return False
                 screenshot = self.window_controller.screenshot()
                 current_state = get_state(screenshot)
                 if self._recover_from_wrong_selection_state(current_state, brawler, debug_enabled):
@@ -502,7 +511,10 @@ class LobbyAutomation:
     def names_match(cls, detected_name: str, target_name: str) -> bool:
         if detected_name == target_name:
             return True
-        if len(target_name) >= 4 and (target_name in detected_name or detected_name in target_name):
+        # Phase 5: require both names to be >= 4 chars for substring match to avoid "alli" false matches
+        if len(target_name) >= 4 and len(detected_name) >= 4 and (
+            target_name in detected_name or detected_name in target_name
+        ):
             return True
         limit = 1 if len(target_name) <= 5 else 2
         if cls.bounded_edit_distance(detected_name, target_name, limit) <= limit:

@@ -237,6 +237,9 @@ class Movement:
         self._wall_blocked_tick_threshold = int(bot_config.get("wall_blocked_escape_ticks", 2))
         self._wall_escape_nudge_seconds = float(bot_config.get("wall_escape_nudge_seconds", 0.45))
         self._wall_escape_return_seconds = float(bot_config.get("wall_escape_return_seconds", 0.65))
+        self._wall_escape_escalation_window = float(bot_config.get("wall_escape_escalation_window", 4.0))
+        self._wall_escape_max_nudges = int(bot_config.get("wall_escape_max_nudges", 2))
+        self._wall_escape_lateral_hold_seconds = float(bot_config.get("wall_escape_lateral_hold_seconds", 1.2))
         self._wall_escape_state = {
             "active": False,
             "source": "",
@@ -251,6 +254,13 @@ class Movement:
             "return_angle": None,
             "side": 1,
             "return_logged": False,
+            # Phase 3: wall escape escalation state
+            "consecutive_nudges": 0,
+            "first_nudge_at": 0.0,
+            "escalated": False,
+            "lateral_angle": None,
+            "lateral_until": 0.0,
+            "blocked_lane_suppressed": False,
         }
         self._last_watchdog_skip_log_at = 0.0
         self._battle_tick_id = 0
@@ -424,12 +434,17 @@ class Movement:
         self._showdown_teammate_orbit_distance = float(
             bot_config.get("showdown_teammate_orbit_distance", bot_config.get("teammate_follow_max_distance", 520.0))
         )
-        self._showdown_teammate_lock_duration = float(bot_config.get("showdown_teammate_lock_duration", 0.55))
+        self._showdown_teammate_lock_duration = float(bot_config.get("showdown_teammate_lock_duration", 3.0))
         self._showdown_orbit_switch_interval = float(bot_config.get("showdown_orbit_switch_interval", 1.8))
         self._showdown_locked_teammate = None
         self._showdown_locked_teammate_distance = float("inf")
         self._showdown_teammate_lock_until = 0.0
         self._showdown_regroup_active = False
+        self._showdown_teammate_memory_seconds = float(
+            bot_config.get("showdown_teammate_memory_seconds", 2.0)
+        )
+        self._showdown_last_teammate_seen_at = 0.0
+        self._showdown_last_teammate_pos = None
         self._showdown_roam_spin_angle = 270.0
         self._showdown_roam_angle_until = 0.0
         self._showdown_roam_hold_seconds = float(bot_config.get("showdown_roam_hold_seconds", 2.2))
@@ -2429,6 +2444,13 @@ class Movement:
             if current_time - getattr(self, "_last_target_gate_log_at", 0.0) >= 0.8:
                 print("[BATTLE] no-fire spawn window active; suppressing attack/ability")
                 self._last_target_gate_log_at = current_time
+        # Phase 3: suppress fire during wall escape escalation
+        wall_state = getattr(self, "_wall_escape_state", {}) or {}
+        if wall_state.get("blocked_lane_suppressed") and wall_state.get("active"):
+            allow_attack = False
+            allow_ability = False
+            if reason not in {"no_fire_spawn_window"}:
+                reason = "wall_escape_suppressed"
         gate = {
             "target_confirmed": bool(target_confirmed),
             "target_confidence": float(target_confidence or 0.0),
@@ -4829,14 +4851,25 @@ class Play(Movement):
         return float(desired_angle) % 360.0
 
     def _get_showdown_regroup_target(self, player_pos):
+        current_time = time.time()
         teammates = self._showdown_teammate_centers()
         if not teammates:
+            # Phase 2: teammate memory -- use last known position briefly
+            memory_timeout = float(getattr(self, "_showdown_teammate_memory_seconds", 2.0) or 2.0)
+            last_pos = getattr(self, "_showdown_last_teammate_pos", None)
+            last_seen = float(getattr(self, "_showdown_last_teammate_seen_at", 0.0) or 0.0)
+            if last_pos is not None and (current_time - last_seen) < memory_timeout:
+                distance = self.get_distance(last_pos, player_pos)
+                return last_pos, distance
             self._showdown_locked_teammate = None
             self._showdown_locked_teammate_distance = float("inf")
             return None, float("inf")
 
         nearest = min(teammates, key=lambda pos: self.get_distance(player_pos, pos))
         nearest_distance = self.get_distance(player_pos, nearest)
+        # Update last-known teammate position for memory
+        self._showdown_last_teammate_seen_at = current_time
+        self._showdown_last_teammate_pos = nearest
         locked = getattr(self, "_showdown_locked_teammate", None)
         locked_distance = self.get_distance(player_pos, locked) if locked else float("inf")
         current_time = time.time()
