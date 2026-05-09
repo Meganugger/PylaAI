@@ -119,10 +119,12 @@ class QtBridge(QObject):
 
     @staticmethod
     def _normalize_showdown_team_behavior(value):
-        normalized = str(value or "follow").strip().lower().replace("-", "_").replace(" ", "_")
+        normalized = str(value or "team_follow").strip().lower().replace("-", "_").replace(" ", "_")
         if normalized in {"border", "safe_border", "solo", "safe_solo"}:
-            return "border"
-        return "follow"
+            return "safe_border"
+        if normalized in {"aggressive", "aggro", "duel", "combat"}:
+            return "aggressive"
+        return "team_follow"
 
     def _load_bot_config(self):
         config = load_config("bot")
@@ -136,8 +138,9 @@ class QtBridge(QObject):
         config.setdefault("quest_farm_enabled", "no")
         config.setdefault("quest_farm_mode", "games")
         config.setdefault("quest_farm_excluded", [])
-        config.setdefault("showdown_team_behavior", "follow")
+        config.setdefault("showdown_team_behavior", "team_follow")
         config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(config.get("showdown_team_behavior"))
+        config.setdefault("play_again_showdown_placements", ["1st"])
         config.setdefault("battle_debug_verbose", "no")
         return config
 
@@ -1125,7 +1128,7 @@ class QtBridge(QObject):
         if matching:
             self.bot_config["gamemode_type"] = self._gamemode_type_for(gamemode)
         self.bot_config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(
-            payload.get("showdown_team_behavior", self.bot_config.get("showdown_team_behavior", "follow"))
+            payload.get("showdown_team_behavior", self.bot_config.get("showdown_team_behavior", "team_follow"))
         )
 
         save_dict_as_toml(self.general_config, "cfg/general_config.toml")
@@ -1220,12 +1223,13 @@ class QtBridge(QObject):
             "play_again_on_win",
             "bot_uses_gadgets",
             "showdown_team_behavior",
+            "play_again_showdown_placements",
             "battle_debug_verbose",
         ):
             if key in bot:
                 self.bot_config[key] = bot[key]
         self.bot_config["showdown_team_behavior"] = self._normalize_showdown_team_behavior(
-            self.bot_config.get("showdown_team_behavior", "follow")
+            self.bot_config.get("showdown_team_behavior", "team_follow")
         )
 
         for key, default in (

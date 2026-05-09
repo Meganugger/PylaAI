@@ -359,7 +359,7 @@ ApplicationWindow {
         let gamemodeValue = "knockout"
         if (modeBox.currentIndex >= 0 && modeBox.currentIndex < gamemodeModel.count)
             gamemodeValue = gamemodeModel.get(modeBox.currentIndex).value
-        let showdownBehaviorValue = "follow"
+        let showdownBehaviorValue = "team_follow"
         if (showdownBehaviorBox.currentIndex >= 0 && showdownBehaviorBox.currentIndex < showdownBehaviorModel.count)
             showdownBehaviorValue = showdownBehaviorModel.get(showdownBehaviorBox.currentIndex).value
         backend.saveControlSettings({"map_orientation": orientationBox.currentText.toLowerCase(), "current_emulator": emulatorBox.currentText, "run_for_minutes": timerField.text, "gamemode": gamemodeValue, "showdown_team_behavior": showdownBehaviorValue})
@@ -375,7 +375,7 @@ ApplicationWindow {
     function saveSettings() {
         backend.saveSettings({
             "general": {"max_ips": maxIps.text, "target_ips": targetIpsField.text, "scrcpy_max_fps": scrcpyFpsField.text, "scrcpy_max_width": scrcpyWidthField.text, "scrcpy_bitrate": scrcpyBitrateField.text, "joystick_refresh_seconds": joystickRefreshField.text, "joystick_repress_seconds": joystickRepressField.text, "joystick_down_move_delay": joystickDelayField.text, "cpu_or_gpu": backendBox.currentText, "super_debug": yesNo(debugBox.checked), "input_debug": yesNo(inputDebugBox.checked), "personal_webhook": webhookField.text, "discord_id": discordField.text, "brawlstars_api_key": bsApiField.text, "brawlstars_player_tag": playerTagField.text, "api_base_url": apiBaseField.text, "brawlstars_package": packageField.text, "emulator_port": portField.text, "run_for_minutes": settingsTimer.text, "auto_push_target_trophies": autoPushField.text, "current_emulator": settingsEmulator.currentText, "map_orientation": settingsOrientation.currentText.toLowerCase()},
-            "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked), "showdown_team_behavior": showdownBehaviorBox.currentIndex >= 0 && showdownBehaviorBox.currentIndex < showdownBehaviorModel.count ? showdownBehaviorModel.get(showdownBehaviorBox.currentIndex).value : "follow", "battle_debug_verbose": yesNo(battleVerboseBox.checked)},
+            "bot": {"minimum_movement_delay": minMove.text, "unstuck_movement_delay": unstuckDelay.text, "unstuck_movement_hold_time": unstuckHold.text, "wall_detection_confidence": wallConf.text, "entity_detection_confidence": entityConf.text, "seconds_to_hold_attack_after_reaching_max": holdAttack.text, "play_again_on_win": yesNo(playAgain.checked), "bot_uses_gadgets": yesNo(useGadgets.checked), "showdown_team_behavior": showdownBehaviorBox.currentIndex >= 0 && showdownBehaviorBox.currentIndex < showdownBehaviorModel.count ? showdownBehaviorModel.get(showdownBehaviorBox.currentIndex).value : "team_follow", "battle_debug_verbose": yesNo(battleVerboseBox.checked)},
             "time": {"state_check": stateCheck.text, "no_detections": noDetect.text, "idle": idleField.text, "gadget": gadgetField.text, "hypercharge": hyperField.text, "super": superField.text, "wall_detection": wallField.text, "no_detection_proceed": noProceed.text, "check_if_brawl_stars_crashed": crashCheck.text},
             "login": {"key": pylaKey.text}
         })
@@ -430,7 +430,7 @@ ApplicationWindow {
         let idx = 0
         for (let i = 0; i < gamemodeModel.count; ++i) if (gamemodeModel.get(i).value === gm) idx = i
         modeBox.currentIndex = idx
-        let showdownBehavior = String(bot.showdown_team_behavior || "follow")
+        let showdownBehavior = String(bot.showdown_team_behavior || "team_follow")
         let showdownIdx = 0
         for (let s = 0; s < showdownBehaviorModel.count; ++s) if (showdownBehaviorModel.get(s).value === showdownBehavior) showdownIdx = s
         showdownBehaviorBox.currentIndex = showdownIdx
@@ -507,8 +507,9 @@ ApplicationWindow {
     ListModel { id: performanceProfileModel }
     ListModel {
         id: showdownBehaviorModel
-        ListElement { label: "Team Follow"; value: "follow" }
-        ListElement { label: "Safe Border"; value: "border" }
+        ListElement { label: "Team Follow"; value: "team_follow" }
+        ListElement { label: "Safe Border / Solo"; value: "safe_border" }
+        ListElement { label: "Aggressive"; value: "aggressive" }
     }
     ListModel {
         id: farmStrategyModel

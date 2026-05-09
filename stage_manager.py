@@ -327,6 +327,24 @@ class StageManager:
             or state in {"reward_claim", "trophy_reward", "reward_unlock", "player_title_reward", "prestige_reward", "star_drop"}
         )
 
+    def _configured_showdown_play_again_results(self):
+        config = getattr(self, "bot_config", {}) or {}
+        raw = config.get("play_again_showdown_placements", ["1st"])
+        if isinstance(raw, str):
+            raw_values = [part.strip() for part in raw.replace(";", ",").split(",")]
+        elif isinstance(raw, (list, tuple, set)):
+            raw_values = list(raw)
+        else:
+            raw_values = ["1st"]
+        allowed = {str(value).strip().lower() for value in raw_values if str(value).strip()}
+        return allowed or {"1st"}
+
+    def _play_again_result_qualifies(self, result):
+        normalized = str(result or "").strip().lower()
+        if normalized == "victory":
+            return True
+        return normalized in self._configured_showdown_play_again_results()
+
     def _begin_end_transition(self, result=None, now=None):
         if now is None:
             now = time.time()
@@ -2259,7 +2277,7 @@ class StageManager:
                 or known_result
                 or getattr(self.Trophy_observer, "_last_game_result", None)
             )
-            should_play_again = self.play_again_on_win and play_again_result == "victory"
+            should_play_again = self.play_again_on_win and self._play_again_result_qualifies(play_again_result)
             now = time.time()
             forced_only_after_continue = (
                 known_result_is_valid
@@ -2296,18 +2314,19 @@ class StageManager:
                 if self._automation_suspended("play again"):
                     return
                 self.window_controller.press_play_again()
+                print("[RESULT] play-again clicked")
                 self._last_start_press_at = now
                 self._finish_play_again_prediction_sync()
                 self._end_transition_hold_match_until = min(
                     self._end_transition_hold_match_until or (now + self._post_play_again_match_hold_seconds),
                     now + self._post_play_again_match_hold_seconds,
                 )
-                print("[RESULT] play-again-on-win enabled; victory -> pressing Play Again")
+                print(f"[RESULT] play-again-on-win enabled; {play_again_result} -> pressing Play Again")
             else:
                 if self._automation_suspended("post-match continue"):
                     return
                 self.window_controller.press_key("Q")
-                if self.play_again_on_win and play_again_result and play_again_result != "victory":
+                if self.play_again_on_win and play_again_result and not self._play_again_result_qualifies(play_again_result):
                     result_label = str(play_again_result or "non-victory")
                     print(f"[RESULT] play-again-on-win enabled; {result_label} -> returning to lobby")
                 else:

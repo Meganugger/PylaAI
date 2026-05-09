@@ -181,6 +181,7 @@ class Movement:
         self._target_confirmation_max_age = float(bot_config.get("target_confirmation_max_age", 0.55))
         self._ability_target_confirmation_max_age = float(bot_config.get("ability_target_confirmation_max_age", 0.35))
         self._brawl_ball_no_fire_spawn_seconds = float(bot_config.get("brawl_ball_no_fire_spawn_seconds", 2.2))
+        self._match_start_no_fire_seconds = float(bot_config.get("match_start_no_fire_seconds", 0.9))
         self._analog_goal_hold_times = {
             "fog_escape": float(bot_config.get("analog_fog_hold_time", 0.06)),
             "retreat": float(bot_config.get("analog_retreat_hold_time", 0.12)),
@@ -269,7 +270,7 @@ class Movement:
         self.is_showdown_mode = self._is_showdown_behavior_enabled(self.selected_gamemode, self.game_mode)
         self.is_showdown = self.is_showdown_mode
         self._showdown_team_behavior = self._normalize_showdown_team_behavior(
-            bot_config.get("showdown_team_behavior", "follow")
+            bot_config.get("showdown_team_behavior", "team_follow")
         )
         gadget_value = bot_config["bot_uses_gadgets"]
         self.should_use_gadget = str(gadget_value).lower() in ("yes", "true", "1")
@@ -1068,8 +1069,8 @@ class Movement:
     # === ENEMY DEATH DETECTION ===
     def _is_near_death_position(self, x, y):
         """Check if (x, y) is close to any recent enemy death position."""
-        for dx, dy, dt in self._enemy_death_positions:
-            if math.hypot(x - dx, y - dy) < self._enemy_death_radius:
+        for dx, dy, dt in getattr(self, "_enemy_death_positions", []) or []:
+            if math.hypot(x - dx, y - dy) < getattr(self, "_enemy_death_radius", 120):
                 return True
         return False
 
@@ -2126,20 +2127,29 @@ class Movement:
 
     @staticmethod
     def _normalize_showdown_team_behavior(value):
-        normalized = str(value or "follow").strip().lower().replace("-", "_").replace(" ", "_")
+        normalized = str(value or "team_follow").strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized in {"follow", "team", "team_follow", "trio", "team_trio"}:
+            return "team_follow"
         if normalized in {"border", "safe_border", "solo", "safe_solo"}:
-            return "border"
-        return "follow"
+            return "safe_border"
+        if normalized in {"aggressive", "aggro", "duel", "combat"}:
+            return "aggressive"
+        return "team_follow"
 
     def _showdown_follow_enabled(self):
         return self._normalize_showdown_team_behavior(
-            getattr(self, "_showdown_team_behavior", "follow")
-        ) == "follow"
+            getattr(self, "_showdown_team_behavior", "team_follow")
+        ) == "team_follow"
 
     def _showdown_border_enabled(self):
         return self._normalize_showdown_team_behavior(
-            getattr(self, "_showdown_team_behavior", "follow")
-        ) == "border"
+            getattr(self, "_showdown_team_behavior", "team_follow")
+        ) == "safe_border"
+
+    def _showdown_aggressive_enabled(self):
+        return self._normalize_showdown_team_behavior(
+            getattr(self, "_showdown_team_behavior", "team_follow")
+        ) == "aggressive"
 
     def _is_verbose_battle_debug(self):
         return bool(getattr(self, "_battle_debug_verbose", False))
@@ -2432,7 +2442,7 @@ class Movement:
         }
         self._target_gate = gate
         target_log_interval = 1.0 if self._is_verbose_battle_debug() else 5.0
-        if debug and current_time - getattr(self, "_last_target_gate_log_at", 0.0) >= target_log_interval:
+        if self._is_verbose_battle_debug() and current_time - getattr(self, "_last_target_gate_log_at", 0.0) >= target_log_interval:
             print(
                 "[BATTLE] target gate "
                 f"enemy_count={gate['enemy_count']} "
@@ -3121,7 +3131,7 @@ class Play(Movement):
             "fallback_active": logic_name == "GenericFallbackLogic" or bool(state.get("fallback_active")),
         })
         self._last_match_evidence_time = current_time
-        if debug and current_time - self._last_battle_tick_log_at >= 2.0:
+        if self._is_verbose_battle_debug() and current_time - self._last_battle_tick_log_at >= 2.0:
             strategy = state.get("active_strategy") or "battle"
             desired_range = self._role_desired_range_label(role)
             print(
@@ -3158,7 +3168,7 @@ class Play(Movement):
             state["last_movement"] = detail_text
         last_log_at = float(getattr(self, "_last_battle_input_log_at", 0.0) or 0.0)
         interval = 0.75 if self._is_verbose_battle_debug() else 3.0
-        if debug and current_time - last_log_at >= interval:
+        if self._is_verbose_battle_debug() and current_time - last_log_at >= interval:
             print(f"[BATTLE] input dispatched: {message}")
             self._last_battle_input_log_at = current_time
 
@@ -3206,7 +3216,7 @@ class Play(Movement):
     def _dispatch_movement_angle(self, angle, detail=None, current_time=None, radius=None):
         current_time = current_time if current_time is not None else time.time()
         if self._action_used_this_tick("movement"):
-            if debug:
+            if self._is_verbose_battle_debug():
                 print(f"[INPUT] movement skipped reason=already_sent_this_tick detail={detail or angle}")
             return False
         radius = self._analog_movement_radius if radius is None else radius
@@ -3217,7 +3227,7 @@ class Play(Movement):
     def _dispatch_movement_keys(self, keys_to_key_down, keys_to_key_up=None, detail=None, current_time=None):
         current_time = current_time if current_time is not None else time.time()
         if self._action_used_this_tick("movement"):
-            if debug:
+            if self._is_verbose_battle_debug():
                 print(f"[INPUT] movement skipped reason=already_sent_this_tick detail={detail or keys_to_key_down}")
             return False
         result = True
@@ -3642,11 +3652,11 @@ class Play(Movement):
         return source in {"base", "retry", "restored"}
 
     def _is_no_fire_spawn_window_active(self, current_time=None):
-        if not self._is_brawl_ball_mode():
-            return False
         elapsed = self._brawl_ball_opening_elapsed(current_time)
         if elapsed is None:
             return False
+        if not self._is_brawl_ball_mode():
+            return elapsed <= float(getattr(self, "_match_start_no_fire_seconds", 0.9) or 0.9)
         if elapsed <= float(getattr(self, "_brawl_ball_no_fire_spawn_seconds", 2.2) or 2.2):
             return True
         return bool(getattr(self, "_brawl_ball_spawn_escape_active", False))
@@ -3843,12 +3853,18 @@ class Play(Movement):
         state["last_seen_at"] = current_time
         self._wall_escape_state = state
         duration = current_time - float(state.get("started_at", current_time) or current_time)
-        if duration < float(getattr(self, "_wall_blocked_threshold_seconds", 0.7) or 0.7) and state["count"] < int(getattr(self, "_wall_blocked_tick_threshold", 2) or 2):
+        is_brawl_ball = self._is_brawl_ball_mode(getattr(self, "selected_gamemode", ""))
+        threshold_seconds = float(getattr(self, "_wall_blocked_threshold_seconds", 0.7) or 0.7)
+        threshold_ticks = int(getattr(self, "_wall_blocked_tick_threshold", 2) or 2)
+        if is_brawl_ball and source in {"spawn_escape_no_vision", "brawlball_lane_push", "brawlball_opening", "corner_escape"}:
+            threshold_seconds = min(threshold_seconds, 0.35)
+            threshold_ticks = min(threshold_ticks, 2)
+        if duration < threshold_seconds and state["count"] < threshold_ticks:
             return None
 
         side = -int(state.get("side", 1) or 1)
         state["side"] = side
-        if bool(getattr(self, "is_showdown_mode", False)) and not self._is_brawl_ball_mode(getattr(self, "selected_gamemode", "")):
+        if bool(getattr(self, "is_showdown_mode", False)) and not is_brawl_ball:
             retreat_angle = self.angle_opposite(float(angle))
             arc_angle = (float(angle) + (78.0 * side)) % 360.0
             finder = getattr(self, "_find_best_angle", None)
@@ -3861,8 +3877,22 @@ class Play(Movement):
             escape_source = "showdown_wall_escape"
             strategy = "showdown_wall_escape"
         else:
-            base_angle = self._wall_escape_base_angle(source, angle)
-            nudge_angle = (base_angle + (22.0 * side)) % 360.0
+            lane_angle = self._wall_escape_base_angle(source, angle)
+            finder = getattr(self, "_find_best_angle", None)
+            if callable(finder):
+                base_angle = finder(player_pos, lane_angle, wall_context)
+                if self._angle_difference(base_angle, float(angle)) <= 8.0 and self._is_path_blocked_angle(player_pos, base_angle, wall_context):
+                    candidate = (lane_angle + (54.0 * side)) % 360.0
+                    base_angle = finder(player_pos, candidate, wall_context)
+                    if self._angle_difference(base_angle, float(angle)) <= 8.0:
+                        base_angle = (lane_angle + (90.0 * side)) % 360.0
+                nudge_angle = finder(player_pos, (base_angle + (34.0 * side)) % 360.0, wall_context)
+            else:
+                if source in {"spawn_escape_no_vision", "brawlball_lane_push", "brawlball_opening", "corner_escape"}:
+                    base_angle = (lane_angle + (54.0 * side)) % 360.0
+                else:
+                    base_angle = lane_angle
+                nudge_angle = (base_angle + (34.0 * side)) % 360.0
             escape_source = "wall_escape"
             strategy = "wall_escape"
         state.update({
@@ -4871,6 +4901,13 @@ class Play(Movement):
     def _get_showdown_support_move(self, player_pos, wall_context, allow_memory_chase=True):
         if self._showdown_border_enabled():
             return self._get_showdown_border_move(player_pos, wall_context), "showdown_border"
+        if self._showdown_aggressive_enabled():
+            if allow_memory_chase:
+                last_enemy_pos = self._get_last_known_enemy_pos()
+                if last_enemy_pos is not None and (time.time() - getattr(self, "_last_enemy_seen_at", 0.0)) <= getattr(self, "_showdown_enemy_chase_timeout", 2.0):
+                    desired = self.angle_from_direction(last_enemy_pos[0] - player_pos[0], last_enemy_pos[1] - player_pos[1])
+                    return self._showdown_best_angle(player_pos, desired, wall_context), "memory_chase"
+            return self._get_showdown_roam_move(player_pos, wall_context), "showdown_roam"
         teammate_move, teammate_distance, teammate_reason = self._get_showdown_follow_move(
             player_pos,
             wall_context,
@@ -5774,7 +5811,7 @@ class Play(Movement):
                     )
             else:
                 target_state = "hittable" if self.target_info.get("hittable") else "blocked"
-                if debug and current_time - self._last_battle_skip_log_at >= 1.5:
+                if self._is_verbose_battle_debug() and current_time - self._last_battle_skip_log_at >= 1.5:
                     print(f"[BATTLE] movement decision: {movement}; target={target_state}")
                     self._last_battle_skip_log_at = current_time
             self.do_movement(movement)
@@ -6459,6 +6496,59 @@ class Play(Movement):
                 nearest_teammate_dist = tm_dist
                 nearest_teammate_pos = (tm_cx, tm_cy)
 
+        if self.is_showdown_mode and self._showdown_follow_enabled() and nearest_teammate_pos is not None:
+            teammate_near_enough = nearest_teammate_dist <= max(
+                getattr(self, "_showdown_teammate_orbit_distance", 520.0),
+                getattr(self, "_showdown_combat_regroup_distance", 650.0),
+            )
+            favorable_team_engagement = (
+                bool(gate_hittable)
+                and enemy_distance <= attack_range
+                and teammate_near_enough
+                and self.player_hp_percent >= self.LOW_HP_THRESHOLD
+            )
+            if not favorable_team_engagement:
+                follow_move, _distance, follow_reason = self._get_showdown_follow_move(
+                    player_pos,
+                    walls,
+                    allow_spacing=True,
+                    allow_orbit=True,
+                )
+                if follow_move is not None:
+                    self._update_target_gate(
+                        enemy_count=len(enemy_data or []),
+                        target_confirmed=enemy_coords is not None,
+                        target_confidence=confidence_gate,
+                        target_age=0.0,
+                        target_source="real_detection",
+                        allow_attack=False,
+                        allow_ability=False,
+                        reason=follow_reason or "team_follow",
+                        current_time=now,
+                    )
+                    self._set_battle_strategy("showdown_regroup")
+                    self.last_decision_reason = f"SHOWDOWN TEAM FOLLOW: {follow_reason or 'team_follow'}"
+                    return follow_move
+
+        if self.is_showdown_mode and self._showdown_border_enabled() and (
+            not gate_hittable or enemy_distance > attack_range * 0.92 or self.player_hp_percent < self.LOW_HP_THRESHOLD
+        ):
+            border_move = self._get_showdown_border_move(player_pos, walls)
+            self._update_target_gate(
+                enemy_count=len(enemy_data or []),
+                target_confirmed=enemy_coords is not None,
+                target_confidence=confidence_gate,
+                target_age=0.0,
+                target_source="real_detection",
+                allow_attack=False,
+                allow_ability=False,
+                reason="showdown_border",
+                current_time=now,
+            )
+            self._set_battle_strategy("showdown_border")
+            self.last_decision_reason = "SHOWDOWN SAFE BORDER: reposition"
+            return border_move
+
         direction_x = enemy_coords[0] - player_pos[0]
         direction_y = enemy_coords[1] - player_pos[1]
 
@@ -7108,9 +7198,11 @@ class Play(Movement):
             self._combo_type = None
 
         enemy_hittable_attack = self.is_enemy_hittable(player_pos, enemy_coords, walls, "attack")
-        close_range_contact = close_range_brawler and enemy_distance <= contact_attack_threshold
-        if close_range_contact:
-            enemy_hittable_attack = True
+        close_range_contact = (
+            close_range_brawler
+            and bool(enemy_hittable_attack)
+            and enemy_distance <= contact_attack_threshold
+        )
 
         # SAFETY: Skip ALL attack logic if enemy is behind a wall
         if not enemy_hittable_attack:
