@@ -182,13 +182,18 @@ class Movement:
             bot_config.get("showdown_combat_regroup_bias", bot_config.get("teammate_combat_bias", 0.35))
         )
         self._showdown_teammate_lock_duration = float(
-            bot_config.get("showdown_teammate_lock_duration", 0.55)
+            bot_config.get("showdown_teammate_lock_duration", 3.0)
         )
         self._showdown_orbit_switch_interval = float(bot_config.get("showdown_orbit_switch_interval", 1.8))
         self._showdown_locked_teammate = None
         self._showdown_locked_teammate_distance = float("inf")
         self._showdown_teammate_lock_until = 0.0
         self._showdown_regroup_active = False
+        self._showdown_teammate_memory_seconds = float(
+            bot_config.get("showdown_teammate_memory_seconds", 2.0)
+        )
+        self._showdown_last_teammate_seen_at = 0.0
+        self._showdown_last_teammate_pos = None
         self._showdown_roam_spin_angle = 270.0
         self._showdown_roam_angle_until = 0.0
         self._showdown_roam_hold_seconds = float(bot_config.get("showdown_roam_hold_seconds", 2.2))
@@ -248,6 +253,7 @@ class Movement:
         self._committed_analog_reason = None
         self._committed_analog_until = 0.0
         self._movement_watchdog_seconds = float(bot_config.get("movement_watchdog_seconds", 0.65))
+        self._watchdog_authoritative_staleness = float(bot_config.get("watchdog_authoritative_staleness", 2.0))
         self._active_tick_no_action_refresh_seconds = float(bot_config.get("active_tick_no_action_refresh_seconds", 0.32))
         self._target_confirmation_max_age = float(bot_config.get("target_confirmation_max_age", 0.55))
         self._ability_target_confirmation_max_age = float(bot_config.get("ability_target_confirmation_max_age", 0.35))
@@ -270,6 +276,9 @@ class Movement:
         self._wall_blocked_tick_threshold = int(bot_config.get("wall_blocked_escape_ticks", 2))
         self._wall_escape_nudge_seconds = float(bot_config.get("wall_escape_nudge_seconds", 0.45))
         self._wall_escape_return_seconds = float(bot_config.get("wall_escape_return_seconds", 0.65))
+        self._wall_escape_escalation_window = float(bot_config.get("wall_escape_escalation_window", 4.0))
+        self._wall_escape_max_nudges = int(bot_config.get("wall_escape_max_nudges", 2))
+        self._wall_escape_lateral_hold_seconds = float(bot_config.get("wall_escape_lateral_hold_seconds", 1.2))
         self._wall_escape_state = {
             "active": False,
             "source": "",
@@ -780,6 +789,13 @@ class Movement:
             if current_time - getattr(self, "_last_target_gate_log_at", 0.0) >= interval:
                 print("[BATTLE] no-fire spawn window active; suppressing attack/ability")
                 self._last_target_gate_log_at = current_time
+        # Phase 3: suppress fire during wall escape escalation
+        wall_state = getattr(self, "_wall_escape_state", {}) or {}
+        if wall_state.get("blocked_lane_suppressed") and wall_state.get("active"):
+            allow_attack = False
+            allow_ability = False
+            if reason not in {"no_fire_spawn_window"}:
+                reason = "wall_escape_suppressed"
         gate = {
             "target_confirmed": bool(target_confirmed),
             "target_confidence": float(target_confidence or 0.0),
@@ -2500,12 +2516,22 @@ class Play(Movement):
         self._showdown_orbit_until = 0.0
 
     def _get_showdown_regroup_target(self, player_pos):
+        current_time = time.time()
         if not self._teammate_positions:
+            # Phase 2: teammate memory -- use last known position briefly
+            memory_timeout = float(getattr(self, "_showdown_teammate_memory_seconds", 2.0) or 2.0)
+            last_pos = getattr(self, "_showdown_last_teammate_pos", None)
+            last_seen = float(getattr(self, "_showdown_last_teammate_seen_at", 0.0) or 0.0)
+            if last_pos is not None and (current_time - last_seen) < memory_timeout:
+                distance = self.get_distance(last_pos, player_pos)
+                return last_pos, distance
             self._reset_showdown_teammate_lock()
             return None, float("inf")
 
-        current_time = time.time()
         nearest_target, nearest_distance = self._get_nearest_teammate_target(player_pos)
+        # Update last-known teammate position for memory
+        self._showdown_last_teammate_seen_at = current_time
+        self._showdown_last_teammate_pos = nearest_target
 
         if self._showdown_locked_teammate is None:
             # First acquisition — lock nearest teammate.
@@ -3010,6 +3036,13 @@ class Play(Movement):
             "return_angle": None,
             "side": int((getattr(self, "_wall_escape_state", {}) or {}).get("side", 1) or 1),
             "return_logged": False,
+            # Phase 3: wall escape escalation state
+            "consecutive_nudges": 0,
+            "first_nudge_at": 0.0,
+            "escalated": False,
+            "lateral_angle": None,
+            "lateral_until": 0.0,
+            "blocked_lane_suppressed": False,
         }
 
     def _wall_blocked_escape_angle(self, angle, source, player_pos, wall_context, current_time=None):
@@ -3078,6 +3111,49 @@ class Play(Movement):
 
         side = -int(state.get("side", 1) or 1)
         state["side"] = side
+        # Phase 3: consecutive nudge escalation
+        consecutive = int(state.get("consecutive_nudges", 0) or 0) + 1
+        first_nudge = float(state.get("first_nudge_at", current_time) or current_time)
+        if consecutive == 1:
+            first_nudge = current_time
+        escalation_window = float(getattr(self, "_wall_escape_escalation_window", 4.0) or 4.0)
+        max_nudges_before_escalate = int(getattr(self, "_wall_escape_max_nudges", 2) or 2)
+        should_escalate = (
+            consecutive >= max_nudges_before_escalate
+            and (current_time - first_nudge) < escalation_window
+            and is_brawl_ball
+        )
+        state["consecutive_nudges"] = consecutive
+        state["first_nudge_at"] = first_nudge
+        if should_escalate and not state.get("escalated"):
+            # Escalate: stop pushing into the blocked lane, use a full lateral detour
+            width = max(1.0, float(getattr(self.window_controller, "width", 1920) or 1920))
+            center_x = width * 0.5
+            px = float(player_pos[0])
+            lateral_dir = -1 if px > center_x else 1  # toward center
+            lateral_angle = (float(angle) + (90.0 * lateral_dir)) % 360.0
+            lateral_angle = self._find_best_angle(player_pos, lateral_angle, wall_context)
+            lateral_hold = float(getattr(self, "_wall_escape_lateral_hold_seconds", 1.2) or 1.2)
+            state.update({
+                "active": True,
+                "escalated": True,
+                "lateral_angle": lateral_angle,
+                "lateral_until": current_time + lateral_hold,
+                "nudge_angle": lateral_angle,
+                "return_angle": lateral_angle,
+                "escape_source": escape_source,
+                "nudge_until": current_time + lateral_hold,
+                "return_until": current_time + lateral_hold + 0.3,
+                "started_at": current_time,
+                "count": 0,
+                "return_logged": False,
+                "blocked_lane_suppressed": True,
+            })
+            self._wall_escape_state = state
+            print(f"[BATTLE] wall escape ESCALATED: {consecutive} nudges in {current_time - first_nudge:.1f}s, lateral angle={lateral_angle:.0f}")
+            self._set_authoritative_movement_angle(lateral_angle, escape_source, current_time)
+            self._set_battle_strategy(strategy)
+            return self._plan_analog_reason(lateral_angle, escape_source)
         if bool(getattr(self, "is_showdown_mode", False)) and not is_brawl_ball:
             retreat_angle = self.angle_opposite(float(angle))
             arc_angle = (float(angle) + (78.0 * side)) % 360.0
@@ -3854,16 +3930,36 @@ class Play(Movement):
         )
         if movement_silence > self.minimum_movement_delay or watchdog_due:
             watchdog_log_interval = 0.8 if self._is_verbose_battle_debug() else 3.0
-            if watchdog_due and current_time - getattr(self, "_last_movement_watchdog_log_at", 0.0) >= watchdog_log_interval:
-                auth_angle, auth_source = self._authoritative_watchdog_angle(data, current_time)
-                last_angle = auth_angle if isinstance(auth_angle, (float, int)) else movement if isinstance(movement, (float, int)) else getattr(self, "last_movement", movement)
-                print(f"[INPUT][WARN] movement silent for {movement_silence:.2f}s while active; refreshing last angle={last_angle}")
-                self._last_movement_watchdog_log_at = current_time
             if watchdog_due:
-                auth_angle, auth_source = self._authoritative_watchdog_angle(data, current_time)
+                # Phase 1 fix: prefer refreshing the last confirmed intent rather
+                # than re-deriving direction from scratch, which caused the
+                # watchdog and strategy layer to produce conflicting angles that
+                # the stabilizer would block — resulting in 2-second pauses.
+                auth_staleness_limit = float(getattr(self, "_watchdog_authoritative_staleness", 2.0) or 2.0)
+                stored_angle = getattr(self, "_authoritative_movement_angle", None)
+                stored_source = str(getattr(self, "_authoritative_movement_source", "") or "")
+                stored_at = float(getattr(self, "_authoritative_movement_at", 0.0) or 0.0)
+                stored_is_fresh = (
+                    isinstance(stored_angle, (float, int))
+                    and stored_source not in {"", "last_movement", "fallback"}
+                    and (current_time - stored_at) < auth_staleness_limit
+                )
+                if stored_is_fresh:
+                    auth_angle = float(stored_angle) % 360.0
+                    auth_source = stored_source
+                else:
+                    auth_angle, auth_source = self._authoritative_watchdog_angle(data, current_time)
                 if isinstance(auth_angle, (float, int)):
+                    if current_time - getattr(self, "_last_movement_watchdog_log_at", 0.0) >= watchdog_log_interval:
+                        refresh_mode = "refresh" if stored_is_fresh else "recompute"
+                        print(
+                            f"[INPUT][WARN] movement silent for {movement_silence:.2f}s; "
+                            f"{refresh_mode} angle={float(auth_angle):.0f} source={auth_source}"
+                        )
+                        self._last_movement_watchdog_log_at = current_time
                     if isinstance(movement, (float, int)) and self._angle_difference(float(movement), float(auth_angle)) > 20.0:
-                        print(f"[INPUT] movement watchdog using authoritative angle={float(auth_angle):.0f} source={auth_source}")
+                        if current_time - getattr(self, "_last_movement_watchdog_log_at", 0.0) >= watchdog_log_interval:
+                            print(f"[INPUT] movement watchdog overriding strategy angle={float(movement):.0f} -> {float(auth_angle):.0f} source={auth_source}")
                     movement = float(auth_angle)
                     self._planned_analog_reason = auth_source
             if isinstance(movement, (float, int)):
@@ -4008,7 +4104,21 @@ class Play(Movement):
                 print("[INPUT] movement watchdog skipped reason=recent_authoritative_movement")
                 self._last_watchdog_skip_log_at = current_time
             return False
-        angle, source = self._authoritative_watchdog_angle(data, current_time)
+        # Phase 1 fix: prefer refreshing the last confirmed intent.
+        auth_staleness_limit = float(getattr(self, "_watchdog_authoritative_staleness", 2.0) or 2.0)
+        stored_angle = getattr(self, "_authoritative_movement_angle", None)
+        stored_source = str(getattr(self, "_authoritative_movement_source", "") or "")
+        stored_at = float(getattr(self, "_authoritative_movement_at", 0.0) or 0.0)
+        stored_is_fresh = (
+            isinstance(stored_angle, (float, int))
+            and stored_source not in {"", "last_movement", "fallback"}
+            and (current_time - stored_at) < auth_staleness_limit
+        )
+        if stored_is_fresh:
+            angle = float(stored_angle) % 360.0
+            source = stored_source
+        else:
+            angle, source = self._authoritative_watchdog_angle(data, current_time)
         sent = self._dispatch_movement_angle(
             float(angle),
             detail=f"watchdog angle {float(angle):.0f}",
@@ -4545,14 +4655,41 @@ class Play(Movement):
                     teammate_target is None
                     or teammate_distance <= max(self._showdown_combat_regroup_distance, self._showdown_teammate_orbit_distance)
                 )
-                favorable_team_engagement = (
+                # Phase 2: stricter leash-aware engagement gate.
+                # Combat only when:
+                #   1) teammate is close enough (near_enough),
+                #   2) enemy is a real confirmed hittable target within range,
+                #   3) engaging won't break leash (enemy is between us and teammate, or teammate is close),
+                #   4) not retreating for ammo,
+                #   5) enemy is not far across the map (within 1.2x attack range).
+                immediate_threat = (
                     confirmed_target
-                    and bool(target_hittable or style.get("fires_over_walls", False))
-                    and enemy_distance <= effective_attack_range
-                    and teammate_near_enough
+                    and bool(target_hittable)
+                    and enemy_distance <= min(effective_attack_range, safe_range * 1.3)
                     and not should_retreat_for_ammo
-                    and enemy_distance > safe_range * 0.72
                 )
+                leash_safe = (
+                    teammate_near_enough
+                    and (teammate_distance <= max(260.0, self._showdown_teammate_orbit_distance * 0.85))
+                )
+                # Hard regroup: if teammate is far, only fight if enemy is extremely close
+                hard_regroup = (
+                    teammate_target is not None
+                    and teammate_distance > self._showdown_combat_regroup_distance
+                )
+                if hard_regroup:
+                    # Only fight if enemy is literally on top of us
+                    favorable_team_engagement = (
+                        immediate_threat
+                        and enemy_distance <= safe_range * 0.5
+                        and bool(target_hittable)
+                    )
+                else:
+                    favorable_team_engagement = (
+                        immediate_threat
+                        and leash_safe
+                        and enemy_distance > safe_range * 0.72
+                    )
                 if teammate_target is not None and not favorable_team_engagement:
                     follow_move, _distance, follow_reason = self._get_showdown_follow_move(
                         player_pos,
@@ -4575,23 +4712,30 @@ class Play(Movement):
                         self._set_battle_strategy("showdown_regroup")
                         return self._plan_analog_reason(follow_move, follow_reason or "team_follow")
 
-            if self._showdown_border_enabled() and (
-                not target_hittable or enemy_distance > effective_attack_range * 0.92 or should_retreat_for_ammo
-            ):
-                border_move = self._get_showdown_border_move(player_pos, wall_context)
-                self._update_target_gate(
-                    enemy_count=len(enemy_data or []),
-                    target_confirmed=confirmed_target,
-                    target_confidence=target_confidence,
-                    target_age=0.0,
-                    target_source="real_detection",
-                    allow_attack=False,
-                    allow_ability=False,
-                    reason="showdown_border",
-                    current_time=current_time,
+            if self._showdown_border_enabled():
+                # Phase 2: safe_border always flees toward border unless enemy is
+                # an extreme close-range threat that must be handled.
+                cornered = (
+                    confirmed_target
+                    and bool(target_hittable)
+                    and enemy_distance <= safe_range * 0.55
+                    and not should_retreat_for_ammo
                 )
-                self._set_battle_strategy("showdown_border")
-                return self._plan_analog_reason(border_move, "showdown_border")
+                if not cornered:
+                    border_move = self._get_showdown_border_move(player_pos, wall_context)
+                    self._update_target_gate(
+                        enemy_count=len(enemy_data or []),
+                        target_confirmed=confirmed_target,
+                        target_confidence=target_confidence,
+                        target_age=0.0,
+                        target_source="real_detection",
+                        allow_attack=False,
+                        allow_ability=False,
+                        reason="showdown_border",
+                        current_time=current_time,
+                    )
+                    self._set_battle_strategy("showdown_border")
+                    return self._plan_analog_reason(border_move, "showdown_border")
 
             showdown_retreat = enemy_distance <= safe_range
             # Sniper/marksman: retreat if enemy is within safe range AND

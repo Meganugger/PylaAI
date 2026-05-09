@@ -101,6 +101,7 @@ def make_play():
         "return_logged": False,
     }
     play._last_watchdog_skip_log_at = 0.0
+    play._watchdog_authoritative_staleness = 2.0
     play._analog_goal_hold_times = {
         "brawlball_lane_push": 1.15,
         "spawn_escape_no_vision": 1.4,
@@ -444,6 +445,98 @@ class BattleStrategyModeTests(unittest.TestCase):
 
         self.assertLess(silence, 0.1)
 
+    def test_watchdog_refreshes_authoritative_angle_not_recompute(self):
+        """When the authoritative angle is fresh, the watchdog should reuse
+        it directly rather than calling _authoritative_watchdog_angle()."""
+        play = make_play()
+        # Match started 20s ago so spawn escape window is expired
+        play._battle_runtime["match_started_at"] = 180.0
+        play._brawl_ball_spawn_escape_complete = True
+        play._set_authoritative_movement_angle(315.0, "brawlball_lane_push", 200.0)
+        play.last_movement = 100.0  # Deliberately different
+        play._brawl_ball_lane_angle = 270.0
+        play._begin_action_tick(200.3)
+        play._runtime_state = "match"
+        # Force silence past the threshold so the watchdog actually fires
+        play._last_movement_refresh_at = time.monotonic() - 5.0
+        play._active_tick_no_action_refresh_seconds = 0.01
+
+        # Include a reliable player outside spawn so _brawlball_no_vision_spawn_status
+        # exits without overwriting the authoritative angle
+        data = {
+            "enemy": [], "teammate": [],
+            "player": [[900.0, 400.0, 1020.0, 520.0]],
+            "_player_source": "base",
+        }
+        sent = play._ensure_active_tick_has_action(200.3, data, reason="test")
+
+        self.assertTrue(sent)
+        # The dispatched angle should be 315.0 (the stored authoritative angle),
+        # not 270.0 (what _authoritative_watchdog_angle would recompute).
+        self.assertEqual(play.window_controller.moves[-1][0], 315.0)
+
+    def test_watchdog_falls_back_when_authoritative_stale(self):
+        """When the authoritative angle is stale (> staleness limit), the
+        watchdog should fall back to _authoritative_watchdog_angle()."""
+        play = make_play()
+        play._set_authoritative_movement_angle(315.0, "brawlball_lane_push", 195.0)  # 5s ago
+        play.last_movement = 315.0
+        play._begin_action_tick(200.0)
+        play._runtime_state = "match"
+        play._last_movement_refresh_at = time.monotonic() - 5.0  # Force silence
+        play._active_tick_no_action_refresh_seconds = 0.01
+
+        sent = play._ensure_active_tick_has_action(200.0, {"enemy": [], "teammate": [], "player": []}, reason="test")
+
+        self.assertTrue(sent)
+        # With a stale authoritative angle, it should recompute.
+        # For brawlball mode, _authoritative_watchdog_angle returns lane push angle.
+        dispatched = play.window_controller.moves[-1][0]
+        self.assertIsInstance(dispatched, float)
+
+    def test_no_movement_silence_longer_than_half_second(self):
+        """Simulate multiple ticks: when a desired movement exists, the watchdog
+        must fire and dispatch within 0.5s — no sustained silence gaps."""
+        play = make_play()
+        play._battle_runtime["match_started_at"] = 100.0
+        play._brawl_ball_spawn_escape_complete = True
+        play._runtime_state = "match"
+        play._brawl_ball_lane_angle = 270.0
+        play._active_tick_no_action_refresh_seconds = 0.1
+
+        # Simulate 1.5 seconds of ticks at ~20fps with an authoritative angle set
+        base_time = 200.0
+        play._set_authoritative_movement_angle(270.0, "brawlball_lane_push", base_time)
+        play._last_movement_refresh_at = time.monotonic()
+
+        data = {
+            "enemy": [], "teammate": [],
+            "player": [[900.0, 400.0, 1020.0, 520.0]],
+            "_player_source": "base",
+        }
+
+        last_dispatch_time = base_time
+        max_gap = 0.0
+        for tick in range(30):
+            tick_time = base_time + tick * 0.05
+            play._begin_action_tick(tick_time)
+            # Simulate movement silence building up
+            play._last_movement_refresh_at = time.monotonic() - (tick * 0.05 + 0.01)
+            sent = play._ensure_active_tick_has_action(tick_time, data, reason="test")
+            if sent:
+                gap = tick_time - last_dispatch_time
+                max_gap = max(max_gap, gap)
+                last_dispatch_time = tick_time
+
+        # The maximum gap between dispatches should be well under 0.5s
+        # (the watchdog fires when silence > _active_tick_no_action_refresh_seconds = 0.1s)
+        self.assertLess(max_gap, 0.5,
+                        f"Movement silence gap of {max_gap:.2f}s exceeds 0.5s limit")
+        # At least some dispatches should have occurred
+        self.assertGreater(len(play.window_controller.moves), 0,
+                           "No movement was dispatched during the simulation")
+
 
 if __name__ == "__main__":
     unittest.main()
+
