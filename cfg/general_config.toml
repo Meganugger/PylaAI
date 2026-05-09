@@ -80,3 +80,4 @@ joystick_refresh_seconds = 0.35
 joystick_repress_seconds = 1.8
 joystick_down_move_delay = 0.012
 input_debug = "yes"
+startup_debug_verbose = "no"

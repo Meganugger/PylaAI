@@ -145,6 +145,7 @@ class OPPortedRecoveryTests(unittest.TestCase):
         manager.brawlers_pick_data = [{"brawler": "darryl", "trophies": 463, "wins": 0, "win_streak": 2}]
         manager.Trophy_observer = DummyTrophyObserver(475)
         manager.play_again_on_win = play_again_on_win
+        manager.bot_config = {"play_again_showdown_placements": ["1st"]}
         manager._awaiting_lobby_result_sync = True
         manager._result_applied_for_active_match = True
         manager._match_in_progress = False
@@ -204,6 +205,26 @@ class OPPortedRecoveryTests(unittest.TestCase):
         manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="defeat")
 
         self.assertEqual(manager.window_controller.pressed, ["Q"])
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_play_again_on_win_treats_showdown_first_as_qualifying_result(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=True)
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="1st")
+
+        self.assertEqual(manager.window_controller.pressed, ["R"])
+        self.assertFalse(manager._awaiting_lobby_result_sync)
+
+    @patch("stage_manager.save_brawler_data")
+    @patch("stage_manager.get_state", return_value="match")
+    def test_play_again_on_win_respects_configured_showdown_placements(self, _mock_state, _mock_save):
+        manager = self.make_end_manager(play_again_on_win=True)
+        manager.bot_config = {"play_again_showdown_placements": ["1st", "2nd", "3rd"]}
+
+        manager.end_game(frame=np.zeros((1080, 1920, 3), dtype=np.uint8), known_result="3rd")
+
+        self.assertEqual(manager.window_controller.pressed, ["R"])
 
     @patch("stage_manager.save_brawler_data")
     @patch("stage_manager.get_state", return_value="match")

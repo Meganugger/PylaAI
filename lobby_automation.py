@@ -16,6 +16,9 @@ OCR_BRAWLER_ALIASES = {
     'shlly': 'shelly',
     'larryslawrie': 'larrylawrie',
     '[eon': 'leon',
+    'ali': 'alli',
+    'alll': 'alli',
+    'alti': 'alli',
 }
 
 class LobbyAutomation:
@@ -26,6 +29,13 @@ class LobbyAutomation:
         self.brawler_menu_template = None
         self._last_idle_debug_time = 0.0
         self._last_shop_recovery_time = 0.0
+        self._last_ocr_debug_time = 0.0
+        self._last_ocr_debug_signature = None
+
+    @staticmethod
+    def _startup_debug_enabled():
+        config = load_toml_as_dict("cfg/general_config.toml")
+        return str(config.get("startup_debug_verbose", "no")).lower() in ("yes", "true", "1")
 
     def check_for_idle(self, frame):
         wr = self.window_controller.width_ratio
@@ -189,11 +199,13 @@ class LobbyAutomation:
             if brawler_menu_btn_coords:
                 self.window_controller.click(*brawler_menu_btn_coords)
                 time.sleep(0.8)
+                opened_after_template_click = False
                 for _ in range(5):
                     screenshot = self.window_controller.screenshot()
                     state = get_state(screenshot)
                     if state == "brawler_selection":
-                        return True
+                        opened_after_template_click = True
+                        break
                     if self._recover_from_wrong_selection_state(state, brawler, debug_enabled):
                         current_frame = self.window_controller.screenshot()
                         current_state = get_state(current_frame)
@@ -205,7 +217,16 @@ class LobbyAutomation:
                         )
                         return False
                     time.sleep(0.25)
-                return True
+                if opened_after_template_click:
+                    return True
+                if current_state == "lobby":
+                    threshold -= 0.1
+                    continue
+                print(
+                    f"WARNING: Could not open brawler selection for '{brawler}'. "
+                    "Keeping lobby start blocked and retrying."
+                )
+                return False
 
             if debug_enabled:
                 print("Brawler menu button not found, retrying...")
@@ -226,11 +247,16 @@ class LobbyAutomation:
             if current_state == "brawler_selection":
                 return True
 
-        try:
-            current_frame.save(r'brawler_menu_btn_not_found.png')
-        except Exception:
-            pass
-        raise ValueError("Brawler menu button not found on screen, even at low threshold.")
+        if debug_enabled:
+            try:
+                current_frame.save(r'brawler_menu_btn_not_found.png')
+            except Exception:
+                pass
+        print(
+            f"WARNING: Brawler menu button was not confirmed for '{brawler}'. "
+            "Keeping lobby start blocked and retrying."
+        )
+        return False
 
     def _find_visible_brawler_match(self, screenshot, target_key, ocr_scale, debug_enabled):
         screenshot_full = np.array(screenshot)
@@ -239,8 +265,6 @@ class LobbyAutomation:
             (int(screenshot_full.shape[1] * ocr_scale), int(screenshot_full.shape[0] * ocr_scale)),
             interpolation=cv2.INTER_AREA,
         )
-        if debug_enabled:
-            print("extracting text on current screen...")
         results = extract_text_and_positions(screenshot_small)
         reworked_results = {}
         for key in results.keys():
@@ -249,8 +273,14 @@ class LobbyAutomation:
             key = self.resolve_ocr_typos(key)
             reworked_results[key] = results[orig_key]
         if debug_enabled:
-            print("All detected text while looking for brawler name:", reworked_results.keys())
-            print()
+            signature = tuple(sorted(reworked_results.keys()))
+            now = time.time()
+            if signature != self._last_ocr_debug_signature or now - self._last_ocr_debug_time >= 4.0:
+                print("extracting text on current screen...")
+                print("All detected text while looking for brawler name:", reworked_results.keys())
+                print()
+                self._last_ocr_debug_signature = signature
+                self._last_ocr_debug_time = now
 
         matches = []
         for detected_name, text_box in reworked_results.items():
@@ -270,7 +300,7 @@ class LobbyAutomation:
         if not brawler:
             return False
         general_config = load_toml_as_dict("cfg/general_config.toml")
-        debug_enabled = str(general_config.get("super_debug", "no")).lower() in ("yes", "true", "1")
+        debug_enabled = self._startup_debug_enabled()
         try:
             ocr_scale = float(general_config.get("ocr_scale_down_factor", 0.65))
         except (TypeError, ValueError):
@@ -290,6 +320,16 @@ class LobbyAutomation:
             return False
 
         if not self._open_brawler_menu(brawler, current_frame, current_state, debug_enabled):
+            return False
+        verify_frame = self.window_controller.screenshot()
+        verify_state = get_state(verify_frame)
+        if verify_state != "brawler_selection":
+            if self._recover_from_wrong_selection_state(verify_state, brawler, debug_enabled):
+                return False
+            print(
+                f"WARNING: Brawler selection for '{brawler}' did not reach the brawler menu "
+                f"(state='{verify_state}'). Keeping lobby start blocked."
+            )
             return False
 
         for phase in ("current_position", "from_top"):
