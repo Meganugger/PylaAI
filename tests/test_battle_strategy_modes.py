@@ -53,7 +53,7 @@ def make_play():
     play._showdown_roam_angle_until = 0.0
     play._showdown_roam_hold_seconds = 2.2
     play._showdown_roam_target_index = 0
-    play._showdown_team_behavior = "follow"
+    play._showdown_team_behavior = "team_follow"
     play._showdown_border_target_index = 0
     play._showdown_border_angle_until = 0.0
     play._showdown_border_hold_seconds = 2.4
@@ -122,6 +122,20 @@ def make_play():
     play._committed_analog_until = 0.0
     play._planned_analog_reason = None
     play._analog_movement_radius = 145.0
+    play.should_detect_walls = True
+    play.TILE_SIZE = 60
+    play.wall_path_padding = 28.0
+    play.wall_path_probe_tiles = 1.5
+    play.wall_detour_hold_time = 0.45
+    play.wall_detour_goal_tolerance = 42.0
+    play.wall_detour_side_penalty = 18.0
+    play.wall_detour_reuse_slack = 20.0
+    play.wall_detour_state = {
+        "angle": None,
+        "goal_angle": None,
+        "side": 0,
+        "until": 0.0,
+    }
     play.last_movement = None
     play.last_movement_time = 0.0
     play._last_movement_refresh_at = time.monotonic()
@@ -274,7 +288,7 @@ class BattleStrategyModeTests(unittest.TestCase):
         self.assertNotEqual(round(nudge), 270)
         self.assertEqual(play._authoritative_movement_source, "wall_escape")
 
-    def test_wall_escape_returns_to_lane_after_nudge(self):
+    def test_brawlball_wall_escape_returns_to_clear_detour_after_nudge(self):
         play = make_play()
         play._is_path_blocked_angle = lambda _player, _angle, _wall: True
         wall_context = {"rectangles": [[900, 300, 1000, 500]], "line_cache": {}}
@@ -283,7 +297,8 @@ class BattleStrategyModeTests(unittest.TestCase):
 
         returned = play._wall_blocked_escape_angle(270.0, "spawn_escape_no_vision", (960, 820), wall_context, 201.3)
 
-        self.assertEqual(round(returned), 270)
+        self.assertNotEqual(round(returned), 270)
+        self.assertEqual(play._authoritative_movement_source, "wall_escape")
 
     def test_watchdog_uses_lane_angle_not_stale_random_angle(self):
         play = make_play()
@@ -337,7 +352,7 @@ class BattleStrategyModeTests(unittest.TestCase):
         play = make_play()
         play.selected_gamemode = "showdown"
         play.is_showdown_mode = True
-        play._showdown_team_behavior = "follow"
+        play._showdown_team_behavior = "team_follow"
         play._teammate_positions = [(960.0, 300.0)]
         play._find_best_angle = lambda _player, angle, _wall: angle
 
@@ -351,7 +366,7 @@ class BattleStrategyModeTests(unittest.TestCase):
         play = make_play()
         play.selected_gamemode = "showdown"
         play.is_showdown_mode = True
-        play._showdown_team_behavior = "border"
+        play._showdown_team_behavior = "safe_border"
         play._teammate_positions = [(960.0, 300.0)]
         play._find_best_angle = lambda _player, angle, _wall: angle
 
@@ -360,6 +375,29 @@ class BattleStrategyModeTests(unittest.TestCase):
         self.assertEqual(play._battle_runtime["active_strategy"], "showdown_border")
         self.assertEqual(play._planned_analog_reason, "showdown_border")
         self.assertIsInstance(movement, float)
+
+    def test_showdown_aggressive_mode_uses_memory_chase_before_teammate_follow(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._showdown_team_behavior = "aggressive"
+        play._teammate_positions = [(960.0, 300.0)]
+        play._last_known_enemies = [(1200.0, 500.0, 200.0)]
+        play._last_enemy_seen_at = 200.0
+        play._find_best_angle = lambda _player, angle, _wall: angle
+
+        with patch("play.time.time", return_value=200.2):
+            movement = play.no_enemy_movement([930.0, 780.0, 990.0, 840.0], {"rectangles": [], "line_cache": {}})
+
+        self.assertEqual(play._battle_runtime["active_strategy"], "showdown_chase")
+        self.assertEqual(play._planned_analog_reason, "memory_chase")
+        self.assertIsInstance(movement, float)
+
+    def test_showdown_normalizer_supports_three_modes_and_legacy_values(self):
+        self.assertEqual(Play._normalize_showdown_team_behavior("follow"), "team_follow")
+        self.assertEqual(Play._normalize_showdown_team_behavior("Team Follow"), "team_follow")
+        self.assertEqual(Play._normalize_showdown_team_behavior("safe border"), "safe_border")
+        self.assertEqual(Play._normalize_showdown_team_behavior("Aggressive"), "aggressive")
 
     def test_showdown_wall_escape_does_not_return_brawlball_lane_angle(self):
         play = make_play()

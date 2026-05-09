@@ -56,6 +56,7 @@ def make_play():
     play._target_confirmation_max_age = 0.55
     play._ability_target_confirmation_max_age = 0.35
     play._brawl_ball_no_fire_spawn_seconds = 2.2
+    play._match_start_no_fire_seconds = 0.9
     play._brawl_ball_spawn_escape_active = False
     play._authoritative_movement_angle = None
     play._authoritative_movement_source = ""
@@ -202,6 +203,20 @@ class BattleActionPacingTests(unittest.TestCase):
         with patch("play.time.time", return_value=101.0):
             self.assertFalse(play.attack())
             self.assertFalse(play.use_hypercharge())
+
+        self.assertEqual(play.window_controller.keys, [])
+
+    def test_match_start_no_fire_suppresses_showdown_air_shots(self):
+        play = make_play()
+        play.selected_gamemode = "showdown"
+        play.is_showdown_mode = True
+        play._battle_runtime["match_started_at"] = 100.0
+        play._begin_action_tick(100.4)
+        confirm_target(play, 100.4)
+
+        with patch("play.time.time", return_value=100.4):
+            self.assertFalse(play.attack())
+            self.assertFalse(play.use_super())
 
         self.assertEqual(play.window_controller.keys, [])
 
