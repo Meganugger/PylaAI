@@ -57,6 +57,27 @@ class TestLobbyAutomation(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(safe_clicks), 2)
 
+    def test_template_click_must_reach_brawler_selection_before_success(self):
+        """A false-positive brawler menu template click must not start OCR on the lobby."""
+        screenshot = Image.new("RGB", (1920, 1080))
+        self.mock_window_controller.screenshot.return_value = screenshot
+        mock_get_state = MagicMock(return_value="lobby")
+        mock_find_template = MagicMock(return_value=(100, 100))
+
+        with patch.object(self.lobby, "_wait_for_brawler_selection_or_lobby", return_value=(False, "lobby", screenshot)), \
+                patch.dict(
+                    LobbyAutomation._open_brawler_menu.__globals__,
+                    {
+                        "get_state": mock_get_state,
+                        "find_template_center": mock_find_template,
+                        "load_image": MagicMock(return_value=screenshot),
+                        "time": MagicMock(time=__import__("time").time, sleep=MagicMock(return_value=None)),
+                    },
+                ):
+            opened = self.lobby._open_brawler_menu("alli", screenshot, "lobby", False)
+
+        self.assertFalse(opened)
+
     def assert_click_within_tolerance(self, expected_x, expected_y, tolerance=50):
         """Helper method to check if any click was within tolerance of expected coordinates"""
         self.assertTrue(
