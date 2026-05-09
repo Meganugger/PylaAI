@@ -126,6 +126,10 @@ class StageManager:
         self._end_transition_continue_sent = False
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
+        # Phase 4: commitment flag — once play-again or lobby-Q is clicked,
+        # prevent any further post-match actions until verified state change.
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._lobby_sync_max_timeout = 8.0  # hard max for lobby result sync
         self._last_match_started_at = 0.0
         self._consecutive_lobby_start_fails = 0
@@ -262,6 +266,8 @@ class StageManager:
         if result != self._end_transition_last_result:
             self._end_transition_last_action_at = 0.0
             self._end_transition_continue_sent = False
+            self._play_again_committed = False
+            self._play_again_committed_at = 0.0
             self._end_transition_continue_sent_at = 0.0
             self._end_transition_continue_result = None
         if not self._end_transition_started_at or result != self._end_transition_last_result:
@@ -281,6 +287,8 @@ class StageManager:
         self._end_transition_last_result = None
         self._end_transition_hold_match_until = 0.0
         self._end_transition_continue_sent = False
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
 
@@ -288,6 +296,8 @@ class StageManager:
         if self._end_transition_continue_sent:
             print(f"[RESULT] post-match action guard reset reason={reason}")
         self._end_transition_continue_sent = False
+        self._play_again_committed = False
+        self._play_again_committed_at = 0.0
         self._end_transition_continue_sent_at = 0.0
         self._end_transition_continue_result = None
 
@@ -1500,36 +1510,31 @@ class StageManager:
                 or getattr(self.Trophy_observer, "_last_game_result", None)
             )
             should_play_again = self.play_again_on_win and self._play_again_result_qualifies(play_again_result)
-            forced_only_after_continue = (
-                known_result_is_valid
-                and not self._is_endish_state(probed_state)
-                and self._end_transition_continue_sent
-            )
+            # Phase 4: unified post-match commitment guard.
+            # Once play-again or lobby-Q is clicked, block all further
+            # post-match actions until state changes to match or lobby.
+            if self._play_again_committed:
+                committed_age = now - self._play_again_committed_at
+                if committed_age >= self._post_match_action_guard_reset_seconds:
+                    print("[RESULT] post-match commitment timeout; re-probing")
+                    self._play_again_committed = False
+                    self._reset_post_match_action_guard("commitment_timeout")
+                else:
+                    if debug:
+                        print(f"[RESULT] play-again committed {committed_age:.1f}s ago; waiting")
+                    return
+
             retry_delay = max(2.0, self._end_transition_action_interval)
             retry_too_soon = (
                 self._end_transition_continue_sent
                 and (now - self._end_transition_continue_sent_at) < retry_delay
             )
-            if forced_only_after_continue or retry_too_soon:
-                if (
-                    self._end_transition_continue_sent
-                    and (now - self._end_transition_continue_sent_at) >= self._post_match_action_guard_reset_seconds
-                ):
+            if retry_too_soon:
+                if (now - self._end_transition_continue_sent_at) >= self._post_match_action_guard_reset_seconds:
                     print("[RESULT] post-match sync timeout; re-probing reward/proceed/lobby")
                     self._reset_post_match_action_guard("timeout")
                 else:
-                    if debug and forced_only_after_continue:
-                        print(f"[RESULT] post-match action already sent; waiting on state '{probed_state}'")
                     return
-            if (
-                self._end_transition_continue_sent
-                and not self._is_endish_state(probed_state)
-                and (now - self._end_transition_continue_sent_at) >= self._post_match_action_guard_reset_seconds
-            ):
-                print("[RESULT] post-match sync timeout; re-probing reward/proceed/lobby")
-                self._reset_post_match_action_guard("timeout")
-            elif self._end_transition_continue_sent and not self._is_endish_state(probed_state):
-                return
 
             if should_play_again:
                 if self._automation_suspended("play again"):
@@ -1557,6 +1562,8 @@ class StageManager:
             self._end_transition_continue_sent = True
             self._end_transition_continue_sent_at = now
             self._end_transition_continue_result = play_again_result
+            self._play_again_committed = True
+            self._play_again_committed_at = now
         self._end_transition_last_action_at = now
         print(f"[RESULT] end_game exiting current_state={current_state} found={found_game_result}")
         if debug:
